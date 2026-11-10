@@ -1355,9 +1355,13 @@ def _check_db(to):
       to='pmcid' → NCBI 回 Invalid db name，但异常被 task group 包成 ExceptionGroup，原文被吞
     这个工具存在的理由就是回答「有没有免费全文可下」，所以宁可拦下来，也不给假阴性。"""
     s = (to or "").strip().lower()
+    # 〔已作废 2026-11-11，本会话实测推翻〕这句报错原先写「只认库名，不认 'PMC'/'PMCID' 这类写法」。
+    # 但下一行本来就 .lower()，实测 links(pmids="37427694", to="PMC") 走的是成功分支，返回
+    # 「pubmed_pmc=PMC10461258」〔mcp 1.30.0 与 2.3.0 各一次，走 SDK 包装层〕——
+    # 也就是说 'PMC' 是认的，旧句子在它自己那条报错里反证了自己。真正不认的是 'PMCID'（非库名）。
     if s not in DB_WHITELIST:
         raise NcbiError(f"to={to!r} 不是本工具支持的库。可用：{', '.join(sorted(DB_WHITELIST))}"
-                        f"（只认库名，不认 'PMC'/'PMCID' 这类写法）")
+                        f"（库名大小写不敏感，'PMC' 与 'pmc' 算同一个库；不认 'PMCID' 这种非库名写法）")
     return s
 
 

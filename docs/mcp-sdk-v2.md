@@ -28,7 +28,7 @@ rc=1
 - 源码里一层 SDK 兼容层：先取 1.x 的 `FastMCP`，取不到就取 2.x 的
   `mcp.server.mcpserver.MCPServer`；两代都没有就抛一句**说清该怎么办**的 `ImportError`
   （而不是让别人的终端停在一条裸 `ModuleNotFoundError` 上）。
-- 依赖区间 `mcp>=1.2,<3`。上界留到 `<3` 而不是干脆不写：3.x 是没验过的下一代，
+- 依赖区间 `mcp>=1.26,<3`。上界留到 `<3` 而不是干脆不写：3.x 是没验过的下一代，
   这次的教训正是「把没测过的版本当默认」。
 - 兼容层自己挂了一条 `--probe` 离线断言（「拿到的是可用服务类：能构造、有 `tool`、有 `run`」）。
   没有断言的承诺会被下一次改写悄悄作废——这个文件已经有一条这样的过期记录。
@@ -37,13 +37,16 @@ rc=1
 
 | 通路 | mcp 版本 | 结果 |
 |---|---|---|
-| 作者本机（1.x） | 1.29.0 | 138 通过 / 0 失败，89 次 HTTP 请求，rc=0〔实测 2026-11-10；那轮还没有第 4 条断言〕 |
-| 干净 venv（1.x） | 1.30.0 | `pip install` rc=0；`--check-key` rc=0；stdio 客户端 `tools/call count` → `isError=False`、「命中 11918 条」；**全量 `--probe` 139 通过 / 0 失败，89 次请求**〔实测〕 |
-| 临时 venv（2.x），**外部注入别名** | 2.3.0 | 138 通过 / 0 失败，89 次请求〔实测，旧计数：加上兼容层断言后 139、再加包装层断言后 140，现值见 README 与 release-delta〕——这一步的产出就是「要不要加兼容层」的决定依据 |
-| 临时 venv（2.x），**走源码里的兼容层** | 2.3.0 | **139 通过 / 0 失败，89 次请求，rc=0**；`tools/list` 四个工具的 docstring 全在（`search` 描述 3392 字符）〔实测〕 |
+| 作者本机（1.x） | 1.29.0 | 138 通过 / 0 失败，89 次 HTTP 请求，rc=0〔实测 2026-11-10；那轮还没有第 4、5 条断言〕 |
+| 干净 venv（1.x） | 1.30.0 | `pip install` rc=0；`--check-key` rc=0；stdio 客户端 `tools/call count` → `isError=False`、「命中 11918 条」；**全量 `--probe` 139 通过 / 0 失败，89 次请求**〔实测 2026-11-10，第 4 条断言时〕 |
+| 临时 venv（2.x），**外部注入别名** | 2.3.0 | 138 通过 / 0 失败，89 次请求〔实测，旧计数〕——这一步的产出就是「要不要加兼容层」的决定依据 |
+| 临时 venv（2.x），**走源码里的兼容层** | 2.3.0 | **139 通过 / 0 失败，89 次请求，rc=0**；`tools/list` 四个工具的 docstring 全在（`search` 描述 3392 字符）〔实测 2026-11-10〕 |
+| **现值**：同一份最终件（2199 行）重装进两代 venv，`--probe` 串行间隔 8 秒 | 1.30.0 | **140 通过 / 0 失败，89 次请求，rc=0**〔实测 2026-11-11，`_gate3.log`〕 |
+| **现值**：同上 | 2.3.0 | **140 通过 / 0 失败，89 次请求，rc=0**〔实测 2026-11-11，同一份日志〕 |
 
-最后两轮是**串行**跑的，中间隔 8 秒：两轮并发会在限速上互相干扰，那样 FAIL 归因不了。
-断言数 138 → 139 的唯一原因是新增的兼容层断言（第 4 条），不是有人改了判据。
+断言数 138 → 139 的唯一原因是新增的兼容层断言（第 4 条）；139 → 140 的唯一原因是新增的**包装层**
+断言（第 5 条）。两次都不是有人改了判据〔依据：`_gate2.log` 与 `_gate3.log` 里 PASS 行的差异，
+本会话逐行看过〕。
 
 ## mcp 2.3.0 的逐字签名（本会话从 site-packages 直接读，不是网页摘要）
 
@@ -110,10 +113,29 @@ SDK 取（1.x `mcp.server.fastmcp.exceptions.ToolError`，其 MRO 是
 `(ToolError, FastMCPError, Exception)`〔实测〕；2.x `mcp.server.mcpserver.exceptions.ToolError`）。
 `RuntimeError` 留在第二基类，是为了不改变外面 `except RuntimeError` 一类的旧写法。
 
-**为什么全量 `--probe` 当时抓不到这个**：探针每条断言都**直接调协程**（`await search(...)`），
+**四个工具都测了（2026-11-11 补测，此前只测了 `search` 与 `count`）**：入参一律选「在发 HTTP
+请求之前就抛 `NcbiError`」的那条分支，所以这一轮不产生请求，也就不会和别的 venv 抢限速。
+
+| 工具 | 触发入参 | 1.30.0 | 2.3.0 |
+|---|---|---|---|
+| `search` | `sort="journal"` | 323 字符 | 323 字符，逐字相同 |
+| `count` | `field="ISSN"` | 244 字符 | 244 字符，逐字相同 |
+| `fetch_abstracts` | `pmids="abc"` | 77 字符 | 77 字符，逐字相同 |
+| `links` | `to="PMCID"` | 130 字符 | 130 字符，逐字相同 |
+
+〔实测 2026-11-11，`_gate3.log` 第 19-23 / 31-35 行；服务端 = 分别装进两代 venv 的 `pubmed-mcp.exe`。〕
+
+这轮补测**顺带撞出一个文案缺陷**：`links` 的报错原先写「只认库名，不认 'PMC'/'PMCID' 这类写法」，
+而我先拿 `to="PMC"` 试，结果它**没报错**——回的是 `pubmed_pmc=PMC10461258`。原因是上一行本来就
+`.lower()`，大小写不敏感，旧句子在它自己那条报错里反证了自己。已改口，作废说明留在代码注释里
+（〔实测 2026-11-11，两代各一次反向对照：`to="PMC"` → `isError=False`〕）。
+
+**为什么全量 `--probe` 当时抓不到包装层这个**：探针每条断言都**直接调协程**（`await search(...)`），
 不经过 SDK 的 tool-call 包装层，于是「文本在包装层被不被剥」这一层在结构上不可见——
 138/139 通过这句话本来就覆盖不到它。现在加了一条专门走 `mcp.call_tool("search", {...})` 的断言
 （两代都支持两个位置参数，实测签名），它挂掉的意思是**主承诺被打穿**，不是文案不好看。
+〔口径注意：回归锁只锁了 `search` 一条；其余三个工具靠上表的补测，那是**一次性实测**，
+下次改动不会被探针拦住——要长期锁就得再补三条断言。〕
 
 ## 顺带修掉的两个（跟 mcp 2.x 无关）
 
@@ -126,6 +148,24 @@ SDK 取（1.x `mcp.server.fastmcp.exceptions.ToolError`，其 MRO 是
   已改 SPDX 字符串 `license = "MIT"`、删该分类符，并把 `build-system` 抬到 `setuptools>=77`
   （SPDX 写法要 77 才支持）。
 
+## 已发布件走 README 头条命令的结果（2026-11-11）
+
+干净 venv（不带系统 site-packages），逐字照 README：
+
+```
+pip install git+https://github.com/rsvsv/pubmed-mcp.git   → Collecting mcp<3,>=1.26 → mcp-2.3.0
+                                                          → pubmed-mcp-1.2.0，PIP_RC=0，无弃用警告
+pubmed-mcp --check-key                                    → rc=0，依赖: mcp 2.3.0, anyio 4.16.0, pydantic 2.14.3
+stdio 客户端 initialize                                   → server=PubMed，version=''，protocol=2025-11-25
+tools/list                                                → ['count','fetch_abstracts','links','search']
+tools/call count("tooth resorption")                       → isError=False，「命中 11918 条」
+tools/call search(sort="journal")                          → isError=True，323 字符，含 NCBI 原文与可用值列表
+tools/call count(field="ISSN")                             → isError=True，244 字符
+```
+
+〔实测 2026-11-11，后台任务 `b1850yh8w`；该轮仓库 blob 与工作区 sha256 前 12 位同为
+`7b090831f034`。〕
+
 ## 还没验的（别把这份文件当成「2.x 全支持」）
 
 - ⚠️【待确认】`anyio` 与 `pydantic` 的真实最低版本。区间写的是 `anyio>=4`，
@@ -134,9 +174,9 @@ SDK 取（1.x `mcp.server.fastmcp.exceptions.ToolError`，其 MRO 是
 - ⚠️【待确认】mcp 1.29.0 与 1.30.0 之间**逐项**有无行为差异。两版都跑过全量 `--probe`
   且都是 0 失败，但这只能说明「本文件用到的那三处没变」，不等于两个版本等价。
 - ⚠️【待确认】`requires-python >=3.10` 仍是〔本项目口径〕：没有 CI，作者机器只有 3.13。
-- ⚠️【待确认】`fetch_abstracts` 与 `links` **走包装层**时的错误文本：本次 A/B 只测了 `search`
-  与 `count` 两条拦截。`--probe` 覆盖这两个函数但是直调协程，不经过 tool-call 包装层，
-  所以「这两条在 2.x 下文本是否完整」仍是未测，不能由 search/count 的结果外推。
+- ~~⚠️【待确认】`fetch_abstracts` 与 `links` 走包装层时的错误文本~~
+  **〔已关掉 2026-11-11〕**四个工具都测了，结果见上面那张表；不能由 `search`/`count` 外推这句
+  留着有效——它就是当初不外推、而是去实测的理由。
 - ⚠️【待确认】mcp 1.26.0～1.28.0 这段下界区间只验到 `import` 成功，没跑过 `--probe`。
 
 ## 想自己复现这个坑
