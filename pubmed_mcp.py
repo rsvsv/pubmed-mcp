@@ -34,16 +34,19 @@
      而 field=ZZZBOGUSFIELD→82 与不传 field 完全一致且无任何 ⚠️（拼错一个字母=限定被静默吃掉）；
      field=MeSH Terms、Publication Type 则让 esearch 不返回 count 字段（见第 5 条）。
   5. count 字段缺失/非数字一律抛 NcbiError，不再印「命中 ? 条」。
-  6. 网络调用出事件循环 + 按有无 key 限速（实测：有 key 走 10 次/秒，无 key 走 3 次/秒）。
+  6. 网络调用出事件循环 + 按有无 key 限速（本机有 key，档位 10 次/秒〔实测〕；
+     key 的任何片段都不写进源码——发布这份文件等于公开发布它）。
 
 用法：
     python pubmed_mcp.py                       # 当 MCP stdio 服务（Claude 用这个）
     python pubmed_mcp.py --selftest 牙根吸收     # 不走 MCP，直接打印结果，自检用
     python pubmed_mcp.py --check-key            # 只报告 key/限速档位，不发查询
     python pubmed_mcp.py --probe                # 跑一组断言，回归用
-    #   〔实测 2026-11-10，给 _get_async 包计数器量的〕**121 条断言用 88 次 HTTP 请求**
-    #   （同一天 98 条那次是 71 次）；旧注释写「约 10 次请求」是按节数拍的，差了 7-8 倍。
-    #   按 10 次估限速会估错一个量级——一轮探针要按【几十秒到几分钟】算。
+    #   **断言数与请求数都由 --probe 自己在末行报**（末行形状：「N 通过 / M 失败 —— 本轮 K 次 HTTP
+    #   请求」），所以这里不写死任何数字——写死过一次就注定过期：121 那条注释写下当天就变 133 了
+    #   〔实测 2026-11-10，补丁 20–22 各加了几条〕。量级供参考：88 次/121 条、71 次/98 条〔实测〕。
+    #   旧注释写「约 10 次请求」是按节数拍的，差了 7-8 倍；按 10 次估限速会估错一个量级——
+    #   一轮探针要按【几十秒到几分钟】算。
 
 key 读取顺序：环境变量 NCBI_API_KEY → 文件 ~/.ncbi_api_key → 都没有就走匿名（3 次/秒）
 依赖：Python 标准库 + mcp(FastMCP)；anyio 随 mcp 一起装。
@@ -100,25 +103,86 @@ class NcbiError(RuntimeError):
 _KEY = None
 
 
+def _decode_key_bytes(raw):
+    """把 key 文件的字节变成字符串，兼容 Windows 上常见的三种写法。
+
+    〔实测 2026-11-10，修 A/B 两条〕旧写法只认「UTF-8 无 BOM」，而别人建这个文件时
+    默认拿到的往往不是它：
+      - PowerShell 5.1 的 `>` / Out-File 默认写 **UTF-16LE + BOM**（头两字节 FF FE），
+        旧代码 io.open(encoding="utf-8") 读它会抛 UnicodeDecodeError（byte 0xff invalid start
+        byte），`--check-key` 与首次工具调用一起变成裸 traceback。
+      - 记事本「UTF-8（带 BOM）」→ 前三个字节 EF BB BF，decode("utf-8") 后留下 \ufeff；
+        `\ufeff` 不是空白，str.strip() 不掉它，于是发出去的 apikey 前多一个不可见字符，
+        NCBI 判成无效 key，而错误文本里看不出是编码的锅。
+      - 真 UTF-8 无 BOM：照旧。
+    所以：先看 BOM 定编码，再兜一次 utf-8-sig，最后 latin-1 保命（宁可让 NCBI 报 key 无效，
+    也不要在这行抛 traceback）。BOM 一律 lstrip 掉。
+    """
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")                    # PowerShell 默认
+    elif raw[:3] == b"\xef\xbb\xbf":
+        text = raw.decode("utf-8-sig")                 # 记事本 UTF-8（带 BOM）
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+    return text.lstrip("\ufeff")
+
+
 def api_key():
-    """缓存一次读取 —— 旧版每个请求都 stat+读文件。"""
+    """缓存一次读取 —— 旧版每个请求都 stat+读文件。
+
+    找不到 key 不是错误：走匿名档（3 次/秒），功能不缺，只是慢一档；
+    `--check-key` 会把当前档位和 key 文件的编码一起说出来。"""
     global _KEY
     if _KEY is None:
-        k = (os.environ.get("NCBI_API_KEY") or "").strip()
+        k = (os.environ.get("NCBI_API_KEY") or "").strip().lstrip("\ufeff")
         if not k:
             for p in ("~/.ncbi_api_key", "~/.ncbi_api_key.txt"):
                 q = os.path.expanduser(p)
                 if os.path.isfile(q):
-                    k = io.open(q, encoding="utf-8").read().strip()
+                    try:
+                        raw = open(q, "rb").read()
+                    except OSError:
+                        continue
+                    k = " ".join(_decode_key_bytes(raw).split())   # 吃掉首尾空白、中间连续空白压成一个空格；key 中间真夹着空格时压不掉，由 _key_shape 报出来
                     break
         _KEY = k
     return _KEY
 
 
+def _key_shape(k):
+    """给 --check-key 用：说出 key 长什么样，但**不打印值本身**。
+
+    只判**判得动的**事：有没有混进空白或说明文字（这一类真会让请求 400，而且报错里看不出来）。
+    长度与进制**只描述、不当判据**：〔实测 2026-11-10，本机 --check-key 抓到我自己〕补丁 20 里
+    我写过「NCBI 的 key 通常是 32 位十六进制」，结果本机那串比这长、也不是恰好 32 位，于是这句把正常配置
+    报成了可疑。「32 位」是顺来的常识，没查 NCBI 页面、也没统计过〔未核实〕，所以现在删掉。
+    要以长度为准请回你自己账号页上看的那串。"""
+    if not k:
+        return "(无 key，走匿名档 3 次/秒)"
+    bits = f"长度 {len(k)}"
+    bad = sorted({c for c in k if not (c.isalnum() or c in "-_")})
+    if bad:
+        return f"{bits}，含 {len(bad)} 个非字母数字字符（{bad[:3]}）——多半是文件里混进了别的文字"
+    hexish = all(c in "0123456789abcdefABCDEF" for c in k)
+    return (f"{bits}，纯十六进制" if hexish else
+            f"{bits}，含非十六进制字符（若你账号页上那串是纯十六进制而这份不是，多半抄漏或抄错了字符）")
+
+
 def _mask(s):
-    """异常文本里不要带出 api_key。"""
+    """异常文本里不要带出 api_key。
+
+    〔发布版改动 2026-11-10；来源：审计 finding privacy-04，本会话已实测复现前两条〕旧写法有三个洞：
+      一、掩码完仍留前 4 位；二、`len(k) > 8` 才启用掩码，短 key 整串原文外泄；
+      三、只做字面 str.replace，key 以 URL 百分号编码形态出现在报错文本里时替换不到。
+    现在无条件替换成定长掩码，一个字符的原文都不留。第三条仍未处理——先解码再替换属于过度设计，
+    记在这儿当已知边界，别当成已修好。"""
     k = api_key()
-    return s.replace(k, k[:4] + "***") if (k and len(k) > 8 and isinstance(s, str)) else s
+    if not (k and isinstance(s, str)):
+        return s
+    return s.replace(k, "***")
 
 
 def _safe_json(text, what):
@@ -174,7 +238,7 @@ async def _pace():
     global _PACER
     with _PACER_INIT:
         if _PACER is None:
-            _PACER = _Pacer(10.0 if api_key() else 3.0)   # 实测本机有 key
+            _PACER = _Pacer(10.0 if api_key() else 3.0)   # 实测：有 key 10 次/秒，无 3 次/秒
     await _PACER.wait()
 
 
@@ -194,9 +258,17 @@ def _retry_after(headers):
         return None                                       # HTTP-date 解析不了就退回固定退避
 
 
+_NREQ = 0          # 本轮发出去多少次 urlopen（含退避重试的每一次）
+
+
 def _get(path, params, timeout, tries=4):
     """带 key 和退避重试的 GET，返回响应文本。失败抛 NcbiError 并带 NCBI 原文。
-    同步函数，只允许在 _get_async 的线程里调用。"""
+    同步函数，只允许在 _get_async 的线程里调用。
+
+    _NREQ 按**每次 urlopen** 计数，不是按工具调用次数：一次 429 退避重试算 4 次。
+    多线程下 `+=` 不保证精确〔自订口径〕，它只用来回答「这一轮探针花了多少请求」这个量级问题，
+    别拿它当计费依据。"""
+    global _NREQ
     q = dict(params)
     q["tool"] = TOOL
     if EMAIL:
@@ -208,13 +280,17 @@ def _get(path, params, timeout, tries=4):
     # 失败文本里必须交代本次有没有带 key：〔实测 2026-11-08〕key 写错时 NCBI 回的是
     # HTTP 400 + {"error":"API key invalid"}（拿 'zzz' 和 32 位假 key 各试一次都是这个形状），
     # 不写这句就会让人去查 NCBI 是不是挂了。
-    keyhow = (f"本次带上 api_key（前 4 位 {key[:4]}…，长度 {len(key)}）" if key
+    # 〔实测 2026-11-10 改〕旧写法是「前 4 位 {key[:4]}…」：那是**安装者自己的** key 片段，
+    # 而这句话会随错误文本进对话记录。改成只报长度——判「有没有带上 key」用长度就够了，
+    # 与补丁 21 之后 _key_shape 的口径一致（那儿也不打印任何 key 内容）。
+    keyhow = (f"本次带上 api_key（长度 {len(key)}）" if key
               else "本次【没带】api_key（走匿名 3 次/秒）")
     last = "没试过"
     backoff = (1, 3, 9)
     for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": TOOL})
+            _NREQ += 1
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
@@ -308,7 +384,8 @@ def _check_sort(sort):
             f'可用值：pub_date / relevance / author。'
             f'（{"/".join(SORT_IGNORED)} 这几个 NCBI 文档里出现过的值，实测顺序与不传时【逐字相同】，'
             f'所以不放进白名单，免得你以为排过了。）'
-            f'要按期刊指标排序请自己接外部期刊指标数据源（PubMed 没有这个概念）。')
+            f'（PubMed 没有「按期刊好坏排序」这个概念，所以这里不假装能排；'
+            f'要那种排序得自己接外部期刊指标数据源——本仓库不含这类脚本。）')
     return canon
 
 
@@ -1029,8 +1106,12 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
     什么时候用：找文献、核对某主题有多少文章、拿 PMID 列表。
     term 支持 PubMed 语法：字段标签如 "resorption[Title]"、布尔组合 "A AND B"、
     截词 "resorption*"、范围 "2024:2026[dp]"。建议一次只写一个概念，靠字段标签收窄。
-    sort 只接受 pub_date / relevance（实测 NCBI 对别的值是静默接受、顺序照旧，所以这里会拦）。
-    **PubMed 没有「按期刊好坏排序」这个概念**，要那种排序得自己接外部期刊指标数据源。
+    sort 只接受 pub_date / relevance / author〔实测 2026-11-10 本机 idlist 两两对照：这三个真会换
+    顺序，其余值与不传 sort 逐字同序。本文件 SORT_REAL 上方有一条【已作废】记录：这里原先只写两个值，
+    属说明过期、不是代码错〕。NCBI 对认不出的 sort 值是静默接受、顺序照旧，所以本工具直接拦。
+    **PubMed 没有「按期刊好坏排序」这个概念**，要那种排序得自己接外部期刊指标数据源，本仓库不含这类脚本。
+    〔实测 2026-11-10 订正：更早的版本这里写死了作者某个工作目录的绝对路径，而本服务注册在全局、
+    在别的项目里读到那句就是死路，所以改成不带路径、也不指具体脚本的说法。〕
     field 整体限定字段，只接受白名单里【实测真生效】的值（Title / Title/Abstract / Journal / Author /
     Affiliation / Language / Grant / ISBN / PMID 等）。实测会被 NCBI 静默吞掉的 keywords / PMC Number /
     ISSN，以及会让 esearch 不返回 count 的 MeSH Terms / Publication Type，现在直接拦下来并教你改写进 term。
@@ -1146,6 +1227,14 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
     仍会返回一个非 0 的数（"zzzqqx nonexistent term" → 610 条），0 条反而是少见的情况。
     中文查询词（实测 "牙根吸收" → 0 条 + 空 querytranslation）会得到「NCBI 没解析出任何检索条件」，
     那不等于主题没文献，换英文词再问。
+
+    **命中数既不证明「短语存在」，也不证明「文献不存在」**〔实测 2026-11-10〕：
+    `count('41338119 AND "zygomatic implant assisted rapid palatal expansion"')` 给【1 条】，
+    而同一次返回里 NCBI 报了 quotedphrasesnotfound —— 它把整段短语换成按词 AND 执行的，
+    于是这 1 条只说明【那几个词都出现在这条记录里】；该记录标题实际是
+    "…Personalized Microimplant-Assisted Rapid Palatal Expansion…"，并没有 "zygomatic implant" 这段连续短语。
+    反过来 0 条也只说明这个式子没匹配上。要确认短语在不在，请把取回来的题录/摘要自己读一遍，
+    **别信引号**。
     field 与 search 一样走白名单；count 拿不到数字时抛 NcbiError，不印 "?"。
     """
     d = await _esearch(term, retmax=0, field=field, mindate=mindate, maxdate=maxdate, reldate=reldate)
@@ -1322,7 +1411,7 @@ async def links(pmids: str, to: str = "pmc") -> str:
 
 # ---------- 自检 ----------
 def _selftest(term):
-    print("key:", (api_key()[:4] + "…") if api_key() else "(无 key，走 3 次/秒)")
+    print("key:", _key_shape(api_key()))   # 〔发布版改动〕旧写法直接打印前 4 位，与本文件 --check-key 的口径自相矛盾
     t0 = time.time()
     print(anyio.run(search, term, 3))
     print(f"--- search 耗时 {time.time() - t0:.1f}s ---")
@@ -1380,6 +1469,15 @@ def _num_of(text):
     裸写法会在这一行再抛一次 AttributeError —— 那又变回「崩掉」而不是「记一条 FAIL」。"""
     mm = re.search(r"命中 (\d+)", str(text))
     return int(mm.group(1)) if mm else 0
+
+
+def _raises_enc(text, codepage):
+    """text 在 codepage 上编码会不会抛（用于断言判据本身有效，不碰真 stdout）。"""
+    try:
+        text.encode(codepage)
+        return False
+    except UnicodeEncodeError:
+        return True
 
 
 async def _probe():
@@ -1860,14 +1958,106 @@ async def _probe():
     check("只丢了一个虚词、还有实词时不许说「生效条件为空」",
           _all_dropped(fake3) is False, str(_note(fake3))[:200])
 
-    print(f"\n{ok} 通过 / {fail} 失败")
+    # ---- 20) key 文件编码与 CLI 输出编码（补丁 20，三条都在临时目录复现过）----
+    print("\n20) key 文件编码（UTF-16 / BOM）与 ⚠️ 的可编码性")
+    import tempfile
+    _d = tempfile.mkdtemp()
+    _cases = [
+        ("UTF-16LE+BOM（PowerShell 5.1 的 > 默认）", "utf-16", False),
+        ("UTF-8 带 BOM（记事本）", "utf-8-sig", False),
+        ("UTF-8 无 BOM", "utf-8", False),
+        ("UTF-8 带 BOM 且结尾有换行", "utf-8-sig", True),
+    ]
+    for _name, _enc, _nl in _cases:
+        _q = os.path.join(_d, "k_" + _enc + ("_nl" if _nl else ""))
+        open(_q, "w", encoding=_enc).write("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" + ("\n" if _nl else ""))
+        _got = _decode_key_bytes(open(_q, "rb").read())
+        check(f"key 文件 {_name}：剥干净且不许抛错",
+              _got.strip() == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" and "\ufeff" not in _got,
+              f"{_name} → {_got[:24]!r} len={len(_got)}")
+    # 反向判据（不写成恒真）：旧写法【确实】会在 UTF-16 字节上抛，说明上面那条不是空跑
+    open(os.path.join(_d, "u16"), "w", encoding="utf-16").write("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
+    _u16 = open(os.path.join(_d, "u16"), "rb").read()
+    try:
+        _u16.decode("utf-8")
+        check("反向：旧写法 io.open(encoding='utf-8') 读 UTF-16 文件必须抛 UnicodeDecodeError",
+              False, "居然解开了，那 A 条根本不成立")
+    except UnicodeDecodeError as _e:
+        check("反向：旧写法 io.open(encoding='utf-8') 读 UTF-16 文件必须抛 UnicodeDecodeError",
+              True, str(_e)[:70])
+    # 反向：BOM 不在 str.strip() 的空白集里，所以旧写法带 BOM 时不会被"顺手"清掉
+    check("反向：strip() 清不掉 BOM（说明 B 条是真 bug，不是我想多了）",
+          "\ufeff" in "\ufeffabc".strip(), repr("\ufeffabc".strip()))
+    check("_key_shape 认得出混进文字的 key，且不打印值本身",
+          "非字母数字" in _key_shape("my key is abc") and "my key" not in _key_shape("my key is abc"),
+          _key_shape("my key is abc"))
+    # 长度不是判据（本机那串就不是 32 位〔实测〕，所以 32 与非 32 都不许被说成可疑）
+    check("32 位 hex 只被描述、不被夸成「形状正常」",
+          "形状正常" not in _key_shape("a1" * 16) and "纯十六进制" in _key_shape("a1" * 16),
+          _key_shape("a1" * 16))
+    check("长度 36 的 hex 不许被报成可疑（作者本机 key 正是这种非 32 位的形状）",
+          "可疑" not in _key_shape("a1" * 18) and "混进了别的文字" not in _key_shape("a1" * 18),
+          _key_shape("a1" * 18))
+    check("判据里没有「32 位」这种没核实过的口径", "32 位" not in _key_shape("a1" * 18),
+          _key_shape("a1" * 18))
+    check("_key_shape 空值直接说走匿名档", "匿名" in _key_shape(""), _key_shape(""))
+    # 分组号按补丁号命名：17-19 是纯代码修复、没新增断言，所以编号从 16) 跳到 20)。
+    # 〔发布版新增三条，全离线不发请求〕目的：把 README 那句「每条都有源码依据」钉成断言，
+    # 否则承诺会随着下一次改写重新变成空话。
+    try:
+        _safe_json("<!DOCTYPE html><html><body>upstream oops</body></html>", "esearch")
+        _html = "没抛错"
+    except NcbiError as _e:
+        _html = str(_e)
+    check("200 + HTML 正文要报 NcbiError 并把正文带回来（不许静默当空结果）",
+          "不是合法 JSON" in _html and "<!DOCTYPE" in _html, _html[:120])
+    _sd = getattr(search, "__doc__", "") or ""
+    check("search 的工具说明里 sort 三个值都在（MCP 客户端只读这段，说明过期＝行为过期）",
+          all(w in _sd for w in ("pub_date", "relevance", "author")), repr(_sd[:90]))
+    _sav = globals()["_KEY"]
+    globals()["_KEY"] = "a1" * 18
+    try:
+        _m = _mask("leak:" + "a1" * 18 + " tail")
+    finally:
+        globals()["_KEY"] = _sav
+    check("_mask 不留任何 key 片段（定长掩码；短 key 也掩，旧写法这两条都漏）",
+          ("a1" * 18) not in _m and "***" in _m, _m[:60])
+    # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
+    #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
+    _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"
+    _crashes = [c for c in ("cp936", "cp1252") if _raises_enc(_probe_line, c)]
+    check("判据本身有效：⚠️/中文在 cp936、cp1252 上确实编不出（所以 reconfigure 不是多余）",
+          len(_crashes) == 2, f"编不出的代码页: {_crashes}")
+
+    # 引号短语被换成按词 AND 时，命中数【不是】短语的数——这条判据不写死具体命中数
+    _ph = await attempt("c_phrase", count,
+                        '41338119 AND "zygomatic implant assisted rapid palatal expansion"', default="")
+    _phn = _num_of(_ph)
+    check("整段短语被 NCBI 换成按词 AND 时，仍有命中且必须说出「这不是短语的数」",
+          _phn > 0 and "quotedphrasesnotfound" in _ph and "不是" in _ph,
+          f"{_phn} 条；⚠️ 段落: {[l[:70] for l in _ph.splitlines() if 'quoted' in l][:1]}")
+
+    check("计数器活着（不是恒 0；阈值 40 是自订的下限，用来发现计数器被改坏）",
+          _NREQ > 40, f"本轮 {_NREQ} 次 urlopen")
+    print(f"\n{ok} 通过 / {fail} 失败 —— 本轮 {_NREQ} 次 HTTP 请求（含退避重试的每一次）")
     return fail
 
 
 def _check_key():
     k = api_key()
-    print("key:", (k[:4] + "…" + f"（长度 {len(k)}）") if k else "(无)")
+    print("key:", _key_shape(k))
+    if k:
+        print("  （值本身不打印；前缀只在你自己机器上看得见——发布版源码里也不留任何 key 片段）")
     print("限速档位:", "10 次/秒" if k else "3 次/秒")
+    for p in ("~/.ncbi_api_key", "~/.ncbi_api_key.txt"):
+        q = os.path.expanduser(p)
+        if os.path.isfile(q):
+            head = open(q, "rb").read(3)
+            enc = ("UTF-16（PowerShell 默认写法，本工具认得）" if head[:2] in (b"\xff\xfe", b"\xfe\xff")
+                   else "UTF-8 带 BOM（记事本写法，本工具会剥掉）" if head == b"\xef\xbb\xbf"
+                   else "UTF-8 无 BOM")
+            print(f"  key 文件: {q}  {enc}")
+            break
     print("EMAIL:", EMAIL or "(未设 NCBI_EMAIL，NCBI 的 courtesy 要求建议设上)")
     print("依赖:", end=" ")
     try:
@@ -1877,8 +2067,27 @@ def _check_key():
         print("读版本失败", e)
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
+def main(argv=None):
+    """命令行入口。`pubmed-mcp`（pip install 后的 console-script）与 `python pubmed_mcp.py`
+    走同一条路：不带参数就当 MCP stdio 服务，带 --selftest/--probe/--concurrent/--check-key 就自检。"""
+    args = list(sys.argv[1:] if argv is None else argv)
+    # 四个自检命令的 stdout 都带中文与 ⚠️〔U+26A0〕。Windows 上 Python 只在
+    # **交互式控制台**用 WriteConsoleW（不受代码页限制）；一旦被重定向/接进管道，
+    # 就改用 locale 编码器，gbk/charmap 编不出 ⚠️ 会抛 UnicodeEncodeError、整个命令 rc=1。
+    # 〔发布版订正 2026-11-10，本会话复核过〕旧注释写「cp936 与 cp1252 两种都复现 rc=1」，
+    # 那对 --check-key 不成立：它的输出里没有 ⚠️，GBK 编得出来，旧写法在 cp936 下 rc=0
+    # （只是写出 GBK 字节）；两种码页都炸的是 --probe / --selftest / --concurrent。
+    # 另一条坑（验补丁 22 时必踩）：`python -I` 隔离模式会【忽略 PYTHONIOENCODING】，
+    # stdout 直接落回 utf-8，于是旧版也不会 rc=1 —— 复现这个 bug 请不要加 -I。
+    # 所以 CLI 分支先把 stdout 换成 utf-8 + errors=replace：宁可某个符号显示成 ?，
+    # 也不要让回归自检在别人的机器上"跑都没跑完"。
+    # MCP stdio 通路（下面的 mcp.run()）不在这里动——mcp SDK 自己包 utf-8 的 TextIOWrapper。
+    if args:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass                                        # 老版本没有 reconfigure；认了
     if args and args[0] == "--selftest":
         _selftest(args[1] if len(args) > 1 else "tooth resorption")
     elif args and args[0] == "--probe":
@@ -1889,3 +2098,7 @@ if __name__ == "__main__":
         _check_key()
     else:
         mcp.run()          # stdio
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pubmed-mcp"
+version = "1.0.0"
+description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "rsvsv" }]
+keywords = ["mcp", "pubmed", "ncbi", "eutils", "literature", "claude"]
+dependencies = [
+  "mcp>=1.2",
+  "anyio>=4",
+]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+[project.urls]
+Homepage = "https://github.com/rsvsv/pubmed-mcp"
+Repository = "https://github.com/rsvsv/pubmed-mcp"
+
+[project.scripts]
+# 装完直接敲 `pubmed-mcp` 就是 stdio 服务；带 --selftest/--probe/--check-key/--concurrent 走自检。
+pubmed-mcp = "pubmed_mcp:main"
+
+[tool.setuptools]
+# 本包只有一个 .py 文件，不用包目录结构。
+py-modules = ["pubmed_mcp"]
