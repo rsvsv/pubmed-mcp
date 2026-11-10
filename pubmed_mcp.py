@@ -687,9 +687,11 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
         q.update(mindate=lo, maxdate=hi, datetype="pdat")
     d = _safe_json(await _get_async("esearch.fcgi", q, 25), "esearch").get("esearchresult", {})
     d["_term"] = term
-    # 〔实测 2026-11-11〕这次请求的 retmax 要原样留给 _zero_explanation：retmax=0 是合法的
-    # 「只要计数」用法，而旧写法在「0 条记录」时落到最后一个分支，把「你没要记录」说成
-    # 「PubMed 确实没有匹配这篇」——同屏还印着命中数。这个字段只给解释用，不改下发参数。
+    # 〔实测 2026-11-11〕这次请求的 retmax 要原样留给 _zero_explanation，**不能**改读 NCBI 回显的
+    # retmax：retstart 越过命中总数时，即使请求 retmax=5，回显也会变成 "retmax":"0"
+    # （实测 retmax=5&retstart=9 → count=8、retmax="0"、idlist 空）。拿回显判「只要计数」会把
+    # 「翻页越界」误报成「你没要记录」——--probe 的 s_page 断言就是这么抓到这处改动的。
+    # 这个字段只给解释用，不改下发参数。
     d["_retmax"] = _rm
     d["_retmax_note"] = _rm_note
     d["_sort_note"] = _sort_note(sort, srt)
@@ -855,21 +857,14 @@ def _note(d):
     # 现在独立判：只要 qt 回显了同字段且互斥的两段就说出来。
     for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(d.get("_windows") or []):
         if a1 > b2 or a2 > b1:
-            _c_raw = d.get("count")
-            # 离线断言会造没有 count 的 d；这里只做解释，不替它编数，缺了就退回保守说法。
-            n_hit = int(_c_raw) if str(_c_raw).isdigit() else None
-            if n_hit:
-                # 〔实测 2026-11-11〕不相交的两段仍可能返回 >0：一条记录可以同时带有落进两段的
-                # 日期（实测 "tooth" + 2020 全年 + 近 365 天 → 1 条，PMID 32672908，pubdate 1993）。
-                # 旧写法无条件印「也会是 0 条」，与同一屏的「命中 1 条」自相矛盾。
-                lines.append(f"⚠️ NCBI 实际执行的两段【同字段（{l1}）】日期不相交"
-                             f"（{a1}→{b1} 与 {a2}→{b2}），但这条查询仍有 {n_hit} 条命中 —— "
-                             f"说明有记录同时满足了这两段。别把「不相交」当成「必然 0 条」，"
-                             f"也别拿这几条当日期条件生效的证据。")
-            else:
-                lines.append(f"⚠️ NCBI 实际执行的两段【同字段（{l1}）】日期不相交"
-                             f"（{a1}→{b1} 与 {a2}→{b2}）。"
-                             f"这类查询通常为 0 条；这个 0 不能读成「PubMed 里没有匹配」。")
+            # 〔实测 2026-11-11〕不相交的两段仍可能返回 >0：一条记录可以同时带有落进两段的
+            # 日期（实测 "tooth" + 2020 全年 + 近 365 天 → 1 条，PMID 32672908，pubdate 1993）。
+            # 所以这里只说「不相交」这个事实、不替 0 条下结论（那是 _zero_explanation 的活），
+            # 也不按 count 分两支 —— 旧写法无条件印「也会是 0 条」，与同一屏的命中数自相矛盾。
+            lines.append(f"⚠️ NCBI 实际执行的两段【同字段（{l1}）】日期不相交"
+                         f"（{a1}→{b1} 与 {a2}→{b2}）。不相交不等于 0 条 —— 一条记录可以"
+                         f"同时带有落进两段的日期；有命中时别把这个命中数当成日期条件生效的证据，"
+                         f"0 条记录时这个 0 也不能读成「PubMed 里没有匹配」。")
     gap = _phrase_gap(d)
     if gap:
         lines.append("⚠️ 引号短语里有词在 NCBI 的实际执行中找不到：" + "；".join(gap) +
@@ -936,7 +931,8 @@ _BOOL_WORDS = {"and", "or", "not", "with", "near"}     # PubMed 查询里的算�
 
 
 def _zero_explanation(d, count):
-    """命中 0 条时该说哪一句（不带「=>」前缀，由调用方拼）。
+    """返回 0 条记录时该说哪一句（count 可能 >0：retmax=0 只要计数 / retstart 越页）。
+    不带「=>」前缀，由调用方拼。
     〔实测 2026-11-09〕这一支里补/删了两件事：
       - 新加「两段日期窗口不相交」：reldate 现在原样下发、由 NCBI 做 AND，本工具不再用本机日历
         提前预判空交集（那个预判本身就是 bug 的来源），所以空交集必须在这里判，
@@ -945,9 +941,12 @@ def _zero_explanation(d, count):
         那一支永远走不到（旧注释还把它当实测事实写着）。
     """
     if count and d.get("_retmax") == 0:
-        # 〔实测 2026-11-11〕retmax=0 是「只要计数」的合法用法（--probe 也这么验），
-        # 旧写法落到最后一个分支，把「你没要记录」说成「PubMed 确实没有匹配这篇」，
-        # 而同屏还印着命中数 N。这一支必须排在日期/短语判据之前，否则锅会被甩给别的条件。
+        # 〔实测 2026-11-11〕这里读的是【本工具发出去的】retmax，不是 NCBI 回显的 retmax：
+        # 越页时 NCBI 会把回显改成 "retmax":"0"（retmax=5&retstart=9 → count=8、idlist 空），
+        # 拿回显判会把「翻页越界」误报成「只要计数」。retmax=0 是「只要计数」的合法用法
+        # （--probe 也这么验），旧写法落到最后一个分支，把「你没要记录」说成
+        # 「PubMed 确实没有匹配这篇」，而同屏还印着命中数 N。这一支必须排在日期/短语判据之前，
+        # 否则锅会被甩给别的条件。
         return (f"本次 0 条是因为 retmax=0：你只要计数、没要记录。"
                 f"命中数是真实的 {count} 条；要记录请传 retmax>0，只要数字可以用 count()。")
     if _all_dropped(d):
@@ -1199,8 +1198,8 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
     """在 PubMed 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC。
 
     什么时候用：找文献、核对某主题有多少文章、拿 PMID 列表。
-    term 支持 PubMed 语法：字段标签如 "resorption[Title]"、布尔组合 "A AND B"、
-    截词 "resorption*"、范围 "2024:2026[dp]"。建议一次只写一个概念，靠字段标签收窄。
+    term 支持 PubMed 语法：字段标签如 resorption[Title]（引号只包短语，别把 [Tag] 包进去）、
+    布尔组合 "A AND B"、截词 "resorption*"、范围 "2024:2026[dp]"。建议一次只写一个概念，靠字段标签收窄。
     sort 只接受 pub_date / relevance / author〔实测 2026-11-10 本机 idlist 两两对照：这三个真会换
     顺序，其余值与不传 sort 逐字同序。本文件 SORT_REAL 上方有一条【已作废】记录：这里原先只写两个值，
     属说明过期、不是代码错〕。NCBI 对认不出的 sort 值是静默接受、顺序照旧，所以本工具直接拦。
@@ -1241,27 +1240,37 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
       看到它就说明这个命中数不是你这个短语的数。
     - 日期：给了 reldate 又给了 mindate/maxdate 时，两段条件【都下发】，由 NCBI 做 AND，
       所以「NCBI 实际执行」里会出现两段日期窗口，本工具打印的窗口也是从那里读的（不是本机算的）。
-      两段【同字段】的日期不相交时这一条会给 0 条，输出里有专门的「两段同字段的日期窗口不相交」
+      两段【同字段】的日期不相交时命中通常为 0，但【不必然】：实测有记录同时带有落进两段的
+      日期（〔实测 2026-11-11〕1 条，PMID 32672908）。输出里有专门的「两段同字段（…）日期不相交」
       说明，不会跟「确实没有匹配这篇」混在一起（〔实测 2026-11-09〕旧版在这里是本机换算＋取交集，
       两种路径给出的命中数不一样，那才是真 bug；旧版还写着「不相交直接报错」，现已改由 NCBI 判、
       由本工具解释）。挂在不同字段上的两段（一段 [Date - Entry]、一段 [Date - Publication]）
       【不】会说成不相交 —— 那是两个不同的轴，比端点没有意义〔实测 2026-11-10：
       "2020:2020[edat] AND implant" 配 reldate=60 的回显就是这种形状〕。
     - "0 条"是请求成功、不是网络故障（故障会以 NcbiError 抛出），但**不能一律读成「确实没有匹配」**。
-      〔实测 2026-11-10〕这四种 0 条各有各的原因，返回里都会另起一行说清楚：
+      〔实测 2026-11-10〕返回 0 条记录的原因不止一种，常见的有（返回里都会另起一行说清楚）：
         ① 中文词（"牙根吸收"）→ querytranslation 为空 = NCBI 没解析出检索条件，换英文词；
         ② 词全被当停用词（"the and of"）→ warninglist.phrasesignored 列全了词 = 生效条件为空，
           这句 0 跟主题有没有文献无关；
         ③ 整个引号短语不存在（'"zzzqqxnonexistentterm"'）→ warninglist.quotedphrasesnotfound；
-        ④ 两段同字段日期互斥 → 见上面「不相交」那条。
-      只有这四种都不命中、且 NCBI 解析出了真实检索条件时，「PubMed 里没有匹配」才成立。
+        ④ 两段同字段日期互斥 → 见上面「不相交」那条；
+        ⑤ retmax=0（只要计数、没要记录）→ 命中数是真的，只是没取记录；
+        ⑥ retstart 越过命中总数（翻页越界）→ 往回翻页即可。
+      这些情形都不成立、且命中数确实为 0 时，「PubMed 里没有匹配」才成立。
     - 单复数（device/devices）在 PubMed 里映射到不同词形，实测差 1 条
       〔已作废 2026-11-10：现在 "temporary anchorage device" 与 "...devices" 都是 795 条、
       querytranslation 逐字相同 —— NCBI 把两边都展开成同一组 OR；当年那个 1 条的差不复现，
-      但「用 MeSH 词覆盖两种写法」这条建议本身仍然有效〕。要覆盖两种写法，
-      改用 MeSH 词——但先确认 descriptor 存在：本工具不做词表查询，写错一个词的引号短语
-      会静默变成 0 条（实测「Temporary Anchorage Devices」不是 MeSH 词，正确的写法是
-      "Orthodontic Anchorage Procedures"[MeSH Terms]）。
+      但「用 MeSH 词覆盖两种写法」这条建议本身仍然有效〕。要覆盖两种写法，改用 MeSH descriptor，
+      并且【读回显】判断写没写对 —— 本工具不做词表查询，而 descriptor 写错有两种形状，
+      后果并不一样（〔实测 2026-11-11，本会话，三种写法各跑一次 count，见 docs/release-delta.md〕）：
+        给一个不存在的 descriptor 加引号（"Temporary Anchorage Devices"[MeSH Terms]）→ 0 条，
+          NCBI 在 warninglist.quotedphrasesnotfound 里点名这段，本工具会转述 —— 不算静默；
+        同样的词【不加引号】配 [MeSH Terms] → 照样回一个数，但「NCBI 实际执行」已被改写成
+          另一组条件（实测那次把 Devices 换成了 "equipment and supplies"[MeSH Terms]），
+          主题也收窄了 —— 【这一种才没人提醒你】，光看条数看不出来。
+        写法对的形状回显就是它自己："Orthodontic Anchorage Procedures"[MeSH Terms]（本文件
+          --probe 里有一条联网冒烟断言盯着它，不写死条数）。
+      所以别信条数，信「NCBI 实际执行」那一行。
     """
     # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
     #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
@@ -1760,14 +1769,25 @@ async def _probe():
           "本次给 0 条" in s_zero and "命中" in s_zero, s_zero[:160])
     check("retmax=0 的 0 条不许说成「确实没有匹配这篇」",
           "retmax=0" in s_zero and "确实没有匹配这篇" not in s_zero, s_zero[-260:])
-    s_zero_j = await attempt("s_zero_json", search, "miniscrew", retmax=0, as_json=True, default="")
+    j_zero = await attempt_json("s_zero_json", search, "miniscrew", retmax=0, as_json=True)
+    _zn = str(j_zero.get("zero_note") or "")
     check("as_json 的 zero_note 同样不许说「确实没有匹配」",
-          "retmax=0" in s_zero_j and "确实没有匹配" not in s_zero_j, s_zero_j[-260:])
+          "retmax=0" in _zn and "确实没有匹配" not in _zn, _zn[:260])
     c_mesh = await attempt("c_mesh", count, '"Orthodontic Anchorage Procedures"[MeSH Terms]', default="")
     check("说明里推荐的 MeSH 示例真能查到东西（不是一段不存在的短语）",
-          "命中" in c_mesh and "命中 0 条" not in c_mesh, c_mesh[:160])
+          _num_of(c_mesh) > 0, c_mesh[:160])
     c_tag = await attempt("c_tag", count, "resorption[Title]", default="")
-    check("README 的字段标签示例真能查到东西", "命中" in c_tag and "命中 0 条" not in c_tag, c_tag[:160])
+    check("文档里的字段标签示例 resorption[Title] 真能查到东西", _num_of(c_tag) > 0, c_tag[:160])
+    _sd0 = getattr(search, "__doc__", "") or ""
+    check("工具说明里的字段标签示例仍是【不带引号】的正确形状",
+          "resorption[Title]" in _sd0 and '"resorption[Title]"' not in _sd0, _sd0[:120])
+    # 〔实测 2026-11-11，本会话〕09b1ecf 一度把 MeSH 那段写成「写错一个词的引号短语会静默变成 0 条」。
+    # 三种写法各跑一次 count 把它推翻了：加引号那种 0 条【有】warninglist.quotedphrasesnotfound 点名
+    # （不算静默，本工具会转述），真正没人提醒的是不加引号那次（回显被换成别的条件、照样给数）。
+    # 这条离线断言钉住纠正后的形状，防止「静默 0 条」被重新翻出来写进说明。
+    check("MeSH 说明不再把「加引号写错」说成静默，并保留「不加引号会被改写」这一支",
+          "静默变成 0 条" not in _sd0 and "quotedphrasesnotfound" in _sd0
+          and "equipment and supplies" in _sd0, _sd0[:200])
     check("as_json 的字符串形状仍由 _as_bool 处理（签名是 bool|str，pydantic 那关不拦）",
           _as_bool("True", "as_json") is True and _as_bool("off", "as_json") is False, "")
     l_up = await attempt("l_up", links, "37427694", to="PMC", default="")
@@ -2043,17 +2063,18 @@ async def _probe():
     check("0 条解释走「不相交」那一支，不说「确实没有匹配这篇」",
           "不相交" in _zero_explanation(_d_dis, 0) and "确实没有匹配这篇" not in _zero_explanation(_d_dis, 0),
           _zero_explanation(_d_dis, 0)[:200])
-    _d_dis_hit = _dd(f"a AND {q_2019} AND {q_reld}", 60, "两段 AND")
-    _d_dis_hit["count"] = "1"
+    _d_dis_hit = dict(_d_dis, count="1")
     _nt_hit = "\n".join(_note(_d_dis_hit))
-    check("同字段不相交但命中>0：不许说「也会是 0 条」，要说明这条查询仍有命中",
-          "也会是 0 条" not in _nt_hit and "仍有 1 条命中" in _nt_hit, _nt_hit[:300])
-    _d_rm0 = _dd("miniscrew")
-    _d_rm0["count"] = "313644"
-    _d_rm0["_retmax"] = 0
+    check("同字段不相交但命中>0：不许说「也会是 0 条」，也不许替 0 条下结论",
+          "也会是 0 条" not in _nt_hit and "不相交不等于 0 条" in _nt_hit, _nt_hit[:300])
+    _d_rm0 = dict(_dd("miniscrew"), _retmax=0)
     _z_rm0 = _zero_explanation(_d_rm0, 313644)
     check("retmax=0 的 0 条解释说清是「只要计数」，不说「确实没有匹配」",
           "retmax=0" in _z_rm0 and "确实没有匹配" not in _z_rm0, _z_rm0[:200])
+    _d_page = dict(_dd("x"), retmax="0", retstart="9", _retmax=5)
+    _z_page = _zero_explanation(_d_page, 8)
+    check("越页时 NCBI 回显 retmax=0，解释必须是「翻页越界」，不是「只要计数」",
+          "越过了命中总数" in _z_page and "retmax=0" not in _z_page, _z_page[:200])
 
     print("\n16) warninglist 解析（全离线：自己造 NCBI 的返回形状，不发请求）")
     fake = {"_term": "the and of", "querytranslation": "the and of", "count": "0",

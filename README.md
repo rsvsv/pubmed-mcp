@@ -194,7 +194,8 @@ python pubmed_mcp.py --check-key
    只剩一句 `Error executing tool <name>`。现在的基类写法与那条走包装层的回归断言见
    [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。〕
 2. **`0 条`必须说清是哪一种 0。** 真的没有匹配 / 词被当停用词忽略 / 整个引号短语在索引里不存在 /
-   两段同字段日期不相交 / `retstart` 越页——这几种各说各的话，不统一兜底成「PubMed 里没有匹配」。
+   两段同字段日期不相交 / `retstart` 越页 / `retmax=0`（只要计数、没要记录）——这几种各说各的话，
+   不统一兜底成「PubMed 里没有匹配」。
 3. **`field=` 走白名单，宁拦勿吞。** 实测 NCBI 对认不出的 `field` 静默忽略（拼错一个字母＝限定被吃掉、
    且没有任何提示）。`keywords`/`PMC Number`/`ISSN` 实测被整条忽略，`MeSH Terms`/`Publication Type`
    实测让 `esearch` 不返回 `count`——这五个都直接报错并给改写建议。
