@@ -1,8 +1,17 @@
-# 运行时依赖。不钉死上界：本工具用的只是 FastMCP 的 @mcp.tool() 装饰器、
-# anyio 的 to_thread / Lock / sleep / create_task_group，都是稳定 API。
+# 运行时依赖。
+#
+# 【已作废 2026-11-10，本会话干净 venv 实测证伪】这里原先写的是「不钉死上界：本工具用的只是
+# FastMCP 的 @mcp.tool() 装饰器、anyio 的 to_thread / Lock / sleep / create_task_group，
+# 都是稳定 API」。判断依据就是这句话，而它错了：
+#   `pip install git+https://github.com/rsvsv/pubmed-mcp.git` 把 mcp 解析成 2.3.0，
+#   随后 import 直接失败 —— 原文（mcp 2.3.0 自己抛出的提示）：
+#   "No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to
+#    MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed;
+#    ... or pin 'mcp<2' to keep running v1 code."
+#   原注释留着不删，是因为「看起来稳定的 API」正是这次翻车的根据；删了下次还会同样推过去。
 #
 # 作者开发时实测的版本（2026-11-08，本机 importlib.metadata）：
 #   mcp 1.29.0 / anyio 4.14.2 / pydantic 2.13.4
 # 〔来源：作者本机实测记录，未在 CI 上跨版本验证过 —— 别当成「已验证的最低版本」〕
-mcp>=1.2
+mcp>=1.2,<2
 anyio>=4

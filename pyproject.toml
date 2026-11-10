@@ -12,7 +12,11 @@ license = { text = "MIT" }
 authors = [{ name = "rsvsv" }]
 keywords = ["mcp", "pubmed", "ncbi", "eutils", "literature", "claude"]
 dependencies = [
-  "mcp>=1.2",
+  # 上界必须有。〔实测 2026-11-10，干净 venv〕`mcp>=1.2` 会解析到 mcp 2.3.0，而 2.x 里
+  # mcp.server.fastmcp 这个模块名已经没了（改名 mcp.server.mcpserver.MCPServer），
+  # 装完第一次跑就 ModuleNotFoundError。作者本机是 1.29.0，所以本机永远复现不出来。
+  # 想要 mcp 2.x 的兼容性不是没做：见 docs/mcp-sdk-v2.md。
+  "mcp>=1.2,<2",
   "anyio>=4",
 ]
 classifiers = [

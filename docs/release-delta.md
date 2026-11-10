@@ -28,8 +28,10 @@
   因此 `lit-tools` 这条路线在擦干净之前不作为发布副本。本仓库只带这一份 `.py` 加打包骨架。
 - **`requires-python = ">=3.10"` 未经跨版本验证**，本仓库没有 CI；作者机器只有 3.13。这条下限错了
   也不会有人发现——所以它是〔本项目口径〕，不是实测。
-- **`pip install git+https://…` 的完整依赖解析没测**（要连 PyPI）。本地只做了
-  `--no-deps` 安装 + 入口可跑，见下面验收记录。
+- **【已作废 2026-11-10，本会话实测推翻】**这一条原先写「`pip install git+https://…` 的完整依赖解析
+  没测，本地只做了 `--no-deps` 安装 + 入口可跑」。测了以后的结果是**装不上**：`mcp>=1.2` 解析到
+  mcp 2.3.0，而 2.x 没有 `mcp.server.fastmcp`。原话留着不删，是因为「`--no-deps` 装通了」当时
+  确实让我以为整条链路没问题——那句话正是这次漏检的根据。现状见 `docs/mcp-sdk-v2.md`。
 
 ## 验收记录（本会话，2026-11-10）
 
@@ -43,7 +45,9 @@
 | `pip install --no-deps .` 进临时 venv | 成功，产出 `pubmed-mcp.exe` |
 | `pubmed-mcp --check-key`（走安装后的入口） | rc=0，输出与直接跑文件一致 |
 | `pubmed-mcp` 不带参数 + 一条真实 MCP `initialize` | **握手成功**，回包 `serverInfo.name = "PubMed"`，stderr 干净 |
-| `pip install git+https://…` 的完整依赖解析 | **未测**（要连 PyPI） |
+| `pip install git+https://…` 的完整依赖解析 | **第一次实测就是坏的**：`mcp>=1.2` 解析到 mcp 2.3.0，装完 `ModuleNotFoundError`，rc=1 → 见 `docs/mcp-sdk-v2.md` |
+| 收成 `mcp>=1.2,<2` 后，干净 venv 重装（本地目录，走完整 PyPI 解析） | 解析到 **mcp 1.30.0**，PIP_RC=0；`pubmed-mcp --check-key` rc=0 |
+| 用 mcp SDK 的 stdio 客户端连**安装后的** `pubmed-mcp.exe` | `initialize` 成功、`tools/list` = 四个工具、`tools/call count("tooth resorption")` → `isError=False`，回文「命中 11918 条」＋NCBI 实际执行串 |
 
 ## 待办：两份代码要怎么合
 
