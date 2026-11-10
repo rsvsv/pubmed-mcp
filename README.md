@@ -154,7 +154,9 @@ PowerShell 5.1 的 **UTF-16LE + BOM** 或记事本的 **UTF-8 带 BOM**，两者
 于是 NCBI 判 key 无效、而错误文本里看不出是编码的锅）。现在按 BOM 判编码、再兜一层
 `utf-8-sig`、最后 `latin-1` 保命。**本仓库不含任何 key**，`~/.ncbi_api_key*` 也被 `.gitignore` 挡着。
 
-用 `--check-key` 自检（**它不发任何网络请求**）：
+用 `--check-key` 自检（**它不发任何网络请求**——但它是**跑在这个文件里**的：文件顶部要先 import 到
+MCP 服务类，所以 `mcp` 没装齐时你会先看到兼容层那句 `ImportError`（那句里直接给了该跑的安装命令），
+看不到 key 报告。这不是 bug，是「连依赖都没装对」时唯一有用的那句话）：
 
 ```bash
 python pubmed_mcp.py --check-key

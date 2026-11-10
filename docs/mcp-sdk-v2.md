@@ -74,15 +74,21 @@ MCPServer.tool(self, name: 'str | None' = None, title: ..., description: ...,
 | `@mcp.tool()` 裸装饰 | 支持 | 支持（参数全有默认值） | 兼容〔实测：`tools/list` 四个工具都在〕 |
 | `mcp.run()` 默认 stdio | 默认 stdio | `transport='stdio'` 是默认值 | 兼容〔实测：客户端握手成功〕 |
 
-## 2.x 确实变了的东西（都在客户端侧，本服务不读）
+## 2.x 确实变了的东西（四条都在**客户端回包**里；本服务代码不读这些字段）
 
-〔以下四条均为本会话在 mcp 2.3.0 环境里的实测观察，逐条来自客户端回包〕
+〔以下四条均为本会话在 mcp 2.3.0 环境里的实测观察，逐条来自客户端回包。〕
+
+**「本服务不读」这句本身差点害过我**：它当时被我当成「所以 2.x 的改动与我无关」，而 2.x 在
+**服务端**这一侧也动了手脚——异常文本会被剥，见下面那一节。所以这个标题只说「这四条不影响本文件」，
+**不要**读成「2.x 的变化止于客户端」；凡是「我不读那个字段，所以那个改动与我无关」这种推理，
+先问一遍它有没有在服务端侧也改了东西。README 里那条【已作废】就是这句的存档。
 
 1. 客户端结果的字段名换成 snake_case：`InitializeResult` 上是 `server_info`，不再是
    `serverInfo`（我第一版测试脚本因此炸了一次）。
 2. `protocolVersion` 回 `2025-11-25`（1.29.0 时代本会话见过 `2024-11-05`；这是协商值，
    随客户端与 SDK 版本变，别把它当常量写进任何判据）。
-3. `serverInfo.version` 在 2.x 下是**空串**（`MCPServer.__init__` 的 `version` 默认 `''`），
+3. `serverInfo.version` 在 2.x 下是**空串**（`MCPServer.__init__` 的 `version` 默认 `''`——
+   注意这个空串是**服务端产出**的，只是由客户端读到，所以它不在「本服务不读所以与我无关」那一类里），
    而 1.x 下它跟着 SDK 版本走（装 1.30.0 就报 `PubMed 1.30.0`）。**所以 `serverInfo.version`
    不是本包的 `version`**（两者会不一样，别拿它当本包版本）：查本包版本请用
    `python -c "import importlib.metadata as m; print(m.version('pubmed-mcp'))"`。
