@@ -20,9 +20,9 @@ pip install git+https://github.com/rsvsv/pubmed-mcp.git
 pubmed-mcp --check-key
 ```
 
-`--check-key` 应返回 rc=0 并打印 key 形状/限速档/依赖版本。要是它报
-`No module named 'mcp.server.fastmcp'`，说明你的环境里是 mcp 2.x —— 本包把上界钉在 `<2`
-（原因见下面「版本要求」），重装一次让它降下来就好。
+`--check-key` 应返回 rc=0 并打印 key 形状/限速档/依赖版本。mcp 1.x 与 2.x 都支持；要是它报
+`拿不到 MCP 服务类`，说明你环境里的 mcp 既不是一代也不是二代，`pip install "mcp>=1.2,<3"` 即可
+（缘由见下面「版本要求」与 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)）。
 
 然后告诉 Claude Code 去哪儿找它 —— 在 `~/.claude.json` 里加：
 
@@ -83,12 +83,21 @@ claude mcp add pubmed -- pubmed-mcp
 依赖：Python 标准库 + `mcp`（FastMCP 随它一起装）+ `anyio`。HTTP 走 stdlib `urllib`，
 所以除这两个之外没有别的第三方依赖〔本 README 逐字对照源码 import 数出，2026-11-10〕。
 
-**`mcp` 被钉在 `>=1.2,<2`，这个上界不是保守，是必须的。**
+**`mcp` 的区间是 `>=1.2,<3`：1.x 和 2.x 都实测支持，3.x 没验过所以挡住。**
 〔实测 2026-11-10，干净 venv〕原先只写 `>=1.2` 时，`pip install git+https://…` 会解析到
 `mcp 2.3.0`，而 2.x 里 `mcp.server.fastmcp` 这个模块名已经没了 —— 装完第一次运行就
 `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`。作者本机是 1.29.0，
 **这类坑在作者机器上永远复现不出来**，所以本仓库现在的验收一律用不带系统 site-packages 的
-干净 venv 跑 `pip install`。要 mcp 2.x 的兼容怎么做，见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。
+干净 venv 跑 `pip install`。
+
+源码里因此加了一层 SDK 兼容层（1.x 拿 `FastMCP`，2.x 拿 `MCPServer`），两条通路各跑过完整
+`--probe`：1.29.0/1.30.0 与 2.3.0 都是 **138 通过 / 0 失败**〔实测 2026-11-10〕。
+v2 变了的那些（客户端字段改 snake_case、`serverInfo.version` 变空串、多 `structuredContent`）
+都在**客户端侧**，本服务不读，所以不影响。细节与逐字签名见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。
+
+新环境里 `pip install` 会拿范围内的最高版（眼下是 mcp 2.3.0）。想固定走 1.x：
+`pip install "mcp<2"`。两代本仓库都跑过全量 `--probe`，但**你的其它 MCP 应用如果要求
+`mcp<2`，pip 会照它的约束留手**——这也是上界写成 `<3` 而不是钉死某一版的原因。
 
 作者开发时实测 2026-11-08 的版本是 `mcp 1.29.0 / anyio 4.14.2 / pydantic 2.13.4`〔实测，本机
 `importlib.metadata`；未在跨版本环境复核〕。

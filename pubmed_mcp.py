@@ -1092,7 +1092,27 @@ async def _efetch_all(pmids):
 
 
 # ---------- MCP 工具 ----------
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+# SDK 兼容层。〔实测 2026-11-10，本会话两条通路各跑一遍完整 --probe，都是 138 通过 / 0 失败〕
+#   mcp 1.x：  mcp.server.fastmcp.FastMCP  → 1.29.0（本机）与 1.30.0（干净 venv）
+#   mcp 2.x：  该模块名【不存在】，改名 mcp.server.mcpserver.MCPServer → 2.3.0
+# 只需要这一个名字，因为本文件用到的三处 v1/v2 兼容：`FastMCP(名字)` 构造（v2 第一参数仍是
+# name）、`@mcp.tool()` 裸装饰（v2 的 tool() 签名见 docs/mcp-sdk-v2.md）、`mcp.run()` 默认 stdio。
+# v2 真正改的是【客户端侧】：字段名换 snake_case、serverInfo.version 变空串、结果多了
+# structuredContent、protocolVersion 成 2025-11-25 —— 本文件一处都不读，所以不受影响。
+# 〔这条兼容层之前，`mcp>=1.2` 会让别人的第一次安装直接 ModuleNotFoundError：作者本机是 1.29.0，
+#  在自己机器上永远复现不出来。别把「我机器能跑」当「装得上」的证据。〕
+try:
+    from mcp.server.fastmcp import FastMCP                    # noqa: E402  mcp 1.x
+except ModuleNotFoundError:                                   # v2 抛的就是 ModuleNotFoundError，不是 ImportError
+    try:
+        from mcp.server.mcpserver import MCPServer as FastMCP  # noqa: E402  mcp 2.x
+    except ModuleNotFoundError as _sdk_err:
+        raise ImportError(
+            "拿不到 MCP 服务类。本文件认 mcp 1.x（mcp.server.fastmcp）和 2.x"
+            "（mcp.server.mcpserver.MCPServer），两个都没找到就说明你装的 mcp 不在这两代里。"
+            "先跑 `pip install \"mcp>=1.2,<3\"` 再试；还不行就把 `pip show mcp` 的输出贴到 "
+            "https://github.com/rsvsv/pubmed-mcp/issues （这里不会带上你的 API key）。"
+        ) from _sdk_err
 
 mcp = FastMCP("PubMed")
 
@@ -2022,6 +2042,11 @@ async def _probe():
         globals()["_KEY"] = _sav
     check("_mask 不留任何 key 片段（定长掩码；短 key 也掩，旧写法这两条都漏）",
           ("a1" * 18) not in _m and "***" in _m, _m[:60])
+    # 〔发布版新增，离线〕SDK 兼容层自己也得有断言：「本文件同时支持 mcp 1.x 与 2.x」是一句
+    # 会被下一次改写悄悄作废的承诺，没有断言就等着它过期（这个文件已经有一条这样的过期记录）。
+    check("SDK 兼容层拿到的是可用服务类（能构造、有 tool、有 run）",
+          callable(FastMCP) and hasattr(FastMCP, "tool") and hasattr(mcp, "run"),
+          "%s.%s" % (FastMCP.__module__, FastMCP.__name__))
     # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
     #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
     _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"

@@ -1,8 +1,8 @@
-# 为什么把 `mcp` 钉在 `<2`，以及要支持 mcp 2.x 还差什么
+# mcp SDK 1.x / 2.x：这仓库为什么带一层兼容层
 
 这份文件存在的原因：本仓库的头条安装命令在**作者机器上永远测不出这个坑**。
 
-## 发生了什么（全部为本会话干净 venv 实测，2026-11-10）
+## 先说发生了什么（本会话干净 venv 实测，2026-11-10）
 
 用一个**不带 `--system-site-packages`** 的临时 venv，照 README 原样执行
 `pip install git+https://github.com/rsvsv/pubmed-mcp.git`（当时的声明是 `mcp>=1.2`）：
@@ -19,49 +19,89 @@ rc=1
 
 〔原文＋位置：上面那段是 **mcp 2.3.0 自己抛出的错误文本**，逐字粘贴，不是转述。〕
 
-作者本机是 `mcp 1.29.0`，`from mcp.server.fastmcp import FastMCP` 一直好用；
-之前那次 `pip install --no-deps .` 也没暴露它，因为它复用了系统 site-packages 里的 1.29.0。
+作者本机是 `mcp 1.29.0`，`from mcp.server.fastmcp import FastMCP` 一直好用；更早那次
+`pip install --no-deps .` 也没暴露它，因为它复用的是系统 site-packages 里的 1.29.0。
 **教训**：只在本机验过的「依赖没问题」等于没验。本仓库现在的验收一律走干净 venv。
 
-## 已按事实修好的部分
+## 现在的方案
 
-| 项 | 状态 |
-|---|---|
-| `pyproject.toml` / `requirements.txt` 收成 `mcp>=1.2,<2` | 已改 |
-| 干净 venv `pip install` 解析到 mcp **1.30.0**，rc=0 | 〔实测 2026-11-10〕 |
-| 安装后的 `pubmed-mcp --check-key` rc=0 | 〔实测 2026-11-10〕 |
-| 用 mcp SDK 的 stdio 客户端连安装后的服务：`initialize` 成功、`tools/list` 返回四个工具、`tools/call count` 真拿到 NCBI 命中数 | 〔实测 2026-11-10，`isError=False`〕 |
-| 1.29.0 与 1.30.0 之间有无行为差异 | **未测**（本机只有 1.29.0，1.30.0 只跑了上面三项） |
+- 源码里一层 SDK 兼容层：先取 1.x 的 `FastMCP`，取不到就取 2.x 的
+  `mcp.server.mcpserver.MCPServer`；两代都没有就抛一句**说清该怎么办**的 `ImportError`
+  （而不是让别人的终端停在一条裸 `ModuleNotFoundError` 上）。
+- 依赖区间 `mcp>=1.2,<3`。上界留到 `<3` 而不是干脆不写：3.x 是没验过的下一代，
+  这次的教训正是「把没测过的版本当默认」。
+- 兼容层自己挂了一条 `--probe` 离线断言（「拿到的是可用服务类：能构造、有 `tool`、有 `run`」）。
+  没有断言的承诺会被下一次改写悄悄作废——这个文件已经有一条这样的过期记录。
 
-## 一个会误导人的细节
+## 门试：两条通路都跑过全量回归
 
-`initialize` 回包里的 `serverInfo.version` 跟着 **mcp SDK** 的版本走：装了 1.30.0 就报
-`PubMed 1.30.0`〔实测，与 `pyproject.toml` 里 `version = "1.0.0"` 无关〕。
-别人提 issue 时贴那串数字不代表本包版本——本包版本请用
-`python -c "import importlib.metadata as m; print(m.version('pubmed-mcp'))"` 查。
-⚠️【待确认】这是 FastMCP 的默认行为还是有参数可调，本会话没查源码。
+| 通路 | mcp 版本 | 结果 |
+|---|---|---|
+| 作者本机（1.x） | 1.29.0 | 138 通过 / 0 失败，89 次 HTTP 请求，rc=0〔实测 2026-11-10；那轮还没有第 4 条断言〕 |
+| 干净 venv（1.x） | 1.30.0 | `pip install` rc=0；`--check-key` rc=0；stdio 客户端 `tools/call count` → `isError=False`、「命中 11918 条」；**全量 `--probe` 139 通过 / 0 失败，89 次请求**〔实测〕 |
+| 临时 venv（2.x），**外部注入别名** | 2.3.0 | 138 通过 / 0 失败，89 次请求〔实测〕——这一步的产出就是「要不要加兼容层」的决定依据 |
+| 临时 venv（2.x），**走源码里的兼容层** | 2.3.0 | **139 通过 / 0 失败，89 次请求，rc=0**；`tools/list` 四个工具的 docstring 全在（`search` 描述 3392 字符）〔实测〕 |
 
-## 要支持 mcp 2.x，需要哪些证据（目前一条都没有落定）
+最后两轮是**串行**跑的，中间隔 8 秒：两轮并发会在限速上互相干扰，那样 FAIL 归因不了。
+断言数 138 → 139 的唯一原因是新增的兼容层断言（第 4 条），不是有人改了判据。
 
-下面是**待证问题**，不是结论。想清楚再动代码，别拿「改个 import 名」当方案：
+## mcp 2.3.0 的逐字签名（本会话从 site-packages 直接读，不是网页摘要）
 
-1. ⚠️【待确认】`mcp.server.mcpserver.MCPServer` 的构造签名与 `FastMCP(name, instructions=…)` 是否一致。
-2. ⚠️【待确认】`@server.tool()` 的参数（`name`/`description`/`structured_output` 之类）有没有变——
-   本文件的四个工具全靠装饰器 + docstring 生成给客户端的说明，签名一变，工具说明就静默过期。
-3. ⚠️【待确认】`mcp.run()` 的默认传输与 stdio 行为是否不变。
-4. ⚠️【待确认】v2 里 docstring → tool description 的机制是否还在（本文件依赖它，见 README 的
-   Behavior contract 第 4 条那条「说明过期＝行为过期」的断言）。
-5. ⚠️【待确认】若加 `try: v1 import / except: v2 import` 的兼容层，`anyio` 与 pydantic 的最低版本
-   要不要一起改。
+```
+MCPServer.__init__(self, name: 'str | None' = None, title: ..., description: ...,
+    instructions: 'str | None' = None, website_url: ..., icons: ..., version: 'str' = '',
+    ..., log_level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO', ...)
 
-**为什么现在不加兼容层**：〔本项目口径，不是实测结论〕宁可只支持 1.x，依据就是上面那五条目前
-全是【待确认】；在没有证据的环境里写 shim，风险是「装上了但工具说明静默过期」，本仓库不要一个
-没验过的「也支持 2.x」。真要支持，得在装了
-mcp 2.3.0 的环境里把 `tools/list` 与四个工具各一次真调用跑通，才算数。
+MCPServer.run(self, transport: Literal['stdio','sse','streamable-http'] = 'stdio', **kwargs) -> 'None'
 
-## 如果你的环境已经有 mcp 2.x
+MCPServer.tool(self, name: 'str | None' = None, title: ..., description: ...,
+    annotations: 'ToolAnnotations | None' = None, icons: ..., meta: ...,
+    structured_output: 'bool | None' = None) -> Callable[[_CallableT], _CallableT]
+```
 
-`pip install` 本包会把 mcp 降到 <2，这可能影响你环境里别的 mcp 应用。两条路：
+本文件对 SDK 只用到三件事，所以两代都能跑：
 
-- 给本服务单独建一个 venv（或 `pipx`/`uv tool`），别和别的 mcp 应用共用环境；
-- 或者按上面五条做完验证、把兼容层加出来并实测通过——欢迎提 PR，但请附上干净 venv 的输出。
+| 用到的 | 1.x | 2.x | 判定 |
+|---|---|---|---|
+| `FastMCP("PubMed")`（一个位置参数） | `name` 是第一参数 | `name` 仍是第一参数 | 兼容〔签名如上〕 |
+| `@mcp.tool()` 裸装饰 | 支持 | 支持（参数全有默认值） | 兼容〔实测：`tools/list` 四个工具都在〕 |
+| `mcp.run()` 默认 stdio | 默认 stdio | `transport='stdio'` 是默认值 | 兼容〔实测：客户端握手成功〕 |
+
+## 2.x 确实变了的东西（都在客户端侧，本服务不读）
+
+〔以下四条均为本会话在 mcp 2.3.0 环境里的实测观察，逐条来自客户端回包〕
+
+1. 客户端结果的字段名换成 snake_case：`InitializeResult` 上是 `server_info`，不再是
+   `serverInfo`（我第一版测试脚本因此炸了一次）。
+2. `protocolVersion` 回 `2025-11-25`（1.29.0 时代本会话见过 `2024-11-05`；这是协商值，
+   随客户端与 SDK 版本变，别把它当常量写进任何判据）。
+3. `serverInfo.version` 在 2.x 下是**空串**（`MCPServer.__init__` 的 `version` 默认 `''`），
+   而 1.x 下它跟着 SDK 版本走（装 1.30.0 就报 `PubMed 1.30.0`）。**所以 `serverInfo.version`
+   不是本包的 `version`**（两者会不一样，别拿它当本包版本）：查本包版本请用
+   `python -c "import importlib.metadata as m; print(m.version('pubmed-mcp'))"`。
+   ⚠️【待确认】要不要在本文件里显式传 `version="1.0.0"`——`FastMCP` 1.x 有没有这个关键字
+   本会话没核，没核就不加。
+4. 返回 str 的工具调用在 2.x 下还多出一个非空的 `structuredContent`。
+   ⚠️【待确认】它的生成规则与本文件的输出文本会不会分叉，没查。
+
+## 还没验的（别把这份文件当成「2.x 全支持」）
+
+- ⚠️【待确认】`anyio` 与 `pydantic` 的真实最低版本。区间写的是 `anyio>=4`，
+  但没在低版本上跑过；实测过的组合只有 `mcp 1.29.0 / anyio 4.14.2 / pydantic 2.13.4`（本机）
+  与 `mcp 2.3.0 / anyio 4.16.0 / pydantic 2.14.3`（临时 venv）。
+- ⚠️【待确认】mcp 1.29.0 与 1.30.0 之间**逐项**有无行为差异。两版都跑过全量 `--probe`
+  且都是 0 失败，但这只能说明「本文件用到的那三处没变」，不等于两个版本等价。
+- ⚠️【待确认】`requires-python >=3.10` 仍是〔本项目口径〕：没有 CI，作者机器只有 3.13。
+- **没测**：`fetch_abstracts` 与 `links` 在 2.x 下的真调用（`--probe` 覆盖它们，且
+  2.3.0 下 138 条全过，但那两条走的是直接函数调用，不走 MCP 结果转换这一层）。
+
+## 想自己复现这个坑
+
+别在作者那种机器上复现——系统 site-packages 里是 1.29.0，装不出来。要这样：
+
+```bash
+python -m venv /tmp/t && /tmp/t/Scripts/python.exe -m pip install "mcp==2.3.0"
+/tmp/t/Scripts/python.exe -c "import mcp.server.fastmcp"     # 想看到上面那条错误
+```
+
+复现编码类 bug 时**别加 `-I`**：隔离模式会忽略 `PYTHONIOENCODING`，结论会反过来。

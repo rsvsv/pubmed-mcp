@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pubmed-mcp"
-version = "1.0.0"
+version = "1.1.0"   # 1.0.0 → 1.1.0：加了 mcp 1.x/2.x 兼容层，依赖区间从 <2 放开到 <3
 description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,11 +12,13 @@ license = { text = "MIT" }
 authors = [{ name = "rsvsv" }]
 keywords = ["mcp", "pubmed", "ncbi", "eutils", "literature", "claude"]
 dependencies = [
-  # 上界必须有。〔实测 2026-11-10，干净 venv〕`mcp>=1.2` 会解析到 mcp 2.3.0，而 2.x 里
-  # mcp.server.fastmcp 这个模块名已经没了（改名 mcp.server.mcpserver.MCPServer），
-  # 装完第一次跑就 ModuleNotFoundError。作者本机是 1.29.0，所以本机永远复现不出来。
-  # 想要 mcp 2.x 的兼容性不是没做：见 docs/mcp-sdk-v2.md。
-  "mcp>=1.2,<2",
+  # 上界必须有，而且它一度是错的。〔实测 2026-11-10，干净 venv〕原先只写 `mcp>=1.2`，pip 解析到
+  # mcp 2.3.0，而 2.x 把 mcp.server.fastmcp 删了 —— 别人第一次安装就 ModuleNotFoundError。
+  # 作者本机是 1.29.0，在自己机器上这条永远复现不出来。
+  # 现在放开到 `<3`：2.x 由源码里的 SDK 兼容层支持（v1 与 v2 两条通路各跑过完整 --probe，
+  # 逐字签名见 docs/mcp-sdk-v2.md）。3.x 是没验过的下一代，宁可在解析阶段挡掉，
+  # 也不让别人的默认安装走进没测过的版本 —— 这次翻车就是这么来的。
+  "mcp>=1.2,<3",
   "anyio>=4",
 ]
 classifiers = [
