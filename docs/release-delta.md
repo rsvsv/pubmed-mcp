@@ -21,6 +21,7 @@
 | 10 | 同上的注释 | 订正开发版那句「cp936 与 cp1252 两种都复现 rc=1」，并补一条：**`-I` 会忽略 `PYTHONIOENCODING`，复现此 bug 别加 `-I`** | `repro-cp936-claim-too-wide` / `repro-dash-i-disables-env`。本会话实测：带 `-I` 时 `sys.stdout.encoding = utf-8`，不带是 `gbk`——所以拿 `-I` 验证会得出「旧版也没问题」的假结论。`--check-key` 的输出不含 `⚠️`，旧写法在 cp936 下其实 rc=0，两种码页都炸的是 `--probe`/`--selftest`/`--concurrent`。 |
 | 11 | :1094-1114 SDK 兼容层 | `mcp.server.fastmcp.FastMCP`（1.x）取不到就取 `mcp.server.mcpserver.MCPServer`（2.x）；两代都取不到就抛**带处置命令**的 `ImportError`，不让别人停在一条裸 `ModuleNotFoundError` 上 | 本会话干净 venv 实测：原先 `mcp>=1.2` 会解析到 mcp 2.3.0，装完第一次运行即崩，而作者本机 1.29.0 永远复现不出来。逐字签名与两条通路的回归结果见 `docs/mcp-sdk-v2.md`。**这一层开发版没有**——它只在「发给别人装」的场景下才有意义，所以是发布专用改动。 |
 | 12 | 探针 :2047 | 第 4 条新增离线断言：兼容层拿到的是可用服务类（可构造、有 `tool`、有 `run`） | 「同时支持 mcp 1.x 与 2.x」是一句会被下一次改写悄悄作废的承诺；没有断言就等于没支持。断言里带 `FastMCP.__module__`，跑起来能直接看出走的是哪一代。 |
+| 13 | 模块 docstring :8-12 与 README 第 9 条 | 把「FastMCP 对非 async 工具是裸 `return fn(**kwargs)`、没有 threadpool」限定成 **1.x 行为**，并写入 2.3.0 的实测：该文件挪到 `mcp/server/mcpserver/utilities/func_metadata.py`，非 async 分支变成 `await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))` | 本会话读 mcp 2.3.0 源码实测。原断言不删、只加版本范围——因为它后面本来就挂了一句对冲（「SDK 若改成 threadpool，本文件的 async 写法依然正确，不必回退」），而这次正是那句对冲被触发的时刻。开发版没有这条。 |
 
 ## 这一版没做的事（免得被当成做了）
 
@@ -54,6 +55,8 @@
 | `pip install git+https://…` 的完整依赖解析 | **第一次实测就是坏的**：`mcp>=1.2` 解析到 mcp 2.3.0，装完 `ModuleNotFoundError`，rc=1 → 见 `docs/mcp-sdk-v2.md` |
 | 收成 `mcp>=1.2,<2` 后，干净 venv 重装（本地目录，走完整 PyPI 解析） | 解析到 **mcp 1.30.0**，PIP_RC=0；`pubmed-mcp --check-key` rc=0 |
 | 用 mcp SDK 的 stdio 客户端连**安装后的** `pubmed-mcp.exe` | `initialize` 成功、`tools/list` = 四个工具、`tools/call count("tooth resorption")` → `isError=False`，回文「命中 11918 条」＋NCBI 实际执行串 |
+| **发布件** `b1c1851` 走 git+https 的干净 venv 全流程 | 默认解析到 **mcp 2.3.0**（区间已是 `<3`）、`pubmed-mcp 1.1.0`；`--check-key` rc=0；stdio 客户端：`version=''`、`protocol=2025-11-25`、四个工具描述长度 3392/667/520/972、`count` → `isError=False`；**site-packages 里那份与已发布 blob 逐字节一致**（sha256 前 16 位 `7c7b83bb767173fc`） |
+| 上一条为什么值得单独记 | 第一次比哈希是**对不上**的——因为我在装完之后又改了工作区的 docstring。拿 `git show <blob>` 当对照才成立。写下来是因为「我自己的时序」也会造出假信号 |
 
 ## 待办：两份代码要怎么合
 

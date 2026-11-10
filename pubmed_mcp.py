@@ -6,6 +6,10 @@
   mcp/server/fastmcp/utilities/func_metadata.py 里非 async 分支是裸 `return fn(**kwargs)`，
   没有 threadpool —— 也就是 sync 工具会占住事件循环，一次 40s 的 efetch 能把整个 server 冻住。
   SDK 升级后该分支若改成 threadpool，本文件的 async 写法依然正确，不必回退。
+  〔实测 2026-11-10，这句话被 mcp 2.3.0 触发了：上面那段「裸 return fn(**kwargs)、没有 threadpool」
+  是 1.x 的行为；2.x 里该文件挪到 mcp/server/mcpserver/utilities/func_metadata.py，非 async 分支变成
+  `return await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))`。所以那句「不必回退」
+  现在有了证据：本文件的 async 写法在两代 SDK 下都不是占住事件循环的那一方。〕
 
 为什么自己写（对比 pubmedmcp 0.1.4 + pubmedclient 0.2.0）——【已不可就地复核】：
   〔实测于本文件初版；2026-11-08 复核：本机 pip show 两个包均 not found、`where pubmedmcp` 无结果、

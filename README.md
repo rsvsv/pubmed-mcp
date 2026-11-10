@@ -168,9 +168,13 @@ python pubmed_mcp.py --check-key
    这一条也照实说。
 8. **PMID 解析不猜。** `1,234,567` 这种带千位分隔符的形（从 Excel 复制一列号很常见）直接拦——
    旧写法会切成 3 个真实存在的 PMID，抓回三篇不相干文献、条数还看着正常。
-9. **async 工具 + 网络调用出事件循环。** FastMCP 对非 async 工具是裸 `return fn(**kwargs)`、
+9. **async 工具 + 网络调用出事件循环。** mcp **1.x** 对非 async 工具是裸 `return fn(**kwargs)`、
    没有 threadpool，一次 40s 的 `efetch` 能把整个 server 冻住〔依据：作者读的
-   `mcp/server/fastmcp/utilities/func_metadata.py`；SDK 若改成 threadpool，本文件写法依然正确〕。
+   `mcp/server/fastmcp/utilities/func_metadata.py`〕。
+   〔实测 2026-11-10：这一条**只在 1.x 成立** —— 2.3.0 把该文件挪到
+   `mcp/server/mcpserver/utilities/func_metadata.py`，非 async 分支改成
+   `await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))`，也就是 SDK 自己开始卸载了。
+   本服务四个工具全是 `async def`，两代下都不会是占住事件循环的那一方，所以写法照旧正确、不回退。〕
 10. **key 一个字符都不外泄。** 错误文本里只报 key 长度不报片段；`_mask` 无条件整串替换成定长掩码
     （旧写法既留前 4 位、又只在长度 > 8 时才掩）。〔已知边界：key 以 URL 百分号编码形态出现在
     报错文本里时仍替换不到——过度设计，记着当边界，别当已修好。〕
