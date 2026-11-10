@@ -1,0 +1,8 @@
+# 运行时依赖。不钉死上界：本工具用的只是 FastMCP 的 @mcp.tool() 装饰器、
+# anyio 的 to_thread / Lock / sleep / create_task_group，都是稳定 API。
+#
+# 作者开发时实测的版本（2026-11-08，本机 importlib.metadata）：
+#   mcp 1.29.0 / anyio 4.14.2 / pydantic 2.13.4
+# 〔来源：作者本机实测记录，未在 CI 上跨版本验证过 —— 别当成「已验证的最低版本」〕
+mcp>=1.2
+anyio>=4

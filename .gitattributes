@@ -1,0 +1,4 @@
+# 统一按 LF 存仓库：这个 .py 里有大量中文注释，跨平台换行符不一致会让 diff 满屏变红。
+* text=auto eol=lf
+*.png binary
+*.pdf binary
