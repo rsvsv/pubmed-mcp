@@ -2117,6 +2117,26 @@ async def _probe():
         _wtxt = str(_we)
     check("拦截理由要能穿过 SDK 工具包装层送到调用方（v2 会剥掉非 ToolError 的文本）",
           ("可用值" in _wtxt) and ("journal" in _wtxt), _wtxt[:150])
+    # 〔2026-11-11 补齐，第 6/7/8 条〕上面那条只锁了 `search` 一个工具，另外三个当时只有
+    # 「一次性实测」。实测过 ≠ 有回归锁：下次谁把 NcbiError 的基类改回去，探针只会看见 search
+    # 一条红，count / fetch_abstracts / links 三条照样悄悄通过，而陌生人踩到的恰好是其中任意一条。
+    # 入参一律选【发请求之前就抛】的分支（field 白名单 / PMID 解析 / 库名白名单都在联网前），
+    # 所以这三条不新增 HTTP，本轮请求数仍是 89。
+    for _wt, _wa, _wn in (("count", {"term": "x", "field": "ISSN"}, "ISSN"),
+                          ("fetch_abstracts", {"pmids": "abc"}, "不是 PMID"),
+                          ("links", {"pmids": "37427694", "to": "PMCID"}, "不是本工具支持的库")):
+        try:
+            _w2 = str(await mcp.call_tool(_wt, _wa))
+        except Exception as _w2e:
+            _w2 = str(_w2e)
+        check("包装层文本完整：%s（与 search 同一条通路，不是一次性实测）" % _wt,
+              _wn in _w2, _w2[:120])
+    # 〔第 9 条〕把上面那条改口的依据钉住：库名大小写不敏感。纯函数，离线，不发请求。
+    # 依据：实测 links(to="PMC") 走的是【成功】分支（回 pubmed_pmc=PMC10461258），
+    # 而旧报错却写「不认 'PMC'」——那句在它自己的报错里反证了自己（见 _check_db 上方的已作废说明）。
+    check("库名大小写不敏感：_check_db('PMC') 与 _check_db(' Gene ') 都归一到库名",
+          _check_db("PMC") == "pmc" and _check_db(" Gene ") == "gene",
+          "_check_db('PMC')=%s" % _check_db("PMC"))
     # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
     #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
     _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"

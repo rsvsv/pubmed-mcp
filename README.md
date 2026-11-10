@@ -111,8 +111,13 @@ claude mcp add pubmed -- pubmed-mcp
 干净 venv 跑 `pip install`。
 
 源码里因此加了一层 SDK 兼容层（1.x 拿 `FastMCP`，2.x 拿 `MCPServer`），两条通路各跑过完整
-`--probe`：现在是 **140 通过 / 0 失败**〔实测 2026-11-11，mcp 1.30.0 与 2.3.0 各一轮，串行跑、
-中间隔 8 秒，避免两轮在限速上互相干扰〕。
+`--probe`：现在是 **144 通过 / 0 失败**〔实测 2026-11-11，mcp 1.30.0 与 2.3.0 各一轮，串行跑、
+中间隔 8 秒，避免两轮在限速上互相干扰；两轮都仍是 **89 次** HTTP 请求——新增的几条断言全部离线，
+它们的入参在联网之前就被拦下〕。
+其中四条**专门走 SDK 的工具包装层**（`search` / `count` / `fetch_abstracts` / `links` 各一条）。
+为什么值得为它们各写一条：2.x 会把非 `ToolError` 异常的文本剥掉，这条通路一旦退化，四个工具的
+「为什么被拦」会同时缩成一句没有信息的 `Error executing tool xxx`，而探针其余断言都直调协程、
+结构上看不见这一层。〔实测依据见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)〕
 
 **【已作废 2026-11-11，本会话 A/B 实测推翻】**这一段原先写「v2 变了的那些（客户端字段改
 snake_case、`serverInfo.version` 变空串、多 `structuredContent`）都在**客户端侧**，本服务不读，
