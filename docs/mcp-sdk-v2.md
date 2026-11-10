@@ -166,6 +166,11 @@ tools/call count(field="ISSN")                             → isError=True，24
 〔实测 2026-11-11，后台任务 `b1850yh8w`；该轮仓库 blob 与工作区 sha256 前 12 位同为
 `7b090831f034`。〕
 
+推上第 16 项文案改动之后，同一条命令又跑了一遍（commit `7468e55`，sha `d804df6810e6`），这次把
+**四个工具**的包装层文本一起收：`search` 323 / `count` 244 / `fetch_abstracts` 77 / `links` 130 字符，
+`links(to="PMC")` 反向对照 `isError=False`；装出来的那份 `.py` 与仓库 blob 逐字节同为
+`d804df6810e6`〔实测 2026-11-11，后台任务 `bkeusabph`，`_pubfinal.log`〕。
+
 ## 还没验的（别把这份文件当成「2.x 全支持」）
 
 - ⚠️【待确认】`anyio` 与 `pydantic` 的真实最低版本。区间写的是 `anyio>=4`，
