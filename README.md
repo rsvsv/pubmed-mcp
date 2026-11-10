@@ -36,6 +36,22 @@ pubmed-mcp --check-key
 
 在 Claude Code 里跑 `/mcp`，确认 `pubmed` 那一行是连上的，不是 ✘。
 
+**上面那段 `"command": "pubmed-mcp"` 只在「命令真能在 PATH 里被找到」时成立。**
+〔本会话 2026-11-11 在作者机器实测〕分三种情况：
+
+- **装进虚拟环境但没激活** → 裸命令**找不到**（实测 `command -v pubmed-mcp` 无输出）。Claude Code
+  不会替你先激活 venv，所以配置里必须写**绝对路径**：
+  Windows `<venv>\Scripts\pubmed-mcp.exe`，类 Unix `<venv>/bin/pubmed-mcp`。
+  不知道落在哪就跑 `python -c "import sys;print(sys.executable)"` 看你在哪个解释器里装的。
+- **装进系统 Python（非 `--user`）** → 作者机器上那个 `Scripts` 目录**确实在 PATH 里**
+  （实测 PATH 第 20 项），所以裸命令可用。你的机器不一定，自己确认：
+  `where pubmed-mcp`（cmd）或 `command -v pubmed-mcp`（bash）。
+- **`pip install --user`** → 落点是 `%APPDATA%\Python\Python<XY>\Scripts`，
+  **这个目录默认在不在 PATH 里，本仓库未核实**（作者机器上该目录不存在，测不了）。
+  别照抄这一种，要么用上面两种，要么先用 `where pubmed-mcp` 确认命令敲得到。
+
+零安装路线（下面那节）不受这个影响，因为配置里写的就是绝对路径。
+
 **不想装包也能用**（零安装，直接跑文件）：
 
 ```bash
