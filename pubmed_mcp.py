@@ -168,6 +168,7 @@ class NcbiError(_SdkToolError, RuntimeError):
 
 
 _KEY = None
+_KEY_SOURCE = ""      # 供 --check-key 说清 key 到底从哪来（环境变量 / 哪个文件 / 无）
 
 
 def _decode_key_bytes(raw):
@@ -186,7 +187,12 @@ def _decode_key_bytes(raw):
     也不要在这行抛 traceback）。BOM 一律 lstrip 掉。
     """
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        text = raw.decode("utf-16")                    # PowerShell 默认
+        try:
+            text = raw.decode("utf-16")                # PowerShell 默认
+        except UnicodeDecodeError:
+            # 〔实测 2026-11-11〕截断的奇数长度（如 FF FE 41）会在这一行抛裸 UnicodeDecodeError，
+            # 绕过下面承诺的 latin-1 兜底。用 replace 让流程继续，最终由 NCBI 判 key 无效。
+            text = raw.decode("utf-16", errors="replace")
     elif raw[:3] == b"\xef\xbb\xbf":
         text = raw.decode("utf-8-sig")                 # 记事本 UTF-8（带 BOM）
     else:
@@ -202,9 +208,10 @@ def api_key():
 
     找不到 key 不是错误：走匿名档（3 次/秒），功能不缺，只是慢一档；
     `--check-key` 会把当前档位和 key 文件的编码一起说出来。"""
-    global _KEY
+    global _KEY, _KEY_SOURCE
     if _KEY is None:
         k = (os.environ.get("NCBI_API_KEY") or "").strip().lstrip("\ufeff")
+        src = "环境变量 NCBI_API_KEY" if k else ""
         if not k:
             for p in ("~/.ncbi_api_key", "~/.ncbi_api_key.txt"):
                 q = os.path.expanduser(p)
@@ -213,9 +220,14 @@ def api_key():
                         raw = open(q, "rb").read()
                     except OSError:
                         continue
-                    k = " ".join(_decode_key_bytes(raw).split())   # 吃掉首尾空白、中间连续空白压成一个空格；key 中间真夹着空格时压不掉，由 _key_shape 报出来
+                    # 吃掉首尾空白、中间连续空白压成一个空格；key 中间真夹着空格时压不掉，由 _key_shape 报出来
+                    cand = " ".join(_decode_key_bytes(raw).split())
+                    if not cand:
+                        # 〔实测 2026-11-11〕空文件旧版会 break，把后面有效的 .ncbi_api_key.txt 挡住。
+                        continue
+                    k, src = cand, f"文件 {q}"
                     break
-        _KEY = k
+        _KEY, _KEY_SOURCE = k, src
     return _KEY
 
 
@@ -478,7 +490,12 @@ def _check_date(v, name):
     if not _DATE_RE.match(s):
         raise NcbiError(f"{name}={v!r} 不是 NCBI 认的日期写法（用 2020、2020/01、2020-01-01；"
                         f"要「近 N 天」请用 reldate）")
-    p = [x.zfill(2) for x in s.replace("/", "-").split("-")]
+    # 〔实测 2026-11-11〕`\d` 匹配的是所有 Unicode 十进制数字：'٢٠٢٠-٠١-٠١'（阿拉伯-印度数字）
+    # 能过正则，但原样下发会被 NCBI 丢掉 —— count 0、querytranslation 里 mindate 整段消失，
+    # 而输出仍印着「日期条件」。这里用 int() 归一成 ASCII（int('٢٠٢٠')==2020，全角数字同理），
+    # 绝不把用户的数字原样发走。
+    p = [str(int(x)).zfill(2) for x in s.replace("/", "-").split("-")]
+    p[0] = p[0].zfill(4)
     try:
         datetime.date(int(p[0]), int(p[1]) if len(p) > 1 else 1, int(p[2]) if len(p) > 2 else 1)
     except ValueError:
@@ -603,6 +620,15 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
         raise NcbiError("term 不能为空（空 term 会被 NCBI 当特殊输入处理，count 字段直接消失）")
     f = _check_field(field)
     srt = _check_sort(sort)
+    try:
+        _rs_req = int(str(retstart).strip())
+    except (TypeError, ValueError):
+        _rs_req = None                      # 不是数字就交给 _int 报人话
+    if _rs_req is not None and _rs_req < 0:
+        # 〔实测 2026-11-11〕旧写法 `_int(retstart, ..., 0)` 把负数夹成 0＝第一页，输出只印
+        # retstart=0，调用方以为拿到了 -5 起始的窗口。与上面 retmax 负数同口径：直接报。
+        raise NcbiError(f"retstart={retstart!r} 是负数，本工具不替它编一个意思（旧版会静默夹成 0＝第一页）。"
+                        f"要第一页就写 0；翻页请给非负整数，上限 {RETSTART_MAX}。")
     rs = _int(retstart, "retstart", 0, 0)
     if rs > RETSTART_MAX:
         raise NcbiError(f"retstart={rs} 超出 PubMed esearch 的检索窗口。〔实测 2026-11-09〕"
@@ -687,11 +713,9 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
         q.update(mindate=lo, maxdate=hi, datetype="pdat")
     d = _safe_json(await _get_async("esearch.fcgi", q, 25), "esearch").get("esearchresult", {})
     d["_term"] = term
-    # 〔实测 2026-11-11〕这次请求的 retmax 要原样留给 _zero_explanation，**不能**改读 NCBI 回显的
-    # retmax：retstart 越过命中总数时，即使请求 retmax=5，回显也会变成 "retmax":"0"
-    # （实测 retmax=5&retstart=9 → count=8、retmax="0"、idlist 空）。拿回显判「只要计数」会把
-    # 「翻页越界」误报成「你没要记录」——--probe 的 s_page 断言就是这么抓到这处改动的。
-    # 这个字段只给解释用，不改下发参数。
+    # 〔实测 2026-11-11〕留给 _zero_explanation 判断「用户是不是只要计数」；**不能**改读 NCBI
+    # 回显的 retmax（越页时回显会变成 "0"）。完整实测与原因只写在 _zero_explanation 那一支里，
+    # 避免同一段证据两处各写一遍。这个字段只给解释用，不改下发参数。
     d["_retmax"] = _rm
     d["_retmax_note"] = _rm_note
     d["_sort_note"] = _sort_note(sort, srt)
@@ -749,7 +773,8 @@ def _check_field(field):
         raise NcbiError(
             f"field={field!r} 不在白名单里。NCBI 对认不出的 field 是【静默忽略】的"
             f"（实测 field=ZZZBOGUSFIELD 的命中数与不传 field 完全一致，⚠️ 也不报），"
-            f"所以这里直接拦掉。可用值：{', '.join(sorted(set(FIELD_WHITELIST.values())))}")
+            f"所以这里直接拦掉。可用值："
+            + ", ".join(sorted(set(FIELD_WHITELIST.values()) - FIELD_SWALLOWED - FIELD_NO_COUNT)))
     return canon
 
 
@@ -867,14 +892,14 @@ def _note(d):
             # 也不按 count 分两支 —— 旧写法无条件印「也会是 0 条」，与同一屏的命中数自相矛盾。
             lines.append(f"⚠️ NCBI 实际执行的两段【同字段（{l1}）】日期不相交"
                          f"（{a1}→{b1} 与 {a2}→{b2}）。不相交不等于 0 条 —— 一条记录可以"
-                         f"同时带有落进两段的日期；有命中时别把这个命中数当成日期条件生效的证据，"
-                         f"0 条记录时这个 0 也不能读成「PubMed 里没有匹配」。")
+                         f"同时带有落进两段的日期；有命中时别把这个命中数当成日期条件生效的证据。")
     gap = _phrase_gap(d)
     if gap:
         lines.append("⚠️ 引号短语里有词在 NCBI 的实际执行中找不到：" + "；".join(gap) +
                      " —— 实测引号【内】的词被丢掉时 NCBI 不填 phrasesnotfound，所以这种丢弃不会出现在"
                      "上面那行「已丢弃」里。这个命中数是【剩下的词】的数，不能读成「这个短语有 N 篇」；"
-                     "你写的这个引号短语本身命中为 0（引号里的词没有被当成一个短语执行）。")
+                     "引号里的词并没有被当成一个短语执行，所以【按原样这个短语有多少命中，NCBI 没有"
+                     "给出答案】——别把上面这个数当成它的，也别把它当成 0。")
     if d.get("_field_applied"):
         # 〔实测 2026-11-08〕上一版这里断言「NCBI 不在 querytranslation 里回显 field」是假的：
         #   count('tooth resorption', field='author') 的 qt 就是 `tooth[Author]`；
@@ -1004,7 +1029,12 @@ def _all_dropped(d):
     nf |= {x.lower() for x in _warn_bits(d)[0]}
     if not nf:
         return False
-    toks = {w for w in re.split(r"[^0-9A-Za-z一-鿿]+", str(d.get("_term") or "").lower())
+    # 〔实测 2026-11-11〕旧写法把 [Title]/[dp] 这类字段标签文字也当成检索词，且兜底用子串匹配
+    # querytranslation：search('zzzqqx[Title]') 的 toks 是 {'zzzqqx','title'}，而回显逐字含
+    # 'title'，于是「全丢」判不出来，同一屏先说「zzzqqx 已丢弃」、最后又说「确实没有匹配这篇」。
+    # 先把方括号标签整段去掉（标签不是检索词），再分词。
+    term_wo_tags = re.sub(r"\[[^\]]{1,30}\]", " ", str(d.get("_term") or "")).lower()
+    toks = {w for w in re.split(r"[^0-9A-Za-z一-鿿]+", term_wo_tags)
             if w and w not in _BOOL_WORDS}
     # 〔实测 2026-11-09〕旧写法没有剔掉布尔算子，于是整条查询只要有 AND/OR 就永远不会判成「全丢」：
     #   search('zzzqqx AND qbvcjk') → 命中 0、⚠️ 已丢弃列出这两个词，
@@ -1039,7 +1069,12 @@ def _parse_pmids(pmids):
     #   会安静地抓到三篇不相干的文献，而且条数看起来完全正常。
     # 这里不猜：这种形状既可能是「一个号写成了 1,234,567」也可能是「1 和 234 和 567 三个号」，
     #   两种读法给出不同文献，替用户选就是本工具一直在禁止的那种事（把猜测写成事实），所以直接拦。
-    amb = [t for t in re.split(r"[;，、\s]+", s) if t and re.fullmatch(r"\d{1,3}(?:,\d{3})+", t)]
+    # 〔实测 2026-11-11〕旧守卫与实际切分用的不是同一套分隔符：'1，234，567'（全角逗号）与
+    #   '1,234,567,'（行尾逗号）都能绕过，直接被切成 1/234/567 三个【真实存在】的 PMID。
+    #   现在整串（去掉首尾分隔符）与逐个 token 都按同一套判据看一遍，全角逗号也按千位分隔符处理。
+    whole = s.strip().strip(";，、, \t\r\n")
+    amb = [whole] if re.fullmatch(r"\d{1,3}(?:[,，]\d{3})+", whole) else []
+    amb += [t for t in re.split(r"[;，、\s]+", s) if t and re.fullmatch(r"\d{1,3}(?:,\d{3})+", t)]
     if amb:
         raise NcbiError(
             f"这些串看着像【带千位分隔符的数字】，没法判断是一个号还是好几个号：{amb[:3]}。"
@@ -1054,7 +1089,15 @@ def _parse_pmids(pmids):
     for t in toks:
         m = re.fullmatch(r"[:#.，、]?(\d+)", t.strip())
         if m:
-            ids.append(str(int(m.group(1))))
+            digits = m.group(1)
+            try:
+                ids.append(str(int(digits)))
+            except ValueError:
+                # 〔实测 2026-11-11，Python 3.13〕4301 位纯数字在 int() 处抛裸 ValueError
+                # （3.11+ 的 4300 位上限），不是 NcbiError；走 mcp 2.x 时原文会被剥成一句
+                # 「Error executing tool ...」。这里换成能读懂的报错。
+                raise NcbiError(f"这一串有 {len(digits)} 位数字，超出 Python 的整数解析上限（4300 位）；"
+                                f"PMID 不会有这么长，多半是粘错了内容，请核对后再试。")
         else:
             bad.append(t)
     if bad:
@@ -1154,8 +1197,16 @@ def _fmt_record(r, uid):
 
 async def _efetch_abstracts(pmids):
     timeout = min(60, 20 + 0.4 * len(pmids))
-    return await _get_async("efetch.fcgi", {"db": "pubmed", "id": ",".join(pmids),
+    text = await _get_async("efetch.fcgi", {"db": "pubmed", "id": ",".join(pmids),
                                             "rettype": "abstract", "retmode": "text"}, timeout)
+    # 〔实测 2026-11-11〕efetch 是全文唯一的文本端点，没有 _safe_json 那道 200+HTML 守卫：
+    # 把 _get_async 换成返回 '<!DOCTYPE html><html>…' 后，旧版把整段 HTML 当摘要拼进正文并报
+    # 「实取 0 条」——那是故障页，不是「这些 PMID 没有摘要」。README 行为契约第 1 条要求它算失败。
+    head = text.lstrip()[:200].lower()
+    if head.startswith("<!doctype") or head.startswith("<html"):
+        raise NcbiError("efetch 回的是 HTML 页面（HTTP 200 也可能是故障页/网关页），不是摘要正文 —— "
+                        "这【不是】「这些 PMID 没有摘要」。原文开头：" + _mask(text.lstrip()[:200]))
+    return text
 
 
 async def _efetch_all(pmids):
@@ -1258,23 +1309,24 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
           这句 0 跟主题有没有文献无关；
         ③ 整个引号短语不存在（'"zzzqqxnonexistentterm"'）→ warninglist.quotedphrasesnotfound；
         ④ 两段同字段日期互斥 → 见上面「不相交」那条；
-        ⑤ retmax=0（只要计数、没要记录）→ 命中数是真的，只是没取记录；
+        ⑤ retmax=0 且命中数>0（只要计数、没要记录）→ 命中数是真的，只是没取记录；
         ⑥ retstart 越过命中总数（翻页越界）→ 往回翻页即可。
       这些情形都不成立、且命中数确实为 0 时，「PubMed 里没有匹配」才成立。
     - 单复数（device/devices）在 PubMed 里映射到不同词形，实测差 1 条
       〔已作废 2026-11-10：现在 "temporary anchorage device" 与 "...devices" 都是 795 条、
       querytranslation 逐字相同 —— NCBI 把两边都展开成同一组 OR；当年那个 1 条的差不复现，
       但「用 MeSH 词覆盖两种写法」这条建议本身仍然有效〕。要覆盖两种写法，改用 MeSH descriptor，
-      并且【读回显】判断写没写对 —— 本工具不做词表查询，而 descriptor 写错有两种形状，
+      并且【核对实际执行的式子】判断写没写对 —— 本工具不做词表查询，而 descriptor 写错有两种形状，
       后果并不一样（〔实测 2026-11-11，本会话，三种写法各跑一次 count，见 docs/release-delta.md〕）：
         给一个不存在的 descriptor 加引号（"Temporary Anchorage Devices"[MeSH Terms]）→ 0 条，
           NCBI 在 warninglist.quotedphrasesnotfound 里点名这段，本工具会转述 —— 不算静默；
         同样的词【不加引号】配 [MeSH Terms] → 照样回一个数，但「NCBI 实际执行」已被改写成
           另一组条件（实测那次把 Devices 换成了 "equipment and supplies"[MeSH Terms]），
           主题也收窄了 —— 【这一种才没人提醒你】，光看条数看不出来。
-        写法对的形状回显就是它自己："Orthodontic Anchorage Procedures"[MeSH Terms]（本文件
-          --probe 里有一条联网冒烟断言盯着它，不写死条数）。
-      所以别信条数，信「NCBI 实际执行」那一行。
+        写法对的形状回显就是它自己："Orthodontic Anchorage Procedures"[MeSH Terms]（--probe
+          的联网断言会核对这条回显）。注意：回显与输入相同时，文本输出【不印】「NCBI 实际执行」
+          那一行（只在被改写时印）；要逐字核对就传 as_json=True 看 querytranslation。
+      所以别只信条数：文本里看「NCBI 实际执行」，要逐字核就用 as_json 的 querytranslation。
     """
     # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
     #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
@@ -1299,11 +1351,16 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
         # 而 docstring 又让脚本改用 as_json —— 走 JSON 的人恰恰拿不到「这批没取全」这句最需要的话。
         # 现在两支都进 JSON（warnings 里也放一份，脚本只看 warnings 也不会漏）。
         warn = _note(d) + ([win_warn] if win_warn else [])
+        if len(pairs) != len(ids):
+            # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
+            # 以为 2 个 id 就是 2 条记录。
+            warn.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
+                        f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
         return json.dumps({
             "term": term, "querytranslation": (d.get("querytranslation") or "").strip(),
             "translationset": d.get("translationset") or [],
             "field": d.get("_field_applied", ""),
-            "count": count, "retstart": int(d.get("retstart") or 0), "returned": len(ids),
+            "count": count, "retstart": int(d.get("retstart") or 0), "returned": len(pairs),
             "esummary_missing": max(0, len(ids) - len(pairs)),
             "dropped_phrases": _as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
             "daterange": d.get("_daterange") or "",
@@ -1331,7 +1388,7 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
 @mcp.tool()
 async def count(term: str, field: str = "", mindate: str = "", maxdate: str = "",
                 reldate: int = 0) -> str:
-    """只问「这个主题有多少篇」，不取记录，最省请求。带 ⚠️ 提示查询被改写。
+    """只问「这个主题有多少篇」，不取记录，最省请求。查询被改写时印出「NCBI 实际执行」那一行。
 
     注意：命中数大得反常时先看 ⚠️ 和「NCBI 实际执行」——实测查不到的词被 NCBI 静默丢弃后
     仍会返回一个非 0 的数（"zzzqqx nonexistent term" → 610 条），0 条反而是少见的情况。
@@ -1475,6 +1532,16 @@ async def links(pmids: str, to: str = "pmc") -> str:
                       f"这【不是】「没有全文」，先核对 PMID")
             return
         mine, other = [], []
+        # 〔实测 2026-11-11〕nucleotide 的直接链接 linkname 是 pubmed_nuccore /
+        # pubmed_nuccore_refseq（dbto=nuccore），永远不以 "nucleotide" 结尾；旧判据把它们全塞进
+        # other，输出「(nucleotide 库无直接对应记录)」又在方括号里报出同一条链接。直接链接按库名
+        # 显式列出，不再用后缀猜。
+        direct_names = {
+            "pmc": ("pubmed_pmc",),
+            "gene": ("pubmed_gene",),
+            "pubmed": ("pubmed_pubmed",),
+            "nucleotide": ("pubmed_nuccore", "pubmed_nuccore_refseq"),
+        }.get(db, ())
         for ls in sets:
             srcs = {str(x) for x in _as_list(ls.get("id") or [])} | {str(x) for x in _as_list(ls.get("ids") or [])}
             if srcs and pid not in srcs:
@@ -1484,7 +1551,11 @@ async def links(pmids: str, to: str = "pmc") -> str:
                 if not dests:
                     continue
                 name = str(lsd.get("linkname") or db)
-                if "_" in name and not name.endswith(db):      # pubmed_pmc_refs / pubmed_pubmed_cites 等
+                if direct_names:
+                    is_direct = name in direct_names
+                else:
+                    is_direct = not ("_" in name and not name.endswith(db))   # 兜底：pubmed_*_refs 等
+                if not is_direct:
                     other.append(f"{name}:{len(dests)} 条")
                 else:
                     mine.append(f"{name}=" + ",".join(
@@ -1626,9 +1697,12 @@ async def _probe():
         default 用 {} 给那些返回 dict 的调用，免得后续 .get() 再抛一次。"""
         try:
             return await fn(*a, **kw)
-        except BaseException as e:
+        except Exception as e:
+            # 〔实测 2026-11-11〕旧写法捕 BaseException，把 Ctrl-C/SystemExit 也当被测调用失败吞掉；
+            # 且引用了 3.11 才有的内建 BaseExceptionGroup —— pyproject 声明 >=3.10，那边会 NameError。
+            # 只认异常自带的 .exceptions（anyio/exceptiongroup 都有），不引用那个名字。
             eg = getattr(e, "exceptions", None)
-            real = eg[0] if isinstance(e, BaseExceptionGroup) and eg else e
+            real = eg[0] if eg else e
             check(f"{name} 意外抛错", False, f"{type(real).__name__}: {str(real)[:200]}")
             return default
 
@@ -1777,9 +1851,15 @@ async def _probe():
     _zn = str(j_zero.get("zero_note") or "")
     check("as_json 的 zero_note 同样不许说「确实没有匹配」",
           "retmax=0" in _zn and "确实没有匹配" not in _zn, _zn[:260])
-    c_mesh = await attempt("c_mesh", count, '"Orthodontic Anchorage Procedures"[MeSH Terms]', default="")
-    check("说明里推荐的 MeSH 示例真能查到东西（不是一段不存在的短语）",
-          _num_of(c_mesh) > 0, c_mesh[:160])
+    # 〔实测 2026-11-11〕这条要核对的是「回显没被改写」，光看 count>0 不够：descriptor 不加引号
+    # 写错时 NCBI 照样回一个正数，只是把条件换成了别的（见上面那条离线断言的实测记录）。
+    # 回显与输入相同时文本输出不印「NCBI 实际执行」，所以这里走 as_json 读 querytranslation。
+    _mesh_term = '"Orthodontic Anchorage Procedures"[MeSH Terms]'
+    j_mesh = await attempt_json("c_mesh", search, _mesh_term, retmax=0, as_json=True)
+    _mesh_qt = str(j_mesh.get("querytranslation") or "")
+    check("说明里推荐的 MeSH 示例真能查到东西，且回显没有被改写",
+          int(j_mesh.get("count") or 0) > 0 and _mesh_qt.strip().lower() == _mesh_term.lower(),
+          f"count={j_mesh.get('count')} qt={_mesh_qt[:120]}")
     c_tag = await attempt("c_tag", count, "resorption[Title]", default="")
     check("文档里的字段标签示例 resorption[Title] 真能查到东西", _num_of(c_tag) > 0, c_tag[:160])
     _sd0 = getattr(search, "__doc__", "") or ""
@@ -1978,7 +2058,10 @@ async def _probe():
             await count(T, reldate=bad_rel)
             check(f"reldate={bad_rel} 必须报错", False, "没抛异常（旧版：负数被夹成 0＝不限日期；大数抛裸 OverflowError）")
         except NcbiError as e:
-            check(f"reldate={bad_rel} 必须报错", True, str(e)[:120])
+            # 〔实测 2026-11-11〕旧写法 check(..., True)：只要抛的是 NcbiError 就算过，网络故障
+            # 也照样 PASS。改成核对报错文本是不是本工具的前置校验。
+            _want = "负数" if bad_rel < 0 else "太大"
+            check(f"reldate={bad_rel} 必须由本工具的前置校验拦下", _want in str(e), str(e)[:120])
         except Exception as e:
             check(f"reldate={bad_rel} 必须报错", False, f"{type(e).__name__}（不是 NcbiError）：{str(e)[:90]}")
     c_old = await attempt("c_old", count, "tooth", maxdate="1800-01-01", default="")
@@ -2229,6 +2312,112 @@ async def _probe():
           _phn > 0 and "quotedphrasesnotfound" in _ph and "不是" in _ph,
           f"{_phn} 条；⚠️ 段落: {[l[:70] for l in _ph.splitlines() if 'quoted' in l][:1]}")
 
+    # 15) 本轮离线回归：每条都对应一个【实测过】的缺陷，不发请求
+    print("15) 离线回归：本轮修掉的静默与误判")
+    _ar = "٢٠٢٠-٠١-٠١"
+    check("日期里的 Unicode 数字被归一成 ASCII（不再原样下发被 NCBI 丢掉）",
+          _check_date(_ar, "mindate") == "2020-01-01", repr(_check_date(_ar, "mindate")))
+    try:
+        _check_date("2023-02-29", "mindate")
+        check("反向：日历上不存在的日期仍然被拦", False, "没抛")
+    except NcbiError:
+        check("反向：日历上不存在的日期仍然被拦", True, "")
+    for _bad in ("1，234，567", "1,234,567,", "1,234,567"):
+        try:
+            _parse_pmids(_bad)
+            check(f"千位分隔符形状不再被切成多个 PMID：{_bad}", False, "没抛")
+        except NcbiError:
+            check(f"千位分隔符形状不再被切成多个 PMID：{_bad}", True, "")
+    check("反向：正常逗号列表仍能解析", _parse_pmids("12345,678")[0] == ["12345", "678"], "")
+    try:
+        _parse_pmids("9" * 4301)
+        check("超长数字串给的是 NcbiError，不是裸 ValueError", False, "没抛")
+    except NcbiError:
+        check("超长数字串给的是 NcbiError，不是裸 ValueError", True, "")
+    except ValueError as e:
+        check("超长数字串给的是 NcbiError，不是裸 ValueError", False, f"裸 {type(e).__name__}")
+    try:
+        _decode_key_bytes(b"\xff\xfeA")
+        check("截断的 UTF-16 BOM key 文件不再抛裸 UnicodeDecodeError", True, "")
+    except Exception as e:
+        check("截断的 UTF-16 BOM key 文件不再抛裸 UnicodeDecodeError", False, type(e).__name__)
+    check("带字段标签的全丢查询不再漏判（不再说「确实没有匹配」）",
+          _all_dropped({"errorlist": {"phrasesnotfound": ["zzzqqx"]}, "_term": "zzzqqx[Title]",
+                        "querytranslation": "zzzqqx[Title]"}) is True, "")
+    try:
+        _check_field("ZZZBOGUSFIELD")
+        _fmsg = ""
+    except NcbiError as e:
+        _fmsg = str(e)
+    check("未知 field 的「可用值」不再列出会被吞掉的值",
+          "PMC Number" not in _fmsg and "Title" in _fmsg, _fmsg[:160])
+    _old_get, _old_exist = globals()["_get_async"], globals()["_pmids_exist"]
+
+    async def _fake_elink(path, params, timeout, tries=4):
+        if path.startswith("elink"):
+            return json.dumps({"linksets": [{"dbfrom": "pubmed", "ids": ["7545954"], "linksetdbs": [
+                {"dbto": "nuccore", "linkname": "pubmed_nuccore_refseq", "links": ["1947007834"]}]}]})
+        return "{}"
+
+    async def _fake_exist(pids):
+        return set(pids)
+
+    globals()["_get_async"], globals()["_pmids_exist"] = _fake_elink, _fake_exist
+    try:
+        _s_nuc = await links("7545954", to="nucleotide")
+    finally:
+        globals()["_get_async"], globals()["_pmids_exist"] = _old_get, _old_exist
+    # 只看这一行：文末图例会原样引用「(nucleotide 库无直接对应记录)」这句话，用整段做判据会恒假。
+    _nuc_line = next((l for l in _s_nuc.splitlines() if l.startswith("PMID 7545954")), "")
+    check("nucleotide 的直接链接不再被说成「无直接对应记录」",
+          "无直接对应记录" not in _nuc_line and "pubmed_nuccore_refseq=" in _nuc_line, _nuc_line[:200])
+    try:
+        await search("tooth", retstart=-5)
+        check("负 retstart 被拦下（不再静默变成第一页）", False, "没抛")
+    except NcbiError as e:
+        check("负 retstart 被拦下（不再静默变成第一页）", "负数" in str(e), str(e)[:120])
+
+    async def _fake_html(path, params, timeout, tries=4):
+        return "<!DOCTYPE html><html><body>502 maintenance</body></html>"
+
+    _old_get = globals()["_get_async"]
+    globals()["_get_async"] = _fake_html
+    try:
+        await fetch_abstracts("37427694")
+        check("efetch 回 HTML 时必须算失败（不把故障页当摘要）", False, "没抛")
+    except NcbiError as e:
+        check("efetch 回 HTML 时必须算失败（不把故障页当摘要）", "HTML" in str(e), str(e)[:120])
+    finally:
+        globals()["_get_async"] = _old_get
+
+    async def _fake_mixed(path, params, timeout, tries=4):
+        if path.startswith("esearch"):
+            return json.dumps({"esearchresult": {"count": "2", "retmax": "2", "retstart": "0",
+                                                 "idlist": ["1001", "1002"], "querytranslation": "x"}})
+        if path.startswith("esummary"):
+            return json.dumps({"result": {"uids": ["1001"], "1001": {
+                "uid": "1001", "title": "T", "pubdate": "2020", "source": "J",
+                "authors": [], "elocationid": ""}}})
+        return "{}"
+
+    _old_get = globals()["_get_async"]
+    globals()["_get_async"] = _fake_mixed
+    try:
+        _j_miss = json.loads(await search("x", retmax=2, as_json=True))
+    finally:
+        globals()["_get_async"] = _old_get
+    check("as_json 在 esummary 少回时给出 ⚠️，returned 记的是实际记录数",
+          any("esummary 只回了" in w for w in _j_miss.get("warnings") or [])
+          and _j_miss.get("returned") == 1,
+          str({k: _j_miss.get(k) for k in ("returned", "esummary_missing")}))
+    try:
+        main(["--probeX"])
+        check("拼错的 CLI 参数以非 0 退出", False, "居然没 SystemExit")
+    except SystemExit as e:
+        check("拼错的 CLI 参数以非 0 退出", e.code == 2, f"code={e.code}")
+    except Exception as e:
+        check("拼错的 CLI 参数以非 0 退出", False, f"{type(e).__name__}: {str(e)[:80]}")
+
     check("计数器活着（不是恒 0；阈值 40 是自订的下限，用来发现计数器被改坏）",
           _NREQ > 40, f"本轮 {_NREQ} 次 urlopen")
     print(f"\n{ok} 通过 / {fail} 失败 —— 本轮 {_NREQ} 次 HTTP 请求（含退避重试的每一次）")
@@ -2240,6 +2429,9 @@ def _check_key():
     print("key:", _key_shape(k))
     if k:
         print("  （值本身不打印；前缀只在你自己机器上看得见——发布版源码里也不留任何 key 片段）")
+        # 〔实测 2026-11-11〕旧版把「第一个存在的 key 文件」当成实际来源报出来；环境变量生效时
+        # 那句话是假的。现在直接报真正读到 key 的那一处。
+        print("key 来源:", _KEY_SOURCE or "(未知)")
     print("限速档位:", "10 次/秒" if k else "3 次/秒")
     for p in ("~/.ncbi_api_key", "~/.ncbi_api_key.txt"):
         q = os.path.expanduser(p)
@@ -2248,8 +2440,7 @@ def _check_key():
             enc = ("UTF-16（PowerShell 默认写法，本工具认得）" if head[:2] in (b"\xff\xfe", b"\xfe\xff")
                    else "UTF-8 带 BOM（记事本写法，本工具会剥掉）" if head == b"\xef\xbb\xbf"
                    else "UTF-8 无 BOM")
-            print(f"  key 文件: {q}  {enc}")
-            break
+            print(f"  候选文件: {q}  {enc}")
     print("EMAIL:", EMAIL or "(未设 NCBI_EMAIL，NCBI 的 courtesy 要求建议设上)")
     print("依赖:", end=" ")
     try:
@@ -2289,6 +2480,12 @@ def main(argv=None):
     elif args and args[0] == "--check-key":
         _check_key()
     else:
+        if args:
+            # 〔实测 2026-11-11〕旧写法把任何不认识的参数都落到 mcp.run()：`--probeX`（拼错）
+            # 会在 stdin 关闭后 rc=0、零输出，看起来像「跑过了」。
+            print(f"不认识的自检参数：{args[0]!r}。可用：--selftest [词] / --probe / "
+                  f"--concurrent [词] / --check-key；不带参数＝启动 MCP stdio 服务。", file=sys.stderr)
+            sys.exit(2)
         mcp.run()          # stdio
 
 

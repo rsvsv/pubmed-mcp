@@ -21,7 +21,7 @@ pubmed-mcp --check-key
 ```
 
 `--check-key` 应返回 rc=0 并打印 key 形状/限速档/依赖版本。mcp 1.x 与 2.x 都支持；要是它报
-`拿不到 MCP 服务类`，说明你环境里的 mcp 既不是一代也不是二代，`pip install "mcp>=1.2,<3"` 即可
+`拿不到 MCP 服务类`，说明你环境里的 mcp 既不是一代也不是二代，`pip install "mcp>=1.26,<3"` 即可
 （缘由见下面「版本要求」与 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)）。
 
 然后告诉 Claude Code 去哪儿找它 —— 在 `~/.claude.json` 里加：
@@ -180,8 +180,8 @@ python pubmed_mcp.py --check-key
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
-| `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：`resorption[Title]`（引号只包短语，别把 `[Tag]` 包进去）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
-| `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时带 ⚠️ |
+| `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：字段标签（写法与「引号只包短语、别把 `[Tag]` 包进去」的说明见 `search` 的工具说明）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
+| `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
 | `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」 |
 | `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 判断有没有免费全文可下；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
 
@@ -196,7 +196,7 @@ python pubmed_mcp.py --check-key
    只剩一句 `Error executing tool <name>`。现在的基类写法与那条走包装层的回归断言见
    [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。〕
 2. **`0 条`必须说清是哪一种 0。** 真的没有匹配 / 词被当停用词忽略 / 整个引号短语在索引里不存在 /
-   两段同字段日期不相交 / `retstart` 越页 / `retmax=0`（只要计数、没要记录）——这几种各说各的话，
+   两段同字段日期不相交 / `retstart` 越页 / `retmax=0` 且命中>0（只要计数、没要记录）——这几种各说各的话，
    不统一兜底成「PubMed 里没有匹配」。
 3. **`field=` 走白名单，宁拦勿吞。** 实测 NCBI 对认不出的 `field` 静默忽略（拼错一个字母＝限定被吃掉、
    且没有任何提示）。`keywords`/`PMC Number`/`ISSN` 实测被整条忽略，`MeSH Terms`/`Publication Type`
