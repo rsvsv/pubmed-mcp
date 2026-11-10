@@ -1161,8 +1161,9 @@ def _record_parts(uid, r):
     auth = r.get("authorlist") or r.get("authors") or []
     names = ", ".join((a.get("name") or "").strip() for a in auth[:3] if isinstance(a, dict))
     total = len(auth)
-    if total > 3:
-        names += f"，共 {total} 人"          # 旧版「等 N 人」会被读成「另外 N 人」
+    # authors 只放名字，不粘「，共 N 人」：as_json 的卖点是「给脚本用」，粘在最后一个作者名后面
+    # 会让脚本切出假名字、数逗号数错人数。人数由 author_count 单独给；文本输出的人话后缀在
+    # _fmt_record 里加（2026-11-11 改，旧版的 authors 字段两种输出共用同一段拼串）。
     ptypes = [p for p in _as_list(r.get("pubtype") or []) if isinstance(p, str)]
     ptag = ""
     if ptypes and not (len(ptypes) == 1 and ptypes[0] == "Journal Article"):
@@ -1174,7 +1175,7 @@ def _record_parts(uid, r):
         "journal": src,
         "citation": cite.strip(),
         "title": r.get("title") or "(无标题)",
-        "authors": names or "(无作者信息)",
+        "authors": names,
         "author_count": total,
         "doi": ids.get("doi") or "",
         "pmc": ids.get("pmc") or "",
@@ -1191,7 +1192,10 @@ def _fmt_record(r, uid):
         tail.append("doi:" + p["doi"])
     if p["pmc"]:
         tail.append("pmc:" + p["pmc"] + "（开放获取，可有免费全文）")
-    return (f"{head}\n  {p['title']}\n  {p['authors']}"
+    auth_txt = p["authors"] or "(无作者信息)"
+    if p["authors"] and p["author_count"] > 3:
+        auth_txt += f"，共 {p['author_count']} 人"    # 旧版「等 N 人」会被读成「另外 N 人」
+    return (f"{head}\n  {p['title']}\n  {auth_txt}"
             + (("｜" + "｜".join(tail)) if tail else ""))
 
 
