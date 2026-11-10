@@ -60,6 +60,7 @@ import functools
 import calendar
 import datetime
 import io
+import inspect                              # 只用来验「装饰后还是协程函数」这条静态事实
 import json
 import os
 import re
@@ -2137,6 +2138,14 @@ async def _probe():
     check("库名大小写不敏感：_check_db('PMC') 与 _check_db(' Gene ') 都归一到库名",
           _check_db("PMC") == "pmc" and _check_db(" Gene ") == "gene",
           "_check_db('PMC')=%s" % _check_db("PMC"))
+    # 〔第 10 条，离线〕README 行为契约第 9 条的后半句「本服务四个工具全是 async def」此前
+    # 【没有断言钉住】，而那半句是承重的：装饰之后的名字一旦不再是协程函数，SDK 就走同步分支
+    # （1.x 是裸调用＝本文件占住事件循环；2.x 自己 to_thread 卸载）。装饰器返回值随 SDK 版本变，
+    # 所以要问的是【装饰之后】那个名字，不是源码里的 def。
+    # 〔实测 2026-11-11：mcp 1.30.0 与 2.3.0 两代下，四个名字装饰后都仍是协程函数〕
+    _coro = [f for f in (search, count, fetch_abstracts, links) if inspect.iscoroutinefunction(f)]
+    check("四个工具装饰后仍是协程函数（行为契约第 9 条后半句的承重前提，离线）",
+          len(_coro) == 4, "%d/4 是协程函数" % len(_coro))
     # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
     #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
     _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"
