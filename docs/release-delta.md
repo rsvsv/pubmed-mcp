@@ -22,6 +22,8 @@
 | 11 | :1094-1114 SDK 兼容层 | `mcp.server.fastmcp.FastMCP`（1.x）取不到就取 `mcp.server.mcpserver.MCPServer`（2.x）；两代都取不到就抛**带处置命令**的 `ImportError`，不让别人停在一条裸 `ModuleNotFoundError` 上 | 本会话干净 venv 实测：原先 `mcp>=1.2` 会解析到 mcp 2.3.0，装完第一次运行即崩，而作者本机 1.29.0 永远复现不出来。逐字签名与两条通路的回归结果见 `docs/mcp-sdk-v2.md`。**这一层开发版没有**——它只在「发给别人装」的场景下才有意义，所以是发布专用改动。 |
 | 12 | 探针 :2047 | 第 4 条新增离线断言：兼容层拿到的是可用服务类（可构造、有 `tool`、有 `run`） | 「同时支持 mcp 1.x 与 2.x」是一句会被下一次改写悄悄作废的承诺；没有断言就等于没支持。断言里带 `FastMCP.__module__`，跑起来能直接看出走的是哪一代。 |
 | 13 | 模块 docstring :8-12 与 README 第 9 条 | 把「FastMCP 对非 async 工具是裸 `return fn(**kwargs)`、没有 threadpool」限定成 **1.x 行为**，并写入 2.3.0 的实测：该文件挪到 `mcp/server/mcpserver/utilities/func_metadata.py`，非 async 分支变成 `await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))` | 本会话读 mcp 2.3.0 源码实测。原断言不删、只加版本范围——因为它后面本来就挂了一句对冲（「SDK 若改成 threadpool，本文件的 async 写法依然正确，不必回退」），而这次正是那句对冲被触发的时刻。开发版没有这条。 |
+| 14 | 顶部兼容层 + `NcbiError` 基类 + 探针第 5 条 | 兼容层从「MCP 工具」段挪到 `import anyio` 之后（基类必须在类定义之前拿到）；`NcbiError` 改成继承**当前那代 SDK 的** `ToolError`；多接一种普通 `ImportError`（「区间内但太老」抛的不是 `ModuleNotFoundError`，原先那句友好报错根本不触发）；新增一条**走 `mcp.call_tool` 包装层**的断言 | 本会话 A/B 实测〔2026-11-11〕：未修前同一个拦截在 mcp 2.3.0 下调用方只拿到 27 字符 `Error executing tool search`，NCBI 原文与改写建议全被剥——打穿的是主承诺「失败绝不静默」，不是文案问题。开发版连兼容层都没有，同样带这个缺陷。 |
+| 15 | `pyproject.toml` 构建元数据与区间 | `license` 表写法 → SPDX 字符串；删 `License :: OSI Approved` 分类符；`build-system` 抬到 `setuptools>=77`；区间下界 `1.2` → `1.26`；版本 `1.1.0` → `1.2.0` | 两条都属于「现在能用、以后不能用」那一类：setuptools 弃用警告逐字含「By 2027-Feb-18 … your builds will no longer be supported」〔实测 2026-11-11 构建输出〕；下界是三个干净 venv 实测出来的（1.2.0／1.21.0 import 就炸，1.26.0 通），原先 `>=1.2` 承诺了一个跑不起来的下界。 |
 
 ## 这一版没做的事（免得被当成做了）
 

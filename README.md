@@ -83,7 +83,11 @@ claude mcp add pubmed -- pubmed-mcp
 依赖：Python 标准库 + `mcp`（FastMCP 随它一起装）+ `anyio`。HTTP 走 stdlib `urllib`，
 所以除这两个之外没有别的第三方依赖〔本 README 逐字对照源码 import 数出，2026-11-10〕。
 
-**`mcp` 的区间是 `>=1.2,<3`：1.x 和 2.x 都实测支持，3.x 没验过所以挡住。**
+**`mcp` 的区间是 `>=1.26,<3`：1.x 和 2.x 都实测支持，3.x 没验过所以挡住。**
+下界是量出来的，不是拍的：〔实测 2026-11-11，三个干净 venv 配当前 pydantic 2.14.3〕`mcp 1.2.0` 与
+`1.21.0` 都在 **import 阶段**就炸（`cannot import name 'eval_type_backport' from
+'pydantic._internal._typing_extra'`），`1.26.0` 才 `IMPORT_OK`。原先写 `>=1.2` 等于承诺了一个
+跑不起来的下界——那种装法看着成功、一跑就 traceback。
 〔实测 2026-11-10，干净 venv〕原先只写 `>=1.2` 时，`pip install git+https://…` 会解析到
 `mcp 2.3.0`，而 2.x 里 `mcp.server.fastmcp` 这个模块名已经没了 —— 装完第一次运行就
 `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`。作者本机是 1.29.0，
@@ -91,9 +95,18 @@ claude mcp add pubmed -- pubmed-mcp
 干净 venv 跑 `pip install`。
 
 源码里因此加了一层 SDK 兼容层（1.x 拿 `FastMCP`，2.x 拿 `MCPServer`），两条通路各跑过完整
-`--probe`：1.29.0/1.30.0 与 2.3.0 都是 **138 通过 / 0 失败**〔实测 2026-11-10〕。
-v2 变了的那些（客户端字段改 snake_case、`serverInfo.version` 变空串、多 `structuredContent`）
-都在**客户端侧**，本服务不读，所以不影响。细节与逐字签名见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。
+`--probe`：现在是 **140 通过 / 0 失败**〔实测 2026-11-11，mcp 1.30.0 与 2.3.0 各一轮，串行跑、
+中间隔 8 秒，避免两轮在限速上互相干扰〕。
+
+**【已作废 2026-11-11，本会话 A/B 实测推翻】**这一段原先写「v2 变了的那些（客户端字段改
+snake_case、`serverInfo.version` 变空串、多 `structuredContent`）都在**客户端侧**，本服务不读，
+所以不影响」。它漏了服务端这一手：2.x 会把**非 `ToolError` 异常的文本**从返回结果里剥掉。
+同一个 `sort="journal"` 拦截，1.30.0 下调用方拿到 323 字符的完整解释，未修的 2.3.0 只拿到
+27 字符的 `Error executing tool search` —— 本仓库的主承诺「失败绝不静默」就在新用户默认走的那条
+路上被打穿了。现在 `NcbiError` 继承当前那代 SDK 的 `ToolError`，两代拿到的文本逐字相同；
+`--probe` 里补了一条**走包装层**的断言当回归锁（其余断言都直调协程，结构上看不见这一层）。
+原话留着不删，是因为「我不读那个字段，所以那个改动与我无关」这种推理会再犯第二次。
+细节与逐字签名见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。
 
 新环境里 `pip install` 会拿范围内的最高版（眼下是 mcp 2.3.0）。想固定走 1.x：
 `pip install "mcp<2"`。两代本仓库都跑过全量 `--probe`，但**你的其它 MCP 应用如果要求
@@ -152,6 +165,9 @@ python pubmed_mcp.py --check-key
 
 1. **失败绝不静默。** 请求失败抛 `NcbiError` 并带回 NCBI 原文；HTTP 200 + 一段 HTML、
    或 200 + `{"ERROR": ...}` 都算失败，不会被说成「NCBI 里没有这篇」。
+   〔实测 2026-11-11：这条曾在 mcp 2.x 上被打穿过——SDK 把非 `ToolError` 的异常文本剥掉，调用方
+   只剩一句 `Error executing tool <name>`。现在的基类写法与那条走包装层的回归断言见
+   [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。〕
 2. **`0 条`必须说清是哪一种 0。** 真的没有匹配 / 词被当停用词忽略 / 整个引号短语在索引里不存在 /
    两段同字段日期不相交 / `retstart` 越页——这几种各说各的话，不统一兜底成「PubMed 里没有匹配」。
 3. **`field=` 走白名单，宁拦勿吞。** 实测 NCBI 对认不出的 `field` 静默忽略（拼错一个字母＝限定被吃掉、

@@ -1,14 +1,17 @@
 [build-system]
-requires = ["setuptools>=61"]
+# 77 不是随手抬的：SPDX 字符串写法的 license 与 license-files 要 setuptools>=77，
+# 而 setuptools 对旧的 `license = {text = ...}` 表写法与 License 分类符都发了弃用警告，
+# 逐字写着「By 2027-Feb-18 ... your builds will no longer be supported」。〔实测 2026-11-11 构建输出〕
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pubmed-mcp"
-version = "1.1.0"   # 1.0.0 → 1.1.0：加了 mcp 1.x/2.x 兼容层，依赖区间从 <2 放开到 <3
+version = "1.2.0"   # 1.1.0 → 1.2.0：修掉「mcp 2.x 把异常文本剥掉」，区间下界抬到实测的 1.26
 description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"          # SPDX 字符串写法；表写法 {text=...} 已被 setuptools 判弃用（见文件顶部）
 authors = [{ name = "rsvsv" }]
 keywords = ["mcp", "pubmed", "ncbi", "eutils", "literature", "claude"]
 dependencies = [
@@ -18,12 +21,16 @@ dependencies = [
   # 现在放开到 `<3`：2.x 由源码里的 SDK 兼容层支持（v1 与 v2 两条通路各跑过完整 --probe，
   # 逐字签名见 docs/mcp-sdk-v2.md）。3.x 是没验过的下一代，宁可在解析阶段挡掉，
   # 也不让别人的默认安装走进没测过的版本 —— 这次翻车就是这么来的。
-  "mcp>=1.2,<3",
+  # 下界也是量出来的，不是随手写：〔实测 2026-11-11，干净 venv 配 pydantic 2.14.3〕
+  # mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport' from
+  # 'pydantic._internal._typing_extra'），1.26.0 起才 IMPORT_OK。原先写 >=1.2 是承诺了一个跑不起来的下界。
+  "mcp>=1.26,<3",
   "anyio>=4",
 ]
 classifiers = [
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
+  # 不写 "License :: OSI Approved :: MIT License"：license 已经用 SPDX 表达了，
+  # 这条分类符同时被 setuptools 判为弃用（两条警告是同一个来源）。
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]

@@ -72,6 +72,61 @@ import urllib.request
 
 import anyio
 
+# ---------- SDK 兼容层（放在 NcbiError 之前，因为它的基类要从 SDK 取） ----------
+# 〔实测 2026-11-10，本会话两条通路各跑过完整 --probe〕
+#   mcp 1.x：  mcp.server.fastmcp.FastMCP → 1.29.0（本机）/ 1.30.0（干净 venv）
+#   mcp 2.x：  该模块名【不存在】，改名 mcp.server.mcpserver.MCPServer → 2.3.0
+# 本文件对 SDK 只用到三处，两代签名都兼容：`FastMCP(名字)`（v2 第一参数仍是 name）、
+# `@mcp.tool()` 裸装饰、`mcp.run()` 默认 stdio。逐字签名见 docs/mcp-sdk-v2.md。
+# 〔加这层之前，`mcp>=1.2` 会让别人第一次安装就 ModuleNotFoundError：作者本机是 1.29.0，
+#  在自己机器上永远复现不出来。别把「我机器能跑」当「装得上」的证据。〕
+#
+# 第二个名字 ToolError【不是可选的装饰】。mcp 2.3.0 的 mcp/server/mcpserver/tools/base.py 逐字：
+#     except (ToolError, ResourceError) as exc:
+#         raise ToolError(f"Error executing tool {self.name}: {exc}") from exc     # 原文带上
+#     except Exception as exc:
+#         raise UnexpectedToolError(f"Error executing tool {self.name}") from exc   # 原文留在服务器
+# 本文件的失败说明【全部】写在异常文本里（NCBI 原文、改写建议、实测出处），所以它必须走上面那条
+# 分支。〔实测 2026-11-10 A/B：同一个 sort="journal" 拦截，1.30.0 客户端拿到 323 字符，
+#  未修前的 2.3.0 只拿到 27 字符 ——「Error executing tool search」。〕
+# 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
+# pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
+# from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
+_SDK_RANGE = "mcp>=1.26,<3"
+
+
+def _mcp_ver():
+    try:
+        from importlib.metadata import version
+        return "版本 " + version("mcp")
+    except Exception:
+        return "版本未知"
+
+
+try:
+    from mcp.server.fastmcp import FastMCP                        # noqa: E402  mcp 1.x
+    from mcp.server.fastmcp.exceptions import ToolError as _SdkToolError
+except ModuleNotFoundError:                                       # v2 抛的就是 ModuleNotFoundError
+    try:
+        from mcp.server.mcpserver import MCPServer as FastMCP      # noqa: E402  mcp 2.x
+        from mcp.server.mcpserver.exceptions import ToolError as _SdkToolError
+    except ModuleNotFoundError as _sdk_err:
+        raise ImportError(
+            "拿不到 MCP 服务类。本文件认 mcp 1.x（mcp.server.fastmcp）和 2.x"
+            "（mcp.server.mcpserver.MCPServer），两个都没找到说明你装的 mcp 不在这两代里。"
+            "先跑 `pip install -U \"%s\"` 再试；还不行就把这条报错和 `pip show mcp` 一起贴到 "
+            "https://github.com/rsvsv/pubmed-mcp/issues（这里不会带上你的 API key）。" % _SDK_RANGE
+        ) from _sdk_err
+except ImportError as _sdk_imp_err:
+    # 「在区间内但太老」或依赖冲突时炸的是普通 ImportError，上面那条友好报错根本不会触发。
+    # 〔本会话实测过 mcp 1.2/1.21/1.26 配新 pydantic 的 import 结果，见 docs/mcp-sdk-v2.md〕
+    raise ImportError(
+        "mcp 装了但导入失败（%s）。这一般是版本太老或与 pydantic 冲突，不是本文件的问题。"
+        "先跑 `pip install -U \"%s\"`；还不行请把这条报错和 `pip show mcp pydantic` 一起贴到 "
+        "https://github.com/rsvsv/pubmed-mcp/issues（这里不会带上你的 API key）。"
+        "底层错误：%s" % (_mcp_ver(), _SDK_RANGE, str(_sdk_imp_err)[:200])
+    ) from _sdk_imp_err
+
 BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 TOOL = "claude-pubmed-mcp"
 EMAIL = os.environ.get("NCBI_EMAIL", "")
@@ -100,8 +155,15 @@ FIELD_WHITELIST = {
 }
 
 
-class NcbiError(RuntimeError):
-    """请求层面的失败。和「PubMed 里没有这篇文章」严格区分开。"""
+class NcbiError(_SdkToolError, RuntimeError):
+    """请求层面的失败。和「PubMed 里没有这篇文章」严格区分开。
+
+    基类里那个 SDK 的 ToolError 是**功能性的，不是装饰**〔实测 2026-11-10，本会话 A/B 复现〕：
+    mcp 2.x 只把 `ToolError` 分支的异常原文发给调用方，普通 Exception 的理由被留在服务器
+    stderr、客户端只看到一句 `Error executing tool <name>`。本文件的 NCBI 原文、改写建议、
+    实测出处全在异常文本里，不继承它等于把「失败绝不静默」这条承诺在新用户默认的 2.x 通路
+    上关掉。mcp 1.x 两分支都带原文，所以这是单向受益、不改变 1.x 的行为。
+    RuntimeError 仍留在基类里，是为了保住外面 `except RuntimeError` 一类的旧写法。"""
 
 
 _KEY = None
@@ -1096,28 +1158,16 @@ async def _efetch_all(pmids):
 
 
 # ---------- MCP 工具 ----------
-# SDK 兼容层。〔实测 2026-11-10，本会话两条通路各跑一遍完整 --probe，都是 138 通过 / 0 失败〕
-#   mcp 1.x：  mcp.server.fastmcp.FastMCP  → 1.29.0（本机）与 1.30.0（干净 venv）
-#   mcp 2.x：  该模块名【不存在】，改名 mcp.server.mcpserver.MCPServer → 2.3.0
-# 只需要这一个名字，因为本文件用到的三处 v1/v2 兼容：`FastMCP(名字)` 构造（v2 第一参数仍是
-# name）、`@mcp.tool()` 裸装饰（v2 的 tool() 签名见 docs/mcp-sdk-v2.md）、`mcp.run()` 默认 stdio。
-# v2 真正改的是【客户端侧】：字段名换 snake_case、serverInfo.version 变空串、结果多了
-# structuredContent、protocolVersion 成 2025-11-25 —— 本文件一处都不读，所以不受影响。
-# 〔这条兼容层之前，`mcp>=1.2` 会让别人的第一次安装直接 ModuleNotFoundError：作者本机是 1.29.0，
-#  在自己机器上永远复现不出来。别把「我机器能跑」当「装得上」的证据。〕
-try:
-    from mcp.server.fastmcp import FastMCP                    # noqa: E402  mcp 1.x
-except ModuleNotFoundError:                                   # v2 抛的就是 ModuleNotFoundError，不是 ImportError
-    try:
-        from mcp.server.mcpserver import MCPServer as FastMCP  # noqa: E402  mcp 2.x
-    except ModuleNotFoundError as _sdk_err:
-        raise ImportError(
-            "拿不到 MCP 服务类。本文件认 mcp 1.x（mcp.server.fastmcp）和 2.x"
-            "（mcp.server.mcpserver.MCPServer），两个都没找到就说明你装的 mcp 不在这两代里。"
-            "先跑 `pip install \"mcp>=1.2,<3\"` 再试；还不行就把 `pip show mcp` 的输出贴到 "
-            "https://github.com/rsvsv/pubmed-mcp/issues （这里不会带上你的 API key）。"
-        ) from _sdk_err
-
+# SDK 兼容层在文件顶部（`import anyio` 之后）——因为 NcbiError 的基类 `_SdkToolError` 要从那里取。
+#
+# 【已作废 2026-11-10，本会话 A/B 实测推翻】这里原先写「v2 真正改的是【客户端侧】：字段名换
+# snake_case、serverInfo.version 变空串、结果多了 structuredContent、protocolVersion 成
+# 2025-11-25 —— 本文件一处都不读，所以不受影响」。
+# 错在漏看服务端：2.x 还会把【非 ToolError 异常的文本】从发给调用方的结果里剥掉，只留
+# `Error executing tool <name>`。同一个 sort="journal" 拦截，1.30.0 客户端拿到 323 字符，
+# 未修的 2.3.0 只拿到 27 字符 —— 打的正是本文件「失败绝不静默」这条主承诺。
+# 原句留着不删：「我不读那个字段，所以那个改动与我无关」这种推理本身会再犯第二次。
+# 修法见顶部兼容层的第二个名字 `_SdkToolError`，以及 NcbiError 的基类。
 mcp = FastMCP("PubMed")
 
 
@@ -2051,6 +2101,18 @@ async def _probe():
     check("SDK 兼容层拿到的是可用服务类（能构造、有 tool、有 run）",
           callable(FastMCP) and hasattr(FastMCP, "tool") and hasattr(mcp, "run"),
           "%s.%s" % (FastMCP.__module__, FastMCP.__name__))
+    # 〔发布版新增，第 5 条〕这一条必须**走 SDK 的工具包装层**，不能像本探针其余断言那样直调协程：
+    # 直调看不见「异常经过 tools/base.py 时文本还不还在」，而 mcp 2.x 正是在这里把非 ToolError 的
+    # 原文丢掉的（实测 2026-11-10：同一个拦截，1.30.0 给调用方 323 字符、未修的 2.3.0 只给 27 字符）。
+    # 这条断言就是那个 bug 的回归锁——它挂掉＝「失败绝不静默」被打穿，而不是某句文案不好看。
+    # 不发请求：_esearch 第一件事就是 _check_sort，在联网之前抛。
+    try:
+        _wrap = await mcp.call_tool("search", {"term": "x", "sort": "journal"})
+        _wtxt = str(_wrap)
+    except Exception as _we:
+        _wtxt = str(_we)
+    check("拦截理由要能穿过 SDK 工具包装层送到调用方（v2 会剥掉非 ToolError 的文本）",
+          ("可用值" in _wtxt) and ("journal" in _wtxt), _wtxt[:150])
     # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
     #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
     _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"
