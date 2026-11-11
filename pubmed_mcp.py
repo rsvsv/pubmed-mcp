@@ -292,17 +292,16 @@ def _safe_json(text, what):
             raise NcbiError(_mask(f"{what} 收到的不是合法 JSON（{type(e).__name__}）；正文前 300 字：{text[:300]!r}"))
     if not isinstance(d, dict):
         raise NcbiError(f"{what} 返回的 JSON 顶层不是对象，不能作为成功结果")
-    if isinstance(d, dict):
-        esr = d.get("esearchresult")
-        err = d.get("ERROR") or d.get("error")
-        for envelope in ("header", "eutilsresult"):
-            nested = d.get(envelope)
-            if not err and isinstance(nested, dict):
-                err = nested.get("ERROR") or nested.get("error")
-        if not err and isinstance(esr, dict):
-            err = esr.get("ERROR")      # retstart 越限这类错误就藏在这里，而且没有 count
-        if err:
-            raise NcbiError(_mask(f"{what} 被 NCBI 拒绝：{str(err)[:400]}"))
+    esr = d.get("esearchresult")
+    err = d.get("ERROR") or d.get("error")
+    for envelope in ("header", "eutilsresult"):
+        nested = d.get(envelope)
+        if not err and isinstance(nested, dict):
+            err = nested.get("ERROR") or nested.get("error")
+    if not err and isinstance(esr, dict):
+        err = esr.get("ERROR")      # retstart 越限这类错误就藏在这里，而且没有 count
+    if err:
+        raise NcbiError(_mask(f"{what} 被 NCBI 拒绝：{str(err)[:400]}"))
     return d
 
 
@@ -864,6 +863,31 @@ def _query_warnings(d):
     return warnings
 
 
+def _required_window_group(tokens, index):
+    """解析一个括号组；显式传入 tokens，避免递归闭包保留整个分词列表。"""
+    required, op, seen = set(), "AND", False
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == ")":
+            return required, index
+        if token in ("AND", "OR", "NOT"):
+            op = token
+            continue
+        if token == "(":
+            dates, index = _required_window_group(tokens, index)
+        else:
+            dates = set(_windows(token))
+        if not seen:
+            required = dates if op != "NOT" else set()
+        elif op == "AND":
+            required |= dates
+        elif op == "OR":
+            required &= dates
+        seen, op = True, "AND"
+    return required, index
+
+
 def _required_windows(d):
     """提取布尔式每个分支都要求的日期。OR 取交集，AND 取并集，NOT 只保留左边。
 
@@ -877,45 +901,24 @@ def _required_windows(d):
         value = match[0]
         if value.startswith(('"', '[')):
             continue
-        if qt[start:match.start()].strip():
-            tokens.append(qt[start:match.start()])
+        fragment = qt[start:match.start()]
+        if fragment.strip():
+            tokens.append(fragment)
         tokens.append(value)
         start = match.end()
-    if qt[start:].strip():
-        tokens.append(qt[start:])
-
-    def group(index):
-        required, op, seen = set(), "AND", False
-        while index < len(tokens):
-            token = tokens[index]
-            index += 1
-            if token == ")":
-                return required, index
-            if token in ("AND", "OR", "NOT"):
-                op = token
-                continue
-            if token == "(":
-                dates, index = group(index)
-            else:
-                dates = set(_windows(token))
-            if not seen:
-                required = dates if op != "NOT" else set()
-            elif op == "AND":
-                required |= dates
-            elif op == "OR":
-                required &= dates
-            seen, op = True, "AND"
-        return required, index
+    fragment = qt[start:]
+    if fragment.strip():
+        tokens.append(fragment)
 
     try:
-        required, _ = group(0)
+        required, _ = _required_window_group(tokens, 0)
     except RecursionError:
         return []    # 极深表达式不作日期因果解释，仍返回实际执行式
     return [window for window in _windows(qt) if window in required]
 
 
-def _note(d):
-    """把 NCBI 对查询动的手脚原样说出来。键名以实测返回的为准。"""
+def _note(d, *, include_translation=True):
+    """生成解析提示；JSON 已含完整执行式时可省去其文本行，警告仍保留。"""
     lines = []
     term = str(d.get("_term") or "")
     qt = (d.get("querytranslation") or "").strip()
@@ -927,7 +930,7 @@ def _note(d):
             hint = "（PubMed 只索引英文，中文词基本必然走到这里；先换成英文词，如 牙根吸收 → tooth resorption）"
         lines.append(f"⚠️ NCBI 没解析出任何检索条件（querytranslation 为空）{hint}"
                      f"—— 这个结果【不能】用来说明主题有无文献")
-    elif qt.lower() != term.strip().lower():
+    elif include_translation and qt.lower() != term.strip().lower():
         # 只印 querytranslation，不再重复印 translationset —— 实测后者是前者的逐概念分解，
         # 两条都印等于同一份信息烧两遍 token（CBCT 那种短语能扩出 200+ 字符）。
         # as_json=True 时 translationset 会作为结构化字段单独给，脚本要用再从那里取。
@@ -1396,7 +1399,7 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
         # 而 docstring 又让脚本改用 as_json —— 走 JSON 的人恰恰拿不到「这批没取全」这句最需要的话。
         # 现在两支都进 JSON（warnings 里也放一份，脚本只看 warnings 也不会漏）。
         # 完整 querytranslation 已是独立字段，不在 warnings 再复制同一长串。
-        warn = [line for line in _note(d) if not line.startswith("NCBI 实际执行：")]
+        warn = _note(d, include_translation=False)
         warn += [win_warn] if win_warn else []
         if len(pairs) != len(ids):
             # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
