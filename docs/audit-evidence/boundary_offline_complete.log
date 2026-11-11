@@ -1,0 +1,46 @@
+test_error_bodies_redacted (test_audit_regressions.InfrastructureRegression.test_error_bodies_redacted) ... ok
+test_huge_retry_after_fails_without_sleep (test_audit_regressions.InfrastructureRegression.test_huge_retry_after_fails_without_sleep) ... ok
+test_invalid_json_shapes (test_audit_regressions.InfrastructureRegression.test_invalid_json_shapes) ... ok
+test_masks_url_encoded_key (test_audit_regressions.InfrastructureRegression.test_masks_url_encoded_key) ... ok
+test_nested_errors (test_audit_regressions.InfrastructureRegression.test_nested_errors) ... ok
+test_numeric_inputs (test_audit_regressions.InfrastructureRegression.test_numeric_inputs) ... ok
+test_retry_unicode (test_audit_regressions.InfrastructureRegression.test_retry_unicode) ... ok
+test_zero_retry_after_is_respected (test_audit_regressions.InfrastructureRegression.test_zero_retry_after_is_respected) ... ok
+test_invalid_mode_no_network (test_audit_regressions.OutputRegression.test_invalid_mode_no_network) ... ok
+test_mcp_descriptions_match_functions (test_audit_regressions.OutputRegression.test_mcp_descriptions_match_functions) ... ok
+test_missing_metadata_and_no_json_query_duplication (test_audit_regressions.OutputRegression.test_missing_metadata_and_no_json_query_duplication) ... ok
+test_publication_types_not_truncated (test_audit_regressions.OutputRegression.test_publication_types_not_truncated) ... ok
+test_captured_responses (test_audit_regressions.QueryRegression.test_captured_responses) ... ok
+test_date_boolean_semantics (test_audit_regressions.QueryRegression.test_date_boolean_semantics) ... ok
+test_lowercase_and_warns_only_when_changed (test_audit_regressions.QueryRegression.test_lowercase_and_warns_only_when_changed) ... ok
+test_malformed_syntax_and_zero (test_audit_regressions.QueryRegression.test_malformed_syntax_and_zero) ... ok
+test_mixed_cjk (test_audit_regressions.QueryRegression.test_mixed_cjk) ... ok
+test_outputmessages_marked (test_audit_regressions.QueryRegression.test_outputmessages_marked) ... ok
+test_quoted_syntax_is_not_operator (test_audit_regressions.QueryRegression.test_quoted_syntax_is_not_operator) ... ok
+test_zero_claim_is_query_limited (test_audit_regressions.QueryRegression.test_zero_claim_is_query_limited) ... ok
+test_empty_translation_does_not_prove_empty_conditions (test_boundary_regressions.QueryBoundary.test_empty_translation_does_not_prove_empty_conditions) ... ok
+test_field_is_checked_even_with_missing_phrase (test_boundary_regressions.QueryBoundary.test_field_is_checked_even_with_missing_phrase) ... ok
+test_json_missing_phrase_has_accurate_name_and_deprecated_alias (test_boundary_regressions.QueryBoundary.test_json_missing_phrase_has_accurate_name_and_deprecated_alias) ... ok
+test_missing_phrase_does_not_imply_dropped (test_boundary_regressions.QueryBoundary.test_missing_phrase_does_not_imply_dropped) ... ok
+test_paging_precedes_missing_terms (test_boundary_regressions.QueryBoundary.test_paging_precedes_missing_terms) ... ok
+test_sdk_preserves_integer_string_compatibility (test_boundary_regressions.QueryBoundary.test_sdk_preserves_integer_string_compatibility) ... ok
+test_sdk_rejects_boolean_float_and_decimal_string (test_boundary_regressions.QueryBoundary.test_sdk_rejects_boolean_float_and_decimal_string) ... ok
+test_bad_summary_envelopes_raise (test_boundary_regressions.ResponseBoundary.test_bad_summary_envelopes_raise) ... ok
+test_known_empty_placeholder_is_not_failure (test_boundary_regressions.ResponseBoundary.test_known_empty_placeholder_is_not_failure) ... ok
+test_no_link_and_missing_metadata_remains_unknown (test_boundary_regressions.ResponseBoundary.test_no_link_and_missing_metadata_remains_unknown) ... ok
+test_partial_summary_states (test_boundary_regressions.ResponseBoundary.test_partial_summary_states) ... ok
+test_real_record_without_abstract_preserved (test_boundary_regressions.ResponseBoundary.test_real_record_without_abstract_preserved) ... ok
+test_summary_backend_failure_raises (test_boundary_regressions.ResponseBoundary.test_summary_backend_failure_raises) ... ok
+test_summary_error_shell_not_counted_as_record (test_boundary_regressions.ResponseBoundary.test_summary_error_shell_not_counted_as_record) ... ok
+test_summary_uid_conflict_raises (test_boundary_regressions.ResponseBoundary.test_summary_uid_conflict_raises) ... ok
+test_unexpected_and_duplicate_pmids_rejected (test_boundary_regressions.ResponseBoundary.test_unexpected_and_duplicate_pmids_rejected) ... ok
+test_unknown_abstract_payloads_raise (test_boundary_regressions.ResponseBoundary.test_unknown_abstract_payloads_raise) ... ok
+test_valid_link_survives_missing_metadata (test_boundary_regressions.ResponseBoundary.test_valid_link_survives_missing_metadata) ... ok
+test_cancellation_stops_future_retries (test_boundary_regressions.TransportBoundary.test_cancellation_stops_future_retries) ... ok
+test_cancelled_wait_does_not_reserve_slot (test_boundary_regressions.TransportBoundary.test_cancelled_wait_does_not_reserve_slot) ... ok
+test_every_retry_is_paced (test_boundary_regressions.TransportBoundary.test_every_retry_is_paced) ... ok
+
+----------------------------------------------------------------------
+Ran 41 tests in 0.065s
+
+OK

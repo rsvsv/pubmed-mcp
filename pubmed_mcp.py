@@ -72,6 +72,7 @@ import urllib.parse
 import urllib.request
 
 import anyio
+from pydantic import StrictInt, StrictStr
 
 # ---------- SDK 兼容层（放在 NcbiError 之前，因为它的基类要从 SDK 取） ----------
 # 〔实测 2026-11-10，本会话两条通路各跑过完整 --probe〕
@@ -315,11 +316,11 @@ class _Pacer:
     async def wait(self):
         async with self._lock:
             now = time.monotonic()
-            slot = max(now, self._next)
-            self._next = slot + self.interval
-            delay = slot - now
-        if delay > 0:
-            await anyio.sleep(delay)
+            delay = self._next - now
+            if delay > 0:
+                await anyio.sleep(delay)
+            # 只为真正放行的请求推进时钟；取消等待不会留下预约空洞。
+            self._next = time.monotonic() + self.interval
 
 
 _PACER = None
@@ -356,7 +357,7 @@ def _retry_after(headers):
 _NREQ = 0          # 本轮发出去多少次 urlopen（含退避重试的每一次）
 
 
-def _get(path, params, timeout, tries=4):
+def _get(path, params, timeout, tries=4, *, before_attempt=None, wait=None):
     """带 key 和退避重试的 GET，返回响应文本。失败抛 NcbiError 并带 NCBI 原文。
     同步函数，只允许在 _get_async 的线程里调用。
 
@@ -382,7 +383,10 @@ def _get(path, params, timeout, tries=4):
               else "本次【没带】api_key（走匿名 3 次/秒）")
     last = "没试过"
     backoff = (1, 3, 9)
+    wait = time.sleep if wait is None else wait
     for attempt in range(tries):
+        if before_attempt is not None:
+            before_attempt()    # 每次网络尝试都节流；取消检查也在这里执行
         try:
             req = urllib.request.Request(url, headers={"User-Agent": TOOL})
             _NREQ += 1
@@ -401,21 +405,34 @@ def _get(path, params, timeout, tries=4):
                 # 本项目自订等待上限：过长 Retry-After 直接失败，不提前重试违反服务端要求。
                 if delay is not None and delay > 60:
                     raise NcbiError(_mask(f"{path} 失败：{last}；Retry-After={delay:g}s 超过本工具等待上限，请稍后重试"))
-                time.sleep(backoff[min(attempt, 2)] if delay is None else delay)
+                wait(backoff[min(attempt, 2)] if delay is None else delay)
                 continue
             raise NcbiError(_mask(f"{path} 失败：{last}（{keyhow}）"))   # 400/414 这种重试没意义
         except Exception as e:
             last = f"{type(e).__name__}: {e}"
             if attempt == tries - 1:
                 break
-            time.sleep(backoff[min(attempt, 2)])
+            wait(backoff[min(attempt, 2)])
     raise NcbiError(_mask(f"{path} 试了 {tries} 次仍失败：{last}（{keyhow}）"))
 
 
+def _thread_before_attempt():
+    anyio.from_thread.check_cancelled()
+    anyio.from_thread.run(_pace)
+    anyio.from_thread.check_cancelled()
+
+
+def _thread_wait(delay):
+    anyio.from_thread.check_cancelled()
+    anyio.from_thread.run(anyio.sleep, delay)
+    anyio.from_thread.check_cancelled()
+
+
 async def _get_async(path, params, timeout, tries=4):
-    await _pace()
+    # 线程中的 urllib 正在读 socket 时仍受 socket timeout 约束；取消后不再发新重试。
     return await anyio.to_thread.run_sync(
-        functools.partial(_get, path, params, timeout, tries))
+        functools.partial(_get, path, params, timeout, tries,
+                          before_attempt=_thread_before_attempt, wait=_thread_wait))
 
 
 # ---------- eutils ----------
@@ -924,11 +941,12 @@ def _note(d, *, include_translation=True):
     qt = (d.get("querytranslation") or "").strip()
     if not qt:
         # 实测：中文查询（"牙根吸收"、"种植钉"）会让 NCBI 返回空的 querytranslation + 0 条。
-        # 这个 0 是「NCBI 没解析出任何检索条件」，不是「这个主题没有文献」，两者必须分开说。
+        # 已作废（2026-11-11）：空执行式证明没有任何条件、以及「PubMed 只索引英文」。
+        # 作废理由：空字段只说明未返回执行式；既有样例不足以证明索引语言的绝对结论。
         hint = ""
         if _CJK.search(term):
-            hint = "（PubMed 只索引英文，中文词基本必然走到这里；先换成英文词，如 牙根吸收 → tooth resorption）"
-        lines.append(f"⚠️ NCBI 没解析出任何检索条件（querytranslation 为空）{hint}"
+            hint = "（查询含中文，建议先换成对应英文词重查，如 牙根吸收 → tooth resorption）"
+        lines.append(f"⚠️ NCBI 未返回实际执行式（querytranslation 为空）{hint}"
                      f"—— 这个结果【不能】用来说明主题有无文献")
     elif include_translation and qt.lower() != term.strip().lower():
         # 只印 querytranslation，不再重复印 translationset —— 实测后者是前者的逐概念分解，
@@ -944,14 +962,15 @@ def _note(d, *, include_translation=True):
     if isinstance(e, dict):
         nf = [str(x) for x in _as_list(e.get("phrasesnotfound") or [])]
         if nf:
-            lines.append("⚠️ NCBI 查不到这些片段，已【丢弃】（它们没有参与检索）：" + ", ".join(nf))
+            # 已作废 2026-11-11：「phrasesnotfound 就是已丢弃」。在线 AND 反例仍为零命中。
+            lines.append("⚠️ NCBI 未找到这些检索片段（phrasesnotfound）：" + ", ".join(nf) +
+                         "；不能据此断言它们被丢弃，也不能把计数解释成剩余词的结果。")
         ff = _as_list(e.get("fieldsnotfound") or [])
         if ff:
-            lines.append("⚠️ NCBI 查不到这些字段，已【丢弃】：" + ", ".join(map(str, ff)))
+            lines.append("⚠️ NCBI 未识别这些字段，请核对实际执行式：" + ", ".join(map(str, ff)))
     ig, qn, others = _warn_bits(d)
     if ig:
-        lines.append("⚠️ NCBI 把这些词当【停用词】直接忽略（它们没参与检索，与上面「已丢弃」是两条"
-                     "不同的路）：" + ", ".join(ig))
+        lines.append("⚠️ NCBI 把这些词当【停用词】忽略：" + ", ".join(ig))
     if qn:
         try:
             _c = int(str(d.get("count") or "0"))
@@ -1015,10 +1034,8 @@ def _note(d, *, include_translation=True):
         # 所以这里不再写「已下发」了事，改成给一条可自己核对的判据。
         extra = ""
         fa = str(d["_field_applied"])
-        if nf:
-            extra = ("\n   ⚠️ 上面那些片段被丢弃后，field 只作用在【剩下的部分】上 —— "
-                     "这个数不是「原查询在该字段下的命中数」")
-        elif ("[" + fa + "]") in qt:
+        # 未找到片段并不证明 field 生效；独立检查执行式里的字段标签。
+        if ("[" + fa + "]") in qt:
             # 〔实测 2026-11-09〕判据顺序必须是「先看 qt 有没有，再说别的」：
             #   term='tooth resorption AND 2020:2026[dp]' 配 field=Title 时 qt 是
             #   `"tooth"[Title] AND "resorption"[Title] AND 2020/01/01:2026/12/31[Date - Publication]`
@@ -1082,6 +1099,9 @@ def _zero_explanation(d, count):
         # 否则锅会被甩给别的条件。
         return (f"本次 0 条是因为 retmax=0：你只要计数、没要记录。"
                 f"命中数是真实的 {count} 条；要记录请传 retmax>0，只要数字可以用 count()。")
+    if count and int(d.get("retstart") or 0) >= count:
+        return (f"本次 0 条只是因为 retstart={d.get('retstart')} 越过了命中总数 {count} 条，"
+                "不是「没有匹配」——往回翻页即可。")
     if _all_dropped(d):
         # 〔实测 2026-11-10〕旧写法对两种「全丢」说同一句话，而建议只对其中一种成立：
         #   errorlist.phrasesnotfound 全丢  → 多半是 field 选错（tooth resorption[Journal]），
@@ -1092,10 +1112,10 @@ def _zero_explanation(d, count):
             isinstance(d.get("errorlist"), dict) and d["errorlist"].get("phrasesnotfound"))
         if only_stop:
             return ("0 条，但这【不能】当成「主题没有文献」：NCBI 把你写的词全当【停用词】忽略了"
-                    "（the/and/of 这类虚词，见上 ⚠️），实际生效的检索条件为空。"
+                    "（见上 ⚠️）；是否还有日期等条件请看实际执行式。"
                     "换字段没用——要换成语义实词（如 miniscrew、root resorption）再问一次。")
-        return ("0 条，但这【不能】当成「主题没有文献」：NCBI 把这条查询里的词全部丢弃了（见上 ⚠️），"
-                "实际生效的检索条件为空。换成有索引的字段（如 tiab）或去掉 field 再问一次。")
+        return ("0 条，但这【不能】当成「主题没有文献」：查询词全部被报告为未找到或被忽略（见上 ⚠️）。"
+                "这不等于所有执行条件为空；核对拼写、字段和日期后再查。")
     for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(_required_windows(d)):
         if a1 > b2 or a2 > b1:
             return (f"0 条的一个可能原因是【两段同字段（{l1}）的日期窗口不相交】：NCBI 执行的是 "
@@ -1103,10 +1123,7 @@ def _zero_explanation(d, count):
                     f"这不能读成主题没文献 —— 放宽 reldate，或去掉 mindate/maxdate 再问一次。")
     if not (d.get("querytranslation") or "").strip():
         return ("0 条，但这条 0 不能作为「主题没有文献」的依据："
-                "NCBI 压根没解析出检索条件（见上）。")
-    if count and int(d.get("retstart") or 0) >= count:
-        return (f"本次 0 条只是因为 retstart={d.get('retstart')} 越过了命中总数 {count} 条，"
-                f"不是「没有匹配」——往回翻页即可。")
+                "NCBI 未返回实际执行式，无法据此确认检索条件（见上）。")
     if _warn_bits(d)[1]:
         return ("0 条的原因是 NCBI 说【整个引号短语在索引里不存在】"
                 f"（warninglist.quotedphrasesnotfound＝{_warn_bits(d)[1]}）。"
@@ -1115,13 +1132,16 @@ def _zero_explanation(d, count):
     if _phrase_gap(d):
         return ("0 条，但先看清楚：上面 ⚠️ 说引号短语里有词没进实际执行，"
                 "所以这个 0 是「剩下那几个词的组合没有匹配」，不是你写的那个短语的结论。")
-    if _query_warnings(d) or _warn_bits(d)[2] or (d.get("errorlist") or {}).get("fieldsnotfound"):
+    if (_query_warnings(d) or _warn_bits(d)[2] or
+            any((d.get("errorlist") or {}).get(k) for k in ("fieldsnotfound", "phrasesnotfound"))):
         return "0 条，但查询解析有警告；修正检索式后再查，不能据此判断主题有无文献。"
     return "0 条：本次实际执行的检索式未匹配记录；这不证明该主题或某篇文献不存在。"
 
 
 def _all_dropped(d):
-    """整条查询里的词是不是全被 NCBI 丢掉了。丢掉后 querytranslation 只是原词回显，
+    """历史函数名保留；现只判断查询词是否全部被报告未找到/忽略。
+    【已作废 2026-11-11】以下旧解释把未找到等同于丢弃、把文本词问题等同于条件为空：
+    整条查询里的词是不是全被 NCBI 丢掉了。丢掉后 querytranslation 只是原词回显，
     实际生效的检索条件为空 —— 这种 0 条绝不能写成「PubMed 里没有匹配」。
     〔实测 2026-11-08〕search('tooth resorption', field='journal')：命中 0、
     phrasesnotfound=[tooth, resorption]，旧输出跟着印「HTTP 请求是成功的，PubMed 里确实没有匹配这篇」。"""
@@ -1217,7 +1237,7 @@ def _parse_pmids(pmids):
     return uniq, len(ids)
 
 
-async def _esummary_dicts(ids):
+async def _esummary_dicts(ids, *, include_unavailable=False):
     """分批取 esummary，返回 [(uid, 记录), ...]。
     uid 一律用 NCBI 自己给的 result.uids，不拿入参顺序去 zip —— 顺序不保证一致。"""
     ids = list(ids)
@@ -1229,12 +1249,29 @@ async def _esummary_dicts(ids):
             d = _safe_json(await _get_async("esummary.fcgi",
                                             {"db": "pubmed", "id": ",".join(c), "retmode": "json"}, 25),
                            "esummary")
+            res = d.get("result")
+            if not isinstance(res, dict) or not isinstance(res.get("uids"), list):
+                raise NcbiError("esummary 缺少合法的 result/uids，无法判断记录是否存在；请重试")
+            uids = res["uids"]
+            if any(not isinstance(u, str) or u not in c for u in uids) or len(set(uids)) != len(uids):
+                raise NcbiError("esummary 返回的 PMID 列表与请求不符，不能作为有效元数据")
+            records = []
+            for uid in uids:
+                rec = res.get(uid)
+                if rec is None:
+                    continue    # 单条缺失保持未知，不凭空造记录
+                if not isinstance(rec, dict):
+                    raise NcbiError(f"esummary 的 PMID {uid} 元数据结构异常")
+                if "uid" in rec and rec["uid"] != uid:
+                    raise NcbiError(f"esummary 的 PMID {uid} 与记录内部 uid 不一致，不能作为有效元数据")
+                if rec.get("error") and rec["error"] != "cannot get document summary":
+                    raise NcbiError(_mask(f"esummary 的 PMID {uid} 请求失败：{rec['error']}"))
+                if include_unavailable or (not rec.get("error") and rec.get("title")):
+                    records.append((uid, rec))
+            out[i] = records
         except NcbiError as e:
             errs.append(e)      # 不让它出组：ExceptionGroup 的 str() 里没有 NCBI 原文
             return
-        res = d.get("result", {})
-        uids = res.get("uids", [])
-        out[i] = [(u, res.get(u) or {}) for u in uids]
 
     errs = []
     async with anyio.create_task_group() as tg:
@@ -1317,6 +1354,13 @@ async def _efetch_abstracts(pmids):
     if head.startswith("<!doctype") or head.startswith("<html"):
         raise NcbiError("efetch 回的是 HTML 页面（HTTP 200 也可能是故障页/网关页），不是摘要正文 —— "
                         "这【不是】「这些 PMID 没有摘要」。原文开头：" + _mask(text.lstrip()[:200]))
+    got = re.findall(r"^PMID: (\d+)", text, re.M)
+    if len(got) != len(set(got)) or not set(got).issubset(pmids):
+        raise NcbiError("efetch 返回的 PMID 与请求不符或重复，不能作为有效摘要")
+    # 无效号的空占位形状已在线核对；其它无 PMID 正文不能解释为文献不存在。
+    if not got and not re.fullmatch(r"\s*(?:\d+\.\s*)+", text):
+        raise NcbiError("efetch 返回了无法识别的正文，无法判断记录是否存在；原文开头：" +
+                        _mask(text.lstrip()[:200]))
     return text
 
 
@@ -1358,8 +1402,9 @@ mcp = FastMCP("PubMed")
 
 
 @mcp.tool()
-async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
-                 mindate: str = "", maxdate: str = "", reldate: int = 0, retstart: int = 0,
+async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", field: str = "",
+                 mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,
+                 retstart: StrictInt | StrictStr = 0,
                  as_json: bool | str = False) -> str:
     """检索 PubMed，返回命中数及 PMID、日期、期刊、标题、作者、DOI、PMC、文献类型。
 
@@ -1412,7 +1457,10 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
             "field": d.get("_field_applied", ""),
             "count": count, "retstart": int(d.get("retstart") or 0), "returned": len(pairs),
             "esummary_missing": max(0, len(ids) - len(pairs)),
+            "phrases_not_found": _as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
+            # 兼容旧调用方保留别名；原「已丢弃」解释已作废，见 deprecated_fields。
             "dropped_phrases": _as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
+            "deprecated_fields": {"dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"},
             "daterange": d.get("_daterange") or "",
             "executed_windows": d.get("_windows") or [],
             "window_warning": win_warn,
@@ -1438,7 +1486,7 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
 
 @mcp.tool()
 async def count(term: str, field: str = "", mindate: str = "", maxdate: str = "",
-                reldate: int = 0) -> str:
+                reldate: StrictInt | StrictStr = 0) -> str:
     """只取 PubMed 命中数，不取题录；需要题录直接用 search，避免重复检索。
 
     term、field、日期参数规则同 search：英文词，大写 AND/OR/NOT，日期按发表日期。
@@ -1494,7 +1542,9 @@ def _check_db(to):
 
 
 async def _pmids_exist(pids):
-    """哪些 PMID 真的存在于 PubMed。返回 set。
+    """返回 PMID 到 present / unavailable / unknown 的映射。
+
+    【已作废 2026-11-11】下面旧依据不能推出“未返回就不存在”；只有正常记录证明存在。
 
     〔实测 2026-11-08〕elink 分不出「号不存在」和「号存在但那个方向零链接」——
     真号 42760028（to=pmc 无链接）与假号 9999999999 返回的 linkset 形状逐字相同
@@ -1504,14 +1554,15 @@ async def _pmids_exist(pids):
       真号 → 完整记录（实测 42760028 / 33485718 各 43 个键）
       假号 → 空壳，且带 error="cannot get document summary"（实测 9999999999 只有 2 个键）
     """
-    if not pids:
-        return set()
-    pairs = await _esummary_dicts(list(pids))
-    have = set()
+    # 已作废 2026-11-11：缺返回/空壳不一律证明不存在。保留每个请求号的独立状态。
+    states = {str(pid): "unknown" for pid in pids}
+    pairs = await _esummary_dicts(list(states), include_unavailable=True)
     for uid, rec in pairs:
-        if isinstance(rec, dict) and not rec.get("error") and len(rec) > 3:
-            have.add(str(uid))
-    return have
+        if rec.get("error") == "cannot get document summary":
+            states[uid] = "unavailable"
+        elif not rec.get("error") and rec.get("title"):
+            states[uid] = "present"
+    return states
 
 
 @mcp.tool()
@@ -1521,7 +1572,7 @@ async def links(pmids: str, to: str = "pmc") -> str:
     to: pmc（默认）/ gene / nucleotide / pubmed，大小写不敏感。
     每行列直接关联号；方括号是其它关联方向的计数。关联过多时显示部分号及总数。
     to=pubmed 是相关文献，含自身；to=pmc 是 PMC 关联，不保证开放许可或此刻可下载。
-    “无直接对应记录”与“不存在的 PMID”分开报告；存在性由 esummary 核对。
+    无关联、元数据不可用与存在性未知分开报告；esummary 缺失不证明 PMID 不存在。
     search 已给 PMC 时无需重复查询 links。内部逐 PMID 请求以保留归属，失败明确标注。
     """
     uniq, _ = _parse_pmids(pmids)
@@ -1581,12 +1632,16 @@ async def links(pmids: str, to: str = "pmc") -> str:
                         (x if db != "pmc" else f"PMC{x}") for x in dests[:8])
                         + (f"…共 {len(dests)}" if len(dests) > 8 else ""))
         tail = ("  [" + "; ".join(other) + "]") if other else ""
-        if pid not in exist:
-            # 号不存在优先说：它比「有没有链接」更基本，而且 esummary 的判据是可靠的
-            out[i] = f"PMID {pid}  ⚠️ PubMed 里没有这个号（esummary 只回空壳，" \
-                     f"这【不是】「{db} 库无对应记录」，先核对 PMID）"
-        elif mine:
+        state = exist.get(pid, "unknown")
+        if mine:
             out[i] = f"PMID {pid}  " + "  ".join(mine) + tail
+            if state != "present":
+                out[i] += "  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核"
+        elif state == "unavailable":
+            out[i] = (f"PMID {pid}  ⚠️ esummary 未找到此号的文档摘要（cannot get document summary）；"
+                      "请核对 PMID 或稍后重试，不能据此判断全文可用性") + tail
+        elif state == "unknown":
+            out[i] = f"PMID {pid}  ⚠️ 元数据缺失，存在性无法确认；请重试" + tail
         else:
             out[i] = f"PMID {pid}  ({db} 库无直接对应记录)" + tail
 
@@ -1727,7 +1782,7 @@ async def _probe():
     print("1) 拼错的词必须在「NCBI 实际执行」里现形")
     s = await attempt("s", search, "anchorage devcie", retmax=1, default="")
     check("querytranslation 已打印", "NCBI 实际执行" in s, s[:200])
-    check("丢弃的词被点名", "已【丢弃】" in s, s[:200])
+    check("未找到的词被点名，不假定丢弃", "phrasesnotfound" in s and "已【丢弃】" not in s, s[:300])
 
     print("2) 非法 field 必须报错，不能静默退化成全字段")
     try:
@@ -1802,8 +1857,8 @@ async def _probe():
 
     print("11) 中文查询：0 条必须被说成「NCBI 没解析出来」，不能当成「主题没文献」")
     c = await attempt("c", count, "牙根吸收", default="")
-    check("空解析被点名", "没解析出任何检索条件" in c, c[:160])
-    check("给了英文对照提示", "只索引英文" in c, c[:160])
+    check("空解析被点名", "未返回实际执行式" in c, c[:160])
+    check("给了英文对照提示", "对应英文词重查" in c, c[:160])
     check("不再印空的「NCBI 实际执行」", "NCBI 实际执行" not in c, c[:160])
     s0 = await attempt("s0", search, "种植钉", retmax=1, default="")
     check("search 的 0 条也跟着改口", "不能作为" in s0, s0[:200])
@@ -1900,7 +1955,7 @@ async def _probe():
     except BaseException as e:          # 被包成 ExceptionGroup 就是要防的那种
         check("非法库名给人话报错", False, f"{type(e).__name__}: {str(e)[:80]}")
     l_bad = await attempt("l_bad", links, "9999999999", default="")
-    check("不存在的号不再和「无全文」同句", "里没有这个号" in l_bad, l_bad[:200])
+    check("无效号明确报告元数据不可用，不推断无全文", "cannot get document summary" in l_bad, l_bad[:300])
     check("收得下 PMID 12345 这种粘贴", _parse_pmids("PMID 12345")[0] == ["12345"],
           str(_parse_pmids("PMID 12345")))
     check("收得下 pmid: 前缀", _parse_pmids("pmid: 37427694, 33485718")[0] == ["37427694", "33485718"], "")
@@ -2087,7 +2142,7 @@ async def _probe():
     check("这段真文献不能说成「确实没有匹配这篇」", "确实没有匹配这篇" not in s_old, s_old[-240:])
     s_drop = await attempt("s_drop", search, "zzzqqx AND qbvcjk", retmax=5, default="")
     check("全词被丢＋布尔算子时不许下「确实没有匹配」的结论",
-          "全部丢弃" in s_drop and "确实没有匹配这篇" not in s_drop, s_drop[-300:])
+          "全部被报告" in s_drop and "确实没有匹配这篇" not in s_drop, s_drop[-300:])
     s_keep = await attempt("s_keep", search, "tooth resorption", retmax=1, default="")
     check("有词的查询仍正常（反向：上面那条不是无条件生效）", "命中" in s_keep, s_keep[:120])
     j_norm = await attempt_json("j_norm", search, "miniscrew", retmax=2, as_json=True)
@@ -2376,7 +2431,7 @@ async def _probe():
         return "{}"
 
     async def _fake_exist(pids):
-        return set(pids)
+        return {pid: "present" for pid in pids}
 
     globals()["_get_async"], globals()["_pmids_exist"] = _fake_elink, _fake_exist
     try:

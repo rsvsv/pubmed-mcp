@@ -1,0 +1,50 @@
+[
+  {
+    "source_type": "实测/新 stdio 进程工具输出",
+    "tool": "count",
+    "arguments": {
+      "term": "miniscrew[Title] AND zzzqqx"
+    },
+    "is_error": false,
+    "output": "查询：miniscrew[Title] AND zzzqqx\n命中 0 条\n⚠️ NCBI 未找到这些检索片段（phrasesnotfound）：zzzqqx；不能据此断言它们被丢弃，也不能把计数解释成剩余词的结果。"
+  },
+  {
+    "source_type": "实测/新 stdio 进程工具输出",
+    "tool": "count",
+    "arguments": {
+      "term": "tooth",
+      "reldate": true
+    },
+    "is_error": true,
+    "output": "Error executing tool count: 2 validation errors for countArguments\nreldate.int\n  Input should be a valid integer [type=int_type, input_value=True, input_type=bool]\n    For further information visit https://errors.pydantic.dev/2.13/v/int_type\nreldate.str\n  Input should be a valid string [type=string_type, input_value=True, input_type=bool]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type"
+  },
+  {
+    "source_type": "实测/新 stdio 进程工具输出",
+    "tool": "search",
+    "arguments": {
+      "term": "37427694",
+      "retmax": "1",
+      "as_json": true
+    },
+    "is_error": false,
+    "output": "{\"term\": \"37427694\", \"querytranslation\": \"37427694[UID]\", \"translationset\": [], \"field\": \"\", \"count\": 1, \"retstart\": 0, \"returned\": 1, \"esummary_missing\": 0, \"phrases_not_found\": [], \"dropped_phrases\": [], \"deprecated_fields\": {\"dropped_phrases\": \"弃用别名，请读 phrases_not_found；不表示这些词已被丢弃\"}, \"daterange\": \"\", \"executed_windows\": [], \"window_warning\": \"\", \"zero_note\": \"\", \"records\": [{\"pmid\": \"37427694\", \"pubdate\": \"2023 Sep\", \"epubdate\": \"2023 Jul 3\", \"journal\": \"Dentomaxillofac Radiol\", \"citation\": \"52(6):20220396\", \"title\": \"Application of metal artifact reduction algorithm for CBCT diagnosis of temporary anchorage device-tooth root contact: inadequate to reduce false-positive rate.\", \"authors\": \"McLaughlin V, Liu J, Kalim S\", \"author_count\": 6, \"doi\": \"10.1259/dmfr.20220396\", \"pmc\": \"PMC10461258\", \"pubtype\": [\"Journal Article\"], \"ptag\": \"\"}], \"warnings\": []}"
+  },
+  {
+    "source_type": "实测/新 stdio 进程工具输出",
+    "tool": "fetch_abstracts",
+    "arguments": {
+      "pmids": "37427694,42759866,9999999999"
+    },
+    "is_error": false,
+    "output": "要 3 条 / 实取 2 条（分 1 批）\n⚠️ NCBI 没返回这些号的记录（efetch 正文里没有对应的 PMID 行）——注意【不是】「这篇没有摘要」：实测没有摘要的社论照样返回记录、照样算实取。这里点名的一律是取不到条目本身：9999999999\n\n1. Dentomaxillofac Radiol. 2023 Sep;52(6):20220396. doi: 10.1259/dmfr.20220396. \nEpub 2023 Jul 3.\n\nApplication of metal artifact reduction algorithm for CBCT diagnosis of \ntemporary anchorage device-tooth root contact: inadequate to reduce \nfalse-positive rate.\n\nMcLaughlin V(1), Liu J(1), Kalim S(2), Nguyen K(1), Kim DG(1), Sun Z(1).\n\nAuthor information:\n(1)Division of Orthodontics, College of Dentistry, Ohio State University, \nColumbus, OH, United States.\n(2)Division of Oral and Maxillofacial Radiology, College of Dentistry, Ohio \nState University, Columbus, Ohio, United States.\n\nOBJECTIVES: It was recently found that when cone beam computed tomography (CBCT) \nwas used to examine temporary anchorage device (TAD)-tooth root contact, it \ntends to yield high false-positive (FP) diagnoses. This study investigated \nwhether application of a metal artifact reduction (MAR) algorithm or reducing \nCBCT scan voxel-size can remediate this problem.\nMETHODS: 18 fresh pig cadaver mandibles underwent TAD placement bilaterally at \nfirst molar lingual furcation regions. CBCT scans were taken under varied MAR \n(absence, presence) and voxel-size (400 µm, 200 µm) settings. Then, TADs were \nremoved and a micro-CT scan (27 µm voxel-size) of the TAD placement site was \nperformed. Three raters, blinded of CBCT scan setting, independently diagnosed \nwhether TADs were in contact with roots. The reliability and accuracy of CBCT \ndiagnoses using micro-CT as the gold-standard were statistically examined.\nRESULTS: Generally, CBCT diagnoses had intrarater (Cohen's κ: 0.54-1) and \ninterrater (Fleiss' κ: 0.73-0.81) reliability, within the moderate to excellent \nrange, which did not vary with MAR setting or scan voxel-size. For diagnostic \naccuracy, FP rate among all raters was mostly in the 15-25% range and did not \nchange with MAR or scan voxel-size settings (McNemar tests, p > 0.05) while \nfalse-negative rate was relatively minimal and only occurred to one rater (9%).\nCONCLUSIONS: When using CBCT to diagnose possible TAD-root contact, applying a \ncurrently available Planmeca MAR algorithm or reducing CBCT scan voxel-size from \n400 µm to 200 µm may not decrease FP rate. Further optimization of the MAR \nalgorithm for this purpose may be needed.\n\nDOI: 10.1259/dmfr.20220396\nPMCID: PMC10461258\nPMID: 37427694 [Indexed for MEDLINE]\n\n\n2. Am Heart J. 2027 Jan;303:107610. doi: 10.1016/j.ahj.2026.107610. Epub 2026 Sep\n 18.\n\nLetter to the Editor regarding \"association between atherosclerosis and atrial \nfibrillation progression in patients with paroxysmal atrial fibrillation: Data \nfrom the RACE V study\".\n\nWang HH(1), Hu QQ(2), Ren K(3).\n\nAuthor information:\n(1)College of Nursing, Anhui University of Chinese Medicine, Hefei, Anhui, PR \nChina; Key Laboratory of Geriatric Nursing and Health, Anhui University of \nChinese Medicine, Hefei, Anhui, PR China.\n(2)College of Nursing, Anhui University of Chinese Medicine, Hefei, Anhui, PR \nChina; Key Laboratory of Geriatric Nursing and Health, Anhui University of \nChinese Medicine, Hefei, Anhui, PR China. Electronic address: 328841853@qq.com.\n(3)College of Nursing, Anhui University of Chinese Medicine, Hefei, Anhui, PR \nChina; Key Laboratory of Geriatric Nursing and Health, Anhui University of \nChinese Medicine, Hefei, Anhui, PR China. Electronic address: kr198908@163.com.\n\nDOI: 10.1016/j.ahj.2026.107610\nPMID: 42759866"
+  },
+  {
+    "source_type": "实测/新 stdio 进程工具输出",
+    "tool": "links",
+    "arguments": {
+      "pmids": "37427694,9999999999"
+    },
+    "is_error": false,
+    "output": "elink pubmed→pmc，2 个 PMID（每个一次请求，另加一次 esummary 判号是否存在）：\nPMID 37427694  pubmed_pmc=PMC10461258  [pubmed_pmc_refs:4 条]\nPMID 9999999999  ⚠️ esummary 未找到此号的文档摘要（cannot get document summary）；请核对 PMID 或稍后重试，不能据此判断全文可用性\n说明：直接对应记录＝PMC 关联，开放许可/当前可下载性未核实；无关联不代表其它站点无全文；方括号为其它关联计数。"
+  }
+]

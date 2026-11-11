@@ -1,0 +1,193 @@
+1) 拼错的词必须在「NCBI 实际执行」里现形
+  PASS  querytranslation 已打印
+  PASS  未找到的词被点名，不假定丢弃
+2) 非法 field 必须报错，不能静默退化成全字段
+  PASS  field 白名单
+2b) sort 不能静默失效，也不能把真生效的值当乱写的拦掉（实测：pub_date / relevance / author 会换顺序，其余与不传时同序）
+  PASS  sort 白名单
+  PASS  合法 sort 仍能走
+3) field=MeSH Terms 拿不到 count 时必须抛错，不许印 '?'
+  PASS  count 缺失守卫
+4) 空 term 在 count 里也要拦住（旧版只有 search 拦了）
+  PASS  空 term 守卫
+5) 不存在的 PMID：报「要 N / 实取 M」并点名缺的，不再拿请求数冒充结果数
+  PASS  诚实计数
+  PASS  缺失被点名
+  PASS  去重不谎报
+6) 大批量 esummary 不再撞 414（旧版 ~350 个 id 拼一个 GET 必挂）
+  PASS  retmax=400 出得来
+7) 开放获取标识出现在列表里（省一次 fetch 请求）
+  PASS  pmc 已输出
+  PASS  卷页已输出
+8) PMID 输入容错：PMC 号不能冒充 PMID
+  PASS  拒收 PMC 号
+9) elink：多 id 必须各归各，不合并
+  PASS  有全文的那条认得出
+  PASS  归属不串
+  PASS  无对应的明说
+10) 顶层 ERROR 不能被当成「NCBI 里没有」
+  PASS  ERROR 守卫
+11) 中文查询：0 条必须被说成「NCBI 没解析出来」，不能当成「主题没文献」
+  PASS  空解析被点名
+  PASS  给了英文对照提示
+  PASS  不再印空的「NCBI 实际执行」
+  PASS  search 的 0 条也跟着改口
+12) 本轮实测复现的 6 类（单边日期被丢、假「确实没匹配」、to 大小写、ExceptionGroup、PMID 粘贴形状、ta 别名）
+  PASS  只给一端时日期真的生效
+  PASS  补了哪一端在输出里写明
+  PASS  reldate 单独给也生效
+  PASS  乱写的日期被拦
+  PASS  区间给反了被拦
+  PASS  词全被丢弃时不再断言「确实没有匹配」
+  PASS  retstart 超窗口被提前拦下
+  PASS  翻页越过命中总数不说成「没有匹配」
+  PASS  retmax 超上限要说出是【本工具】夹的，不许看着像 NCBI 只给了这么多
+  PASS  夹完确实只给了 1000 条以内（反向：说明不是空话）
+  PASS  retmax 负数必须报错，不许静默变成 1 条
+  PASS  retmax=0 是「只要计数」，不该被静默改成 1 条
+  PASS  retmax=0 的 0 条不许说成「确实没有匹配这篇」
+  PASS  as_json 的 zero_note 同样不许说「确实没有匹配」
+  PASS  说明里推荐的 MeSH 示例真能查到东西，且回显没有被改写
+  PASS  文档里的字段标签示例 resorption[Title] 真能查到东西
+  PASS  工具说明里的字段标签示例仍是【不带引号】的正确形状
+  PASS  MeSH 说明不再把「加引号写错」说成静默，并保留「不加引号会被改写」这一支
+  PASS  as_json 的字符串形状仍由 _as_bool 处理（签名是 bool|str，pydantic 那关不拦）
+  PASS  to 大小写不再造出假阴性
+  PASS  非法库名给人话报错
+  PASS  无效号明确报告元数据不可用，不推断无全文
+  PASS  收得下 PMID 12345 这种粘贴
+  PASS  收得下 pmid: 前缀
+  PASS  补零号规范成裸号
+  PASS  补零号不再「实取 1 条」与「没返回」同屏
+  PASS  ta 按 PubMed 自己的含义映射成 Journal
+  PASS  tiab 仍是 Title/Abstract
+13) 第三轮审查实测到的 9 类（reldate 隐身、空交集假 0、不存在的日历日、年级粒度、field 被吞、term 内标签压过 field、引号内丢词、9999 窗口、elink 判据反了）
+  PASS  reldate 加一条不该改变结果的宽区间，命中数必须一模一样
+  PASS  两段日期同给时必须写清是 NCBI 做两段 AND
+  PASS  打印的每个窗口逐字来自 NCBI 回显（横杠换斜杠后能在回显里找到）
+  PASS  哨兵上界 2999-12-31 出现在输出里（本机日历算不出这个数）
+  PASS  两段窗口不相交时点明（这种情况 0 条不代表主题没文献）
+  PASS  不相交的 0 条不能说成「确实没有匹配这篇」
+  PASS  reldate 单给也按发表日期口径
+  PASS  日历上不存在的 2023-02-29 被拦
+  PASS  日历上不存在的 2020-13-01 被拦
+  PASS  日历上不存在的 2020-02-30 被拦
+  PASS  日历上不存在的 2020-00-00 被拦
+  PASS  真闰日不误伤
+  PASS  年级 maxdate 配完整 mindate 不许被误判成倒挂（c_yr 必须有命中行）
+  PASS  年级 maxdate 与写成 12-31 的必须同数
+  PASS  真倒挂（mindate 在 NO_END 之后）仍然要抛，不许被守卫放宽成静默 0 条
+  PASS  field=keywords（实测被 NCBI 整条吞掉）不再静默给不限定的数
+  PASS  field=pmcid（实测被 NCBI 整条吞掉）不再静默给不限定的数
+  PASS  field=issn（实测被 NCBI 整条吞掉）不再静默给不限定的数
+  PASS  term 里写了概念级标签时点破 field 被顶掉
+  PASS  term 里只有日期标签时不能说 field 被丢
+  PASS  词全被当停用词时，不许说「确实没有匹配这篇」
+  PASS  停用词那条要给对建议（换实词，不是换字段）
+  PASS  短语被换成按词 AND 且有命中时，要说清那个数不是短语的数
+  PASS  输出里不许抄旧错句当历史说明（第 7 轮就是这里自己踩了自己的断言）
+  PASS  整个引号短语查不到时要说出来，且不说成主题没文献
+  PASS  count() 也不能漏掉 warninglist（它和 search 走同一套说明）
+  PASS  带千位分隔符的 '1,234,567' 必须拦住，不许切成三个真号
+  PASS  带千位分隔符的 'PMID 1,234,567' 必须拦住，不许切成三个真号
+  PASS  带千位分隔符的 '12,345' 必须拦住，不许切成三个真号
+  PASS  普通逗号列表仍然是多个号（反向：新拦法没把正常用法杀掉）
+  PASS  引号内丢词必须点名（NCBI 不填 phrasesnotfound）
+  PASS  正常引号短语不误报
+  PASS  贴到 9999 检索窗口上限时说明白
+  PASS  as_json 也必须带上窗口到顶的警告
+  PASS  retstart=9999 越限要给人话而不是 NCBI 原文 blob
+  PASS  retstart=10000 越限要给人话而不是 NCBI 原文 blob
+  PASS  retstart=9998 是合法边界、不该被自己拦死
+  PASS  links 对真号至少印出一行 PMID 数据（否则下面两条否定式断言无从判起）
+  PASS  真号没有 PMC 链接时不能说成「号不存在」
+  PASS  这种情况写成「库无直接对应记录」
+  PASS  to=pubmed 至少印出一行 PMID 数据
+  PASS  to=pubmed 的数据行不说成「有全文」
+  PASS  to=pubmed 给的是 NCBI 的关联链接名
+14) 第四轮实测（reldate 取值范围、早于 1809 的题录、全词被丢还带布尔算子、链接 docstring 形状）
+  PASS  reldate=-30 必须由本工具的前置校验拦下
+  PASS  reldate=1000000000 必须由本工具的前置校验拦下
+  PASS  早于 1809 的区间不能报 0（旧版补的下界 1809-01-01 会把这段整个切掉）
+  PASS  这段真文献不能说成「确实没有匹配这篇」
+  PASS  全词被丢＋布尔算子时不许下「确实没有匹配」的结论
+  PASS  有词的查询仍正常（反向：上面那条不是无条件生效）
+  PASS  as_json 在真带日期条件时给出非空的窗口与 daterange
+  PASS  没有日期条件时 executed_windows 必须真的是空列表（不是漏填）
+  PASS  sort=best match 被改写成 relevance 这件事必须说出来
+  PASS  sort=author 现在被接受（实测它真会换顺序）
+  PASS  sort=author 的 idlist 与不传 sort 不同（反向：白名单不是白加）
+  PASS  三种真实顺序两两不同（pub_date / author / 默认）
+  PASS  缺条目不再被解释成「这篇没摘要」
+15) 日期窗口解析（全离线；形状用 chr(47) 拼，因为工具渲染会把斜杠显示成横杠）
+  PASS  斜杠形状解析得出窗口（NCBI 回显的真实形状）
+  PASS  横杠形状也认（容错，别只认一种）
+  PASS  单日窗口（回显没有冒号后半截）解析成起＝止
+  PASS  窗口带回日期字段名（edat 与 pdat 分得开）
+  PASS  无日期的查询不产窗口
+  PASS  qt 为空/None 不炸
+  PASS  跨字段两段（入库日 vs 发表日）不许说「不相交」
+  PASS  同字段互斥要说「不相交」
+  PASS  互斥全写在 term 里（没传 mindate/reldate）也要说到
+  PASS  单日与区间真互斥时判得出（2024-11-08 vs 近 60 天）
+  PASS  同字段相容时【不】说不相交（反向：判据不是无条件生效）
+  PASS  只有一段时【不】说不相交（反向）
+  PASS  0 条解释走「不相交」那一支，不说「确实没有匹配这篇」
+  PASS  同字段不相交但命中>0：不许说「也会是 0 条」，也不许替 0 条下结论
+  PASS  retmax=0 的 0 条解释说清是「只要计数」，不说「确实没有匹配」
+  PASS  越页时 NCBI 回显 retmax=0，解释必须是「翻页越界」，不是「只要计数」
+
+16) warninglist 解析（全离线：自己造 NCBI 的返回形状，不发请求）
+  PASS  phrasesignored 被取出来
+  PASS  outputmessages 里那句 0 条回声不重复印
+  PASS  全停用词 → _all_dropped 判 True（旧版这里判 False，于是跟着印假话）
+  PASS  全停用词的 0 条解释不说「确实没有匹配这篇」
+  PASS  quotedphrasesnotfound 走自己那一支，不说成停用词
+  PASS  warninglist 缺失/不是 dict 时不炸
+  PASS  _warn_bits 对 warninglist 是字符串的怪形状也不炸
+  PASS  只丢了一个虚词、还有实词时不许说「生效条件为空」
+
+20) key 文件编码（UTF-16 / BOM）与 ⚠️ 的可编码性
+  PASS  key 文件 UTF-16LE+BOM（PowerShell 5.1 的 > 默认）：剥干净且不许抛错
+  PASS  key 文件 UTF-8 带 BOM（记事本）：剥干净且不许抛错
+  PASS  key 文件 UTF-8 无 BOM：剥干净且不许抛错
+  PASS  key 文件 UTF-8 带 BOM 且结尾有换行：剥干净且不许抛错
+  PASS  反向：旧写法 io.open(encoding='utf-8') 读 UTF-16 文件必须抛 UnicodeDecodeError
+  PASS  反向：strip() 清不掉 BOM（说明 B 条是真 bug，不是我想多了）
+  PASS  _key_shape 认得出混进文字的 key，且不打印值本身
+  PASS  32 位 hex 只被描述、不被夸成「形状正常」
+  PASS  长度 36 的 hex 不许被报成可疑（作者本机 key 正是这种非 32 位的形状）
+  PASS  判据里没有「32 位」这种没核实过的口径
+  PASS  _key_shape 空值直接说走匿名档
+  PASS  200 + HTML 正文要报 NcbiError 并把正文带回来（不许静默当空结果）
+  PASS  search 的工具说明里 sort 三个值都在（MCP 客户端只读这段，说明过期＝行为过期）
+  PASS  _mask 不留任何 key 片段（定长掩码；短 key 也掩，旧写法这两条都漏）
+  PASS  SDK 兼容层拿到的是可用服务类（能构造、有 tool、有 run）
+  PASS  拦截理由要能穿过 SDK 工具包装层送到调用方（v2 会剥掉非 ToolError 的文本）
+  PASS  包装层文本完整：count（与 search 同一条通路，不是一次性实测）
+  PASS  包装层文本完整：fetch_abstracts（与 search 同一条通路，不是一次性实测）
+  PASS  包装层文本完整：links（与 search 同一条通路，不是一次性实测）
+  PASS  库名大小写不敏感：_check_db('PMC') 与 _check_db(' Gene ') 都归一到库名
+  PASS  四个工具装饰后仍是协程函数（行为契约第 9 条后半句的承重前提，离线）
+  PASS  判据本身有效：⚠️/中文在 cp936、cp1252 上确实编不出（所以 reconfigure 不是多余）
+  PASS  整段短语被 NCBI 换成按词 AND 时，仍有命中且必须说出「这不是短语的数」
+15) 离线回归：本轮修掉的静默与误判
+  PASS  日期里的 Unicode 数字被归一成 ASCII（不再原样下发被 NCBI 丢掉）
+  PASS  反向：日历上不存在的日期仍然被拦
+  PASS  千位分隔符形状不再被切成多个 PMID：1，234，567
+  PASS  千位分隔符形状不再被切成多个 PMID：1,234,567,
+  PASS  千位分隔符形状不再被切成多个 PMID：1,234,567
+  PASS  反向：正常逗号列表仍能解析
+  PASS  超长数字串给的是 NcbiError，不是裸 ValueError
+  PASS  截断的 UTF-16 BOM key 文件不再抛裸 UnicodeDecodeError
+  PASS  带字段标签的全丢查询不再漏判（不再说「确实没有匹配」）
+  PASS  未知 field 的「可用值」不再列出会被吞掉的值
+  PASS  nucleotide 的直接链接不再被说成「无直接对应记录」
+  PASS  负 retstart 被拦下（不再静默变成第一页）
+  PASS  efetch 回 HTML 时必须算失败（不把故障页当摘要）
+  PASS  as_json 在 esummary 少回时给出 ⚠️，returned 记的是实际记录数
+不认识的自检参数：'--probeX'。可用：--selftest [词] / --probe / --concurrent [词] / --check-key；不带参数＝启动 MCP stdio 服务。
+  PASS  拼错的 CLI 参数以非 0 退出
+  PASS  计数器活着（不是恒 0；阈值 40 是自订的下限，用来发现计数器被改坏）
+
+169 通过 / 0 失败 —— 本轮 92 次 HTTP 请求（含退避重试的每一次）
