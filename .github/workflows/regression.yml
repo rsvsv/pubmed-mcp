@@ -1,0 +1,39 @@
+name: Offline regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10 # 本项目自订：单个作业超时分钟数
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.13'] # 本项目自订：覆盖声明的 Python 下界及开发版本
+        sdk: ['mcp>=1.26,<2', 'mcp>=2,<3'] # 本项目自订：分代解析兼容依赖；不代表覆盖所有版本
+    name: Python ${{ matrix.python }} / ${{ matrix.sdk }}
+    env:
+      MCP_SPEC: ${{ matrix.sdk }}
+      NCBI_API_KEY: ''
+      NCBI_EMAIL: ''
+    steps:
+      - uses: actions/checkout@v4 # 本项目自订：Action 主版本
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5 # 本项目自订：Action 主版本
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install package and selected SDK
+        run: python -m pip install . "$MCP_SPEC"
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Offline regressions
+        run: python -I tests/run_offline.py
+      - name: Installed CLI and fresh stdio
+        run: python -I tests/smoke_installed.py

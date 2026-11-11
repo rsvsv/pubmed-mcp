@@ -1,0 +1,378 @@
+{
+  "source_type": "实测/固定响应对照与新 stdio 工具调用",
+  "baseline_comparisons": 18,
+  "live": [
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "\"root resorption\"[tiab]",
+        "retmax": 3,
+        "detail": "full",
+        "as_json": true
+      },
+      "output_chars": 1806,
+      "output": {
+        "term": "\"root resorption\"[tiab]",
+        "querytranslation": "\"root resorption\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 5246,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": 0,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42988646",
+            "pubdate": "2026 Nov 5",
+            "epubdate": "2026 Nov 5",
+            "journal": "J World Fed Orthod",
+            "citation": "",
+            "title": "Effect of low-level laser therapy versus sham laser in reduction of orthodontically induced inflammatory root resorption in the adolescent patients undergoing fixed orthodontic treatment: A randomized controlled trial.",
+            "authors": "Mestry GA, Bhatia NK, Chaudhari PK",
+            "author_count": 8,
+            "doi": "10.1016/j.ejwf.2026.08.003",
+            "pmc": "",
+            "pubtype": [
+              "Journal Article"
+            ],
+            "ptag": ""
+          },
+          {
+            "pmid": "42988350",
+            "pubdate": "2026 Nov 5",
+            "epubdate": "2026 Nov 5",
+            "journal": "J Dent",
+            "citation": ":107153",
+            "title": "Clinical management of intrusive luxation in primary teeth: A systematic review of treatment approaches and outcomes.",
+            "authors": "Nunes GP, Alves RO, Hannig C",
+            "author_count": 6,
+            "doi": "10.1016/j.jdent.2026.107153",
+            "pmc": "",
+            "pubtype": [
+              "Journal Article",
+              "Review"
+            ],
+            "ptag": "｜Review"
+          },
+          {
+            "pmid": "42985089",
+            "pubdate": "2026 Oct",
+            "epubdate": "2026 Oct 4",
+            "journal": "Cureus",
+            "citation": "18(10):e117451",
+            "title": "Clinical and Radiographic Outcomes of Different Root Canal Obturation Materials in Primary Teeth: A Retrospective Observational Study.",
+            "authors": "Sankpal PS, Chaiwala AH, Franklin S",
+            "author_count": 6,
+            "doi": "10.7759/cureus.117451",
+            "pmc": "PMC13731809",
+            "pubtype": [
+              "Journal Article"
+            ],
+            "ptag": ""
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "\"root resorption\"[tiab]",
+        "retmax": 3,
+        "detail": "brief",
+        "as_json": true
+      },
+      "output_chars": 1287,
+      "output": {
+        "term": "\"root resorption\"[tiab]",
+        "querytranslation": "\"root resorption\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 5246,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": 0,
+        "detail": "brief",
+        "metadata_requested": true,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42988646",
+            "pubdate": "2026 Nov 5",
+            "title": "Effect of low-level laser therapy versus sham laser in reduction of orthodontically induced inflammatory root resorption in the adolescent patients undergoing fixed orthodontic treatment: A randomized controlled trial.",
+            "pubtype": [
+              "Journal Article"
+            ]
+          },
+          {
+            "pmid": "42988350",
+            "pubdate": "2026 Nov 5",
+            "title": "Clinical management of intrusive luxation in primary teeth: A systematic review of treatment approaches and outcomes.",
+            "pubtype": [
+              "Journal Article",
+              "Review"
+            ]
+          },
+          {
+            "pmid": "42985089",
+            "pubdate": "2026 Oct",
+            "title": "Clinical and Radiographic Outcomes of Different Root Canal Obturation Materials in Primary Teeth: A Retrospective Observational Study.",
+            "pubtype": [
+              "Journal Article"
+            ]
+          }
+        ],
+        "warnings": [
+          "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。"
+        ]
+      }
+    },
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "\"root resorption\"[tiab]",
+        "retmax": 3,
+        "detail": "ids",
+        "as_json": true
+      },
+      "output_chars": 611,
+      "output": {
+        "term": "\"root resorption\"[tiab]",
+        "querytranslation": "\"root resorption\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 5246,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": null,
+        "detail": "ids",
+        "metadata_requested": false,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42988646"
+          },
+          {
+            "pmid": "42988350"
+          },
+          {
+            "pmid": "42985089"
+          }
+        ],
+        "warnings": [
+          "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。"
+        ]
+      }
+    },
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "retmax": 3,
+        "detail": "full",
+        "as_json": true
+      },
+      "output_chars": 1795,
+      "output": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "querytranslation": "\"migraine\"[Title/Abstract] AND \"erenumab\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 695,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": 0,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42980719",
+            "pubdate": "2026 Nov 3",
+            "epubdate": "2026 Nov 3",
+            "journal": "Drugs Real World Outcomes",
+            "citation": "",
+            "title": "Real-World Effectiveness and Utilisation of Anti-CGRP Monoclonal Antibodies for Migraine Prevention in a Public Healthcare System.",
+            "authors": "Tarrasó G, Umbria M, Paco N",
+            "author_count": 6,
+            "doi": "10.1007/s40801-026-00585-3",
+            "pmc": "",
+            "pubtype": [
+              "Journal Article"
+            ],
+            "ptag": ""
+          },
+          {
+            "pmid": "42928575",
+            "pubdate": "2026 Oct 25",
+            "epubdate": "2026 Oct 25",
+            "journal": "Headache",
+            "citation": "",
+            "title": "Longitudinal effects of CGRP-targeting migraine therapies on blood pressure and body mass index: A 12-month retrospective analysis.",
+            "authors": "Phan P, Keith S, Li M",
+            "author_count": 7,
+            "doi": "10.1111/head.70248",
+            "pmc": "",
+            "pubtype": [
+              "Journal Article"
+            ],
+            "ptag": ""
+          },
+          {
+            "pmid": "42904798",
+            "pubdate": "2026 Oct",
+            "epubdate": "2026 Oct 21",
+            "journal": "Cephalalgia",
+            "citation": "46(10):3331024261498883",
+            "title": "Effectiveness of eptinezumab 300 mg dose escalation in partial responders to 100 mg among patients with difficult-to-treat migraine: A prospective, real-world study by the GRASP study group.",
+            "authors": "Dermitzakis EV, Argyriou AA, Rikos D",
+            "author_count": 14,
+            "doi": "10.1177/03331024261498883",
+            "pmc": "",
+            "pubtype": [
+              "Journal Article"
+            ],
+            "ptag": ""
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "retmax": 3,
+        "detail": "brief",
+        "as_json": true
+      },
+      "output_chars": 1293,
+      "output": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "querytranslation": "\"migraine\"[Title/Abstract] AND \"erenumab\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 695,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": 0,
+        "detail": "brief",
+        "metadata_requested": true,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42980719",
+            "pubdate": "2026 Nov 3",
+            "title": "Real-World Effectiveness and Utilisation of Anti-CGRP Monoclonal Antibodies for Migraine Prevention in a Public Healthcare System.",
+            "pubtype": [
+              "Journal Article"
+            ]
+          },
+          {
+            "pmid": "42928575",
+            "pubdate": "2026 Oct 25",
+            "title": "Longitudinal effects of CGRP-targeting migraine therapies on blood pressure and body mass index: A 12-month retrospective analysis.",
+            "pubtype": [
+              "Journal Article"
+            ]
+          },
+          {
+            "pmid": "42904798",
+            "pubdate": "2026 Oct",
+            "title": "Effectiveness of eptinezumab 300 mg dose escalation in partial responders to 100 mg among patients with difficult-to-treat migraine: A prospective, real-world study by the GRASP study group.",
+            "pubtype": [
+              "Journal Article"
+            ]
+          }
+        ],
+        "warnings": [
+          "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。"
+        ]
+      }
+    },
+    {
+      "source_type": "实测/新 stdio 进程工具输出；输入参数为本项目自订验证口径",
+      "arguments": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "retmax": 3,
+        "detail": "ids",
+        "as_json": true
+      },
+      "output_chars": 644,
+      "output": {
+        "term": "migraine[tiab] AND erenumab[tiab]",
+        "querytranslation": "\"migraine\"[Title/Abstract] AND \"erenumab\"[Title/Abstract]",
+        "translationset": [],
+        "field": "",
+        "count": 695,
+        "retstart": 0,
+        "returned": 3,
+        "esummary_missing": null,
+        "detail": "ids",
+        "metadata_requested": false,
+        "phrases_not_found": [],
+        "dropped_phrases": [],
+        "deprecated_fields": {
+          "dropped_phrases": "弃用别名，请读 phrases_not_found；不表示这些词已被丢弃"
+        },
+        "daterange": "",
+        "executed_windows": [],
+        "window_warning": "",
+        "zero_note": "",
+        "records": [
+          {
+            "pmid": "42980719"
+          },
+          {
+            "pmid": "42928575"
+          },
+          {
+            "pmid": "42904798"
+          }
+        ],
+        "warnings": [
+          "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。"
+        ]
+      }
+    }
+  ]
+}

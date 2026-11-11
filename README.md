@@ -92,12 +92,14 @@ claude mcp add pubmed -- pubmed-mcp
 
 ## 版本要求
 
+后续更新：已加入 [自动回归配置](.github/workflows/regression.yml)，下面“本仓库没有 CI”为历史状态，现已作废。矩阵是测试目标，实际通过情况以对应提交的 Actions 结果为准；本地运行不能代替远端运行。
+
 `requires-python = ">=3.10"`。〔本项目口径：源码用了 `bool | str` 联合类型标注，3.10 以下在
 运行时求值会失败。**但作者机器只有 3.13，本仓库没有 CI，所以这条下限错了也不会有人发现**——
 〔推算〕，别当已验证事实。〕
 
 依赖：Python 标准库 + `mcp`（FastMCP 随它一起装）+ `anyio`。HTTP 走 stdlib `urllib`，
-所以除这两个之外没有别的第三方依赖〔本 README 逐字对照源码 import 数出，2026-11-10〕。
+当前还直接使用 `pydantic` 的严格类型（由 MCP 依赖安装）。旧句“除这两个之外没有别的第三方依赖”已作废：源码后来增加了严格参数校验〔修订记录：2026-11-11；依据：pubmed_mcp.py 的 pydantic import〕。
 
 **`mcp` 的区间是 `>=1.26,<3`：1.x 和 2.x 都实测支持，3.x 没验过所以挡住。**
 下界是量出来的，不是拍的：〔实测 2026-11-11，三个干净 venv 配当前 pydantic 2.14.3〕`mcp 1.2.0` 与
@@ -183,7 +185,45 @@ python pubmed_mcp.py --check-key
 | `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：字段标签（写法与「引号只包短语、别把 `[Tag]` 包进去」的说明见 `search` 的工具说明）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
 | `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
 | `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」 |
-| `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 判断有没有免费全文可下；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
+| `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
+
+旧说明“判断有没有免费全文可下”已作废，原因：数据库关联不能证明开放许可或此刻下载可用〔修订记录：2026-11-11；依据：links 当前工具说明〕。
+
+### 按需精简检索结果
+
+`search` 新增可选 `detail`，默认 `full`。已有调用不传此参数时维持完整输出；`as_json` 仍独立控制输出格式。
+
+| detail | 返回内容 | 保留的功能与限制 |
+|---|---|---|
+| `full` | 原有完整题录字段 | 默认行为及 JSON 字段保持兼容 |
+| `brief` | PMID、日期、完整标题、全部文献类型 | 仍读取元数据；不删除撤稿、勘误类型；省略的作者、期刊、DOI/PMC 不表示来源缺失 |
+| `ids` | 按 esearch 返回顺序给 PMID | 跳过 esummary；未获取元数据、未检查撤稿等类型；JSON 的 returned 按 PMID 计，esummary_missing 为 null |
+
+各档均保留实际执行式、查询警告、零结果解释与检索窗口上限提示。文本中的执行式沿用原有截断规则，完整执行式始终可从 JSON 的 querytranslation 取得。`ids` 不适合直接据此判断文献质量或引用细节。
+
+调用示例（本项目自订使用示例）：
+
+```python
+search('"root resorption"[tiab]', detail="brief")
+search('"root resorption"[tiab]', detail="ids", as_json=True)
+```
+
+精简不保证每次输出更短：少量短题录可能因必要说明而抵消节省。尚未测量实际模型 token 或费用收益。
+
+### 自动回归
+
+[regression.yml](.github/workflows/regression.yml) 在推送、拉取请求和手动触发时安装项目，检查依赖，执行离线回归，并验证已安装 CLI 与新 stdio 进程。需要把配置推送至 GitHub 才会触发远端运行。
+
+- Python 3.10 / 3.13、MCP 一代 / 二代组合为本项目自订验证矩阵（来源：regression.yml）；每个区间由 pip 选择兼容版本，不代表全部版本或最低 SDK 均已验证。
+- 日常测试不查询 NCBI；离线运行器拦截本进程的外部 socket 连接，保留事件循环需要的本机回环连接。依赖安装仍需联网，安装烟测不作全系统断网保证。
+- 完整联网 `--probe` 单独手动运行，不将外部网络故障混入普通提交检查。
+- Actions 红灯不会自动禁止合并；强制通过后才允许合并需要仓库分支保护规则，本配置不会改动该设置。
+
+本地执行同一套离线检查：
+
+```bash
+python -I tests/run_offline.py
+```
 
 ## Behavior contract —— 它到底替你拦了什么
 

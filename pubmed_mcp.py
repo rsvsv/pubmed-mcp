@@ -70,6 +70,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Literal
 
 import anyio
 from pydantic import StrictInt, StrictStr
@@ -1328,6 +1329,18 @@ def _record_parts(uid, r):
     }
 
 
+def _brief_record(uid, r):
+    """初筛字段；文献类型完整保留，省略字段不代表来源缺失。"""
+    p = _record_parts(uid, r)
+    return {k: p[k] for k in ("pmid", "pubdate", "title", "pubtype")}
+
+
+def _fmt_brief_record(r, uid):
+    p = _brief_record(uid, r)
+    types = "/".join(p["pubtype"])
+    return f"PMID {p['pmid']}｜{p['pubdate']}" + (f"｜{types}" if types else "") + f"\n  {p['title']}"
+
+
 def _fmt_record(r, uid):
     p = _record_parts(uid, r)
     head = f"PMID {p['pmid']}｜{p['pubdate']}｜{p['journal']}{(' ' + p['citation']) if p['citation'] else ''}{p['ptag']}"
@@ -1405,7 +1418,8 @@ mcp = FastMCP("PubMed")
 async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", field: str = "",
                  mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,
                  retstart: StrictInt | StrictStr = 0,
-                 as_json: bool | str = False) -> str:
+                 as_json: bool | str = False,
+                 detail: Literal["full", "brief", "ids"] = "full") -> str:
     """检索 PubMed，返回命中数及 PMID、日期、期刊、标题、作者、DOI、PMC、文献类型。
 
     term 使用英文 PubMed 语法：resorption[Title]、"root resorption"[tiab]、AND/OR/NOT、截词 *。
@@ -1418,11 +1432,15 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
     单端日期自动补另一端并提示。reldate=0 不限，正数为最近天数；和显式日期同时给时做 AND。
     retmax 默认 20，上限 1000；retstart 为零起始偏移，上限 9998，最多可翻前 9999 条。
     只要计数用 count；需要题录直接 search，无需先 count。as_json=True 返回完整解析和结构化记录。
+    detail: full 默认完整题录；brief 仅 PMID/日期/标题/全部文献类型；ids 仅 PMID，不取元数据或检查撤稿类型。
+    各档保留查询警告；brief 省略字段不表示缺失，ids 的 returned 计 PMID 数、esummary_missing 为 null。
     先读 ⚠️：改写后的命中数不等于原查询命中数；0 条不证明主题无文献。PMC 号不保证立即可下载。
     """
     # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
     #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
     #   上限同理留给 _esearch，那里既夹也说明。
+    if detail not in ("full", "brief", "ids"):
+        raise NcbiError("detail 只支持 full / brief / ids")
     json_mode = _as_bool(as_json, "as_json")    # 非法模式在联网前报错
     d = await _esearch(term, _int(retmax, "retmax", 20), sort, field, mindate, maxdate, reldate, retstart)
     ids = d.get("idlist") or []
@@ -1438,15 +1456,21 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
                 f"第 9999 条以后的【永远翻不到】。别把「这一页短」读成「已取回全部」"
                 f"——要覆盖全量请按年份或字段把查询切小、分批取。"
                 if count > 9999 and win >= 9999 else "")
+    mode_note = {
+        "full": "",
+        "brief": "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。",
+        "ids": "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。",
+    }[detail]
     if json_mode:
-        pairs = await _esummary_dicts(ids)
+        pairs = await _esummary_dicts(ids) if detail != "ids" else []
         # 〔实测 2026-11-09〕旧版的 as_json 分支把「窗口到顶」⚠️ 和 0 条解释整个丢掉了，
         # 而 docstring 又让脚本改用 as_json —— 走 JSON 的人恰恰拿不到「这批没取全」这句最需要的话。
         # 现在两支都进 JSON（warnings 里也放一份，脚本只看 warnings 也不会漏）。
         # 完整 querytranslation 已是独立字段，不在 warnings 再复制同一长串。
         warn = _note(d, include_translation=False)
         warn += [win_warn] if win_warn else []
-        if len(pairs) != len(ids):
+        warn += [mode_note] if mode_note else []
+        if detail != "ids" and len(pairs) != len(ids):
             # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
             # 以为 2 个 id 就是 2 条记录。
             warn.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
@@ -1455,8 +1479,10 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
             "term": term, "querytranslation": (d.get("querytranslation") or "").strip(),
             "translationset": d.get("translationset") or [],
             "field": d.get("_field_applied", ""),
-            "count": count, "retstart": int(d.get("retstart") or 0), "returned": len(pairs),
-            "esummary_missing": max(0, len(ids) - len(pairs)),
+            "count": count, "retstart": int(d.get("retstart") or 0),
+            "returned": len(ids) if detail == "ids" else len(pairs),
+            "esummary_missing": None if detail == "ids" else max(0, len(ids) - len(pairs)),
+            **({"detail": detail, "metadata_requested": detail != "ids"} if detail != "full" else {}),
             "phrases_not_found": _as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
             # 兼容旧调用方保留别名；原「已丢弃」解释已作废，见 deprecated_fields。
             "dropped_phrases": _as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
@@ -1465,23 +1491,30 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
             "executed_windows": d.get("_windows") or [],
             "window_warning": win_warn,
             "zero_note": ("=> " + _zero_explanation(d, count)) if not ids else "",
-            "records": [_record_parts(uid, r) for uid, r in pairs],
+            "records": ([{"pmid": uid} for uid in ids] if detail == "ids" else
+                        [(_brief_record if detail == "brief" else _record_parts)(uid, r) for uid, r in pairs]),
             "warnings": warn,
         }, ensure_ascii=False)
     head = [f"查询：{term}", f"命中 {count} 条，本次给 {len(ids)} 条（retstart={d.get('retstart')}）"]
     head += _note(d)
     if win_warn:
         head.append(win_warn)
+    if mode_note:
+        head.append(mode_note)
     if not ids:
         head.append("=> " + _zero_explanation(d, count))
         return "\n".join(head)
+    if detail == "ids":
+        head[1] = f"命中 {count} 条，本次给 {len(ids)} 个 PMID（retstart={d.get('retstart')}）"
+        return "\n".join(head) + "\n\n" + "\n".join(ids)
     pairs = await _esummary_dicts(ids)
     if len(pairs) != len(ids):
         head.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
                     f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
     head[1] = f"命中 {count} 条，本次给 {len(pairs)} 条（retstart={d.get('retstart')}）"
     head.append("")
-    return "\n".join(head) + "\n" + "\n".join([_fmt_record(r, uid) for uid, r in pairs])
+    formatter = _fmt_brief_record if detail == "brief" else _fmt_record
+    return "\n".join(head) + "\n" + "\n".join(formatter(r, uid) for uid, r in pairs)
 
 
 @mcp.tool()
