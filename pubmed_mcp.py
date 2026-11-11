@@ -217,7 +217,8 @@ def api_key():
                 q = os.path.expanduser(p)
                 if os.path.isfile(q):
                     try:
-                        raw = open(q, "rb").read()
+                        with open(q, "rb") as key_file:
+                            raw = key_file.read()
                     except OSError:
                         continue
                     # 吃掉首尾空白、中间连续空白压成一个空格；key 中间真夹着空格时压不掉，由 _key_shape 报出来
@@ -261,7 +262,14 @@ def _mask(s):
     k = api_key()
     if not (k and isinstance(s, str)):
         return s
-    return s.replace(k, "***")
+    # 旧注释的「第三条仍未处理」已作废：本轮同时替换 URL 编码形式，见离线回归。
+    variants = {k, urllib.parse.quote(k, safe=""), urllib.parse.quote_plus(k)}
+    for value in sorted(variants, key=len, reverse=True):
+        encoded = re.escape(value)
+        if "%" in value:
+            encoded = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: "(?i:%" + m[1] + ")", encoded)
+        s = re.sub(encoded, "***", s)
+    return s
 
 
 def _safe_json(text, what):
@@ -281,14 +289,20 @@ def _safe_json(text, what):
         try:
             d = json.loads(text, strict=False)
         except Exception:
-            raise NcbiError(f"{what} 收到的不是合法 JSON（{type(e).__name__}）；正文前 300 字：{text[:300]!r}")
+            raise NcbiError(_mask(f"{what} 收到的不是合法 JSON（{type(e).__name__}）；正文前 300 字：{text[:300]!r}"))
+    if not isinstance(d, dict):
+        raise NcbiError(f"{what} 返回的 JSON 顶层不是对象，不能作为成功结果")
     if isinstance(d, dict):
         esr = d.get("esearchresult")
-        err = d.get("ERROR") or (d.get("header") or {}).get("error")
+        err = d.get("ERROR") or d.get("error")
+        for envelope in ("header", "eutilsresult"):
+            nested = d.get(envelope)
+            if not err and isinstance(nested, dict):
+                err = nested.get("ERROR") or nested.get("error")
         if not err and isinstance(esr, dict):
             err = esr.get("ERROR")      # retstart 越限这类错误就藏在这里，而且没有 count
         if err:
-            raise NcbiError(f"{what} 被 NCBI 拒绝：{str(err)[:400]}")
+            raise NcbiError(_mask(f"{what} 被 NCBI 拒绝：{str(err)[:400]}"))
     return d
 
 
@@ -327,8 +341,11 @@ def _retry_after(headers):
     if not ra:
         return None
     ra = str(ra).strip()
-    if ra.isdigit():
-        return float(ra)
+    if re.fullmatch(r"[0-9]+", ra):
+        try:
+            return float(ra)
+        except (ValueError, OverflowError):
+            return None
     try:
         from datetime import datetime, timezone
         from email.utils import parsedate_to_datetime
@@ -381,7 +398,11 @@ def _get(path, params, timeout, tries=4):
             if e.code in (429, 500, 502, 503, 504):
                 if attempt == tries - 1:
                     break                                  # 最后一次不白等（旧版会多睡 9s）
-                time.sleep(_retry_after(e.headers) or backoff[min(attempt, 2)])
+                delay = _retry_after(e.headers)
+                # 本项目自订等待上限：过长 Retry-After 直接失败，不提前重试违反服务端要求。
+                if delay is not None and delay > 60:
+                    raise NcbiError(_mask(f"{path} 失败：{last}；Retry-After={delay:g}s 超过本工具等待上限，请稍后重试"))
+                time.sleep(backoff[min(attempt, 2)] if delay is None else delay)
                 continue
             raise NcbiError(_mask(f"{path} 失败：{last}（{keyhow}）"))   # 400/414 这种重试没意义
         except Exception as e:
@@ -424,9 +445,11 @@ def _as_bool(v, name):
 
 def _int(v, name, default=0, lo=None, hi=None):
     """数字参数统一收口：报错要说清是哪个参数，别抛裸 ValueError('invalid literal for int()')。"""
+    if isinstance(v, bool) or not isinstance(v, (int, str)):
+        raise NcbiError(f"{name} 要整数，收到 {v!r}；不接受布尔或浮点数")
     try:
         n = int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise NcbiError(f"{name} 要整数，收到 {v!r}")
     if lo is not None:
         n = max(lo, n)
@@ -811,6 +834,86 @@ def _warn_bits(d):
     return ig, qn, others
 
 
+def _query_warnings(d):
+    """只提示，不偷偷修写检索式；原始响应样例见审计回归测试。"""
+    term = str(d.get("_term") or "")
+    qt = str(d.get("querytranslation") or "")
+    outside = re.sub(r'"[^"\n]*"|\[[^\]]*\]', lambda m: " " * len(m[0]), term)
+    warnings = []
+    if term.count('"') % 2:
+        warnings.append("⚠️ 双引号未闭合，NCBI 可能忽略引号；请配对后重查。")
+    depth = 0
+    bad_parentheses = False
+    for c in outside:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            bad_parentheses |= depth < 0
+    if depth or bad_parentheses:
+        warnings.append("⚠️ 括号不配对，NCBI 可能改变组合顺序；请配对后重查。")
+    if re.match(r"^\s*\(*\s*(AND|OR|NOT)\b", outside, re.I):
+        warnings.append("⚠️ 查询以布尔算子开头，可能被忽略；请写完整的 A AND/OR/NOT B。")
+    if re.search(r"\band\b", outside) and re.search(r'"and\s', qt, re.I):
+        warnings.append("⚠️ 小写 and 被实际执行式当作词的一部分；请改为大写 AND 后重查。")
+    missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", term)) -
+                         set(re.findall(r"[㐀-鿿぀-ヿ]+", qt)))
+    if qt and missing_cjk:
+        warnings.append("⚠️ 实际执行式未保留这些中文/日文片段：" + ", ".join(missing_cjk) +
+                        "；命中数不能代表完整原查询，请用对应英文词重查。")
+    return warnings
+
+
+def _required_windows(d):
+    """提取布尔式每个分支都要求的日期。OR 取交集，AND 取并集，NOT 只保留左边。
+
+    不同日期值可以属于同一记录，因此这里只供提示，不据此提前返回空结果。
+    PubMed 布尔组合按从左到右处理；括号单独递归，短语和字段名里的算子不拆。
+    """
+    qt = str(d.get("querytranslation") or "")
+    tokens, start = [], 0
+    pattern = r'"[^"\n]*"|\[[^\]]*\]|\b(?:AND|OR|NOT)\b|[()]'
+    for match in re.finditer(pattern, qt):
+        value = match[0]
+        if value.startswith(('"', '[')):
+            continue
+        if qt[start:match.start()].strip():
+            tokens.append(qt[start:match.start()])
+        tokens.append(value)
+        start = match.end()
+    if qt[start:].strip():
+        tokens.append(qt[start:])
+
+    def group(index):
+        required, op, seen = set(), "AND", False
+        while index < len(tokens):
+            token = tokens[index]
+            index += 1
+            if token == ")":
+                return required, index
+            if token in ("AND", "OR", "NOT"):
+                op = token
+                continue
+            if token == "(":
+                dates, index = group(index)
+            else:
+                dates = set(_windows(token))
+            if not seen:
+                required = dates if op != "NOT" else set()
+            elif op == "AND":
+                required |= dates
+            elif op == "OR":
+                required &= dates
+            seen, op = True, "AND"
+        return required, index
+
+    try:
+        required, _ = group(0)
+    except RecursionError:
+        return []    # 极深表达式不作日期因果解释，仍返回实际执行式
+    return [window for window in _windows(qt) if window in required]
+
+
 def _note(d):
     """把 NCBI 对查询动的手脚原样说出来。键名以实测返回的为准。"""
     lines = []
@@ -832,6 +935,7 @@ def _note(d):
             lines.append(f"NCBI 实际执行：{qt[:600]}…（截断；完整解析用 as_json=True 取）")
         else:
             lines.append(f"NCBI 实际执行：{qt}")
+    lines.extend(_query_warnings(d))
     e = d.get("errorlist") or {}
     nf = []
     if isinstance(e, dict):
@@ -857,15 +961,15 @@ def _note(d):
             #   根本不是这个短语，而是 "micro implant"[All Fields] AND immediate* AND loading*
             #   ——NCBI 把短语换成【按词 AND】再查。所以那 8 条是替代式的数。
             lines.append(head +
-                         " —— 它被换成了【按词 AND】执行（上面那条「NCBI 实际执行」就是替代式），"
-                         f"所以这 {_c} 条【不是】你写的这个短语的命中数。"
-                         "要按短语查就别加引号，或改成 MeSH 词。")
+                         f" —— 已改写（可能按词 AND），这 {_c} 条不是原短语的命中数。"
+                         "请核对实际执行式；可去掉引号按词查，或使用经核实的 MeSH 词。")
         else:
             lines.append(head +
                          " —— 这条 0 只关于那段字面短语本身，关于它想表达的主题有没有文献"
                          "什么都没说；去掉引号按词查、或换 MeSH 词再问一次。")
-    for o in others:
-        lines.append(f"NCBI 附言：{o}")
+    if others:
+        lines.append("⚠️ NCBI 解析警告：" + "；".join(others) +
+                     "；检索式可能被忽略或改写，请核对实际执行式。")
     if d.get("_retmax_note"):
         lines.append("⚠️ " + d["_retmax_note"])
     if d.get("_sort_note"):
@@ -880,7 +984,7 @@ def _note(d):
     #   "miniscrew[Title] AND 2019[dp] AND 2035[dp]"（互斥区间全写在 term 里、没传 mindate/reldate）
     # 这种根本不会提醒 —— 而 _daterange 只描述【本工具发出去的】日期参数，窗口本身在 qt 里就有。
     # 现在独立判：只要 qt 回显了同字段且互斥的两段就说出来。
-    for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(d.get("_windows") or []):
+    for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(_required_windows(d)):
         if a1 > b2 or a2 > b1:
             # 〔实测 2026-11-11〕不相交的两段仍可能返回 >0：一条记录可以同时带有落进两段的
             # 日期。判据必须写成「分段各命中」，不能只看 pubdate：把 PMID 32672908 单独限定进
@@ -896,10 +1000,7 @@ def _note(d):
     gap = _phrase_gap(d)
     if gap:
         lines.append("⚠️ 引号短语里有词在 NCBI 的实际执行中找不到：" + "；".join(gap) +
-                     " —— 实测引号【内】的词被丢掉时 NCBI 不填 phrasesnotfound，所以这种丢弃不会出现在"
-                     "上面那行「已丢弃」里。这个命中数是【剩下的词】的数，不能读成「这个短语有 N 篇」；"
-                     "引号里的词并没有被当成一个短语执行，所以【按原样这个短语有多少命中，NCBI 没有"
-                     "给出答案】——别把上面这个数当成它的，也别把它当成 0。")
+                     "；不能将替代式的计数当成原短语计数，也不能据此断言原短语为 0 条。")
     if d.get("_field_applied"):
         # 〔实测 2026-11-08〕上一版这里断言「NCBI 不在 querytranslation 里回显 field」是假的：
         #   count('tooth resorption', field='author') 的 qt 就是 `tooth[Author]`；
@@ -992,7 +1093,7 @@ def _zero_explanation(d, count):
                     "换字段没用——要换成语义实词（如 miniscrew、root resorption）再问一次。")
         return ("0 条，但这【不能】当成「主题没有文献」：NCBI 把这条查询里的词全部丢弃了（见上 ⚠️），"
                 "实际生效的检索条件为空。换成有索引的字段（如 tiab）或去掉 field 再问一次。")
-    for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(d.get("_windows") or []):
+    for (a1, b1, l1), (a2, b2, l2) in _same_label_pairs(_required_windows(d)):
         if a1 > b2 or a2 > b1:
             return (f"0 条的一个可能原因是【两段同字段（{l1}）的日期窗口不相交】：NCBI 执行的是 "
                     f"{a1}→{b1} 与 {a2}→{b2}。"
@@ -1011,7 +1112,9 @@ def _zero_explanation(d, count):
     if _phrase_gap(d):
         return ("0 条，但先看清楚：上面 ⚠️ 说引号短语里有词没进实际执行，"
                 "所以这个 0 是「剩下那几个词的组合没有匹配」，不是你写的那个短语的结论。")
-    return "0 条。HTTP 请求是成功的，PubMed 里确实没有匹配这篇。"
+    if _query_warnings(d) or _warn_bits(d)[2] or (d.get("errorlist") or {}).get("fieldsnotfound"):
+        return "0 条，但查询解析有警告；修正检索式后再查，不能据此判断主题有无文献。"
+    return "0 条：本次实际执行的检索式未匹配记录；这不证明该主题或某篇文献不存在。"
 
 
 def _all_dropped(d):
@@ -1166,8 +1269,9 @@ def _record_parts(uid, r):
     # _fmt_record 里加（2026-11-11 改，旧版的 authors 字段两种输出共用同一段拼串）。
     ptypes = [p for p in _as_list(r.get("pubtype") or []) if isinstance(p, str)]
     ptag = ""
-    if ptypes and not (len(ptypes) == 1 and ptypes[0] == "Journal Article"):
-        ptag = "｜" + "/".join(ptypes[:2])    # 只有非普通论著才占这个 token
+    specific = [p for p in ptypes if p != "Journal Article"]
+    if specific:
+        ptag = "｜" + "/".join(specific)    # 不截掉撤稿、勘误或试验类型
     return {
         "pmid": uid,
         "pubdate": r.get("pubdate") or "?",
@@ -1191,7 +1295,7 @@ def _fmt_record(r, uid):
     if p["doi"]:
         tail.append("doi:" + p["doi"])
     if p["pmc"]:
-        tail.append("pmc:" + p["pmc"] + "（开放获取，可有免费全文）")
+        tail.append("pmc:" + p["pmc"])
     auth_txt = p["authors"] or "(无作者信息)"
     if p["authors"] and p["author_count"] > 3:
         auth_txt += f"，共 {p['author_count']} 人"    # 旧版「等 N 人」会被读成「另外 N 人」
@@ -1254,87 +1358,24 @@ mcp = FastMCP("PubMed")
 async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
                  mindate: str = "", maxdate: str = "", reldate: int = 0, retstart: int = 0,
                  as_json: bool | str = False) -> str:
-    """在 PubMed 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC。
+    """检索 PubMed，返回命中数及 PMID、日期、期刊、标题、作者、DOI、PMC、文献类型。
 
-    什么时候用：找文献、核对某主题有多少文章、拿 PMID 列表。
-    term 支持 PubMed 语法：字段标签如 resorption[Title]（引号只包短语，别把 [Tag] 包进去）、
-    布尔组合 "A AND B"、截词 "resorption*"、范围 "2024:2026[dp]"。建议一次只写一个概念，靠字段标签收窄。
-    sort 只接受 pub_date / relevance / author〔实测 2026-11-10 本机 idlist 两两对照：这三个真会换
-    顺序，其余值与不传 sort 逐字同序。本文件 SORT_REAL 上方有一条【已作废】记录：这里原先只写两个值，
-    属说明过期、不是代码错〕。NCBI 对认不出的 sort 值是静默接受、顺序照旧，所以本工具直接拦。
-    **PubMed 没有「按期刊好坏排序」这个概念**，要那种排序得自己接外部期刊指标数据源，本仓库不含这类脚本。
-    〔实测 2026-11-10 订正：更早的版本这里写死了作者某个工作目录的绝对路径，而本服务注册在全局、
-    在别的项目里读到那句就是死路，所以改成不带路径、也不指具体脚本的说法。〕
-    field 整体限定字段，只接受白名单里【实测真生效】的值（Title / Title/Abstract / Journal / Author /
-    Affiliation / Language / Grant / ISBN / PMID 等）。实测会被 NCBI 静默吞掉的 keywords / PMC Number /
-    ISSN，以及会让 esearch 不返回 count 的 MeSH Terms / Publication Type，现在直接拦下来并教你改写进 term。
-    不在名单里的也直接报错——实测 NCBI 对认不出的 field 是静默忽略的，宁拦勿吞。
-    mindate/maxdate 请成对给。〔实测 2026-11-08〕只给一端时 NCBI 会【整条忽略】日期条件：
-    mindate=2020-01-01 单给得到 795 条，与不限时间逐字相同（我一度以为是我们没下发，裸参数实测才排除掉）。
-    所以本工具替你补上另一端，补的是【不可能生效的哨兵值】，不是「今天/收录起点」：
-    缺 maxdate 补 2999-12-31（＝不限上界），缺 mindate 补 0001-01-01（＝不限下界），输出里用 ⚠️ 写明补了什么。
-    〔实测 2026-11-09〕旧写法那两个「看起来无害」的边界都会静默少算：本机日历与 NCBI 服务器日历
-    差一天时，补「今天」把边界日那天的文献切掉（dental implant 770 → 763，少的是 2026-09-09 那 7 条）；
-    补 1809-01-01 则切掉更早的题录（实测 tooth 在 0001-01-01:1800-01-01 有 12 条、"1790"[dp] 有 45 条，
-    所以「早于 PubMed 收录起点」那句是假的）。
-    格式可用 2024-01-01 / 2024/01 / 2024；写法对但日历上不存在的（2023-02-29）会被拦——
-    实测那种值 NCBI 不报错、errorlist 也是空的，整条查询静默变 0 命中。
-    reldate=365 是「近一年」，本工具【原样下发】给 NCBI 并固定配 datetype=pdat（发表日期口径），
-    不做本机日历换算〔实测 2026-11-09：换算过一回，把 NCBI 的 09-09:11-08 换成 09-10:11-09，
-    同一个词同一组参数就少算 7 条〕。NCBI 自己单看 reldate 用的是 [Date - Entry]（365 天 → 82 条），
-    配 pdat 是 [Date - Publication]（→ 86 条），差 4 篇，所以这里固定带 pdat。
-    reldate 只收 0..36500：负数旧版被静默夹成 0（＝不限日期，313615 条照回、毫不提醒），
-    1e9 会抛裸 OverflowError，现在都直接报错。
-    retmax 上限 1000（内部自动分批，不会再撞 URL 长度墙），翻页用 retstart，
-    但实测 PubMed 的 esearch 最多只能取回【前 9999 条】：count 再大也只能翻到 9999，到顶会打 ⚠️。
-    as_json=True 时返回结构化 JSON（给脚本用，别正则我的中文文案）。
-
-    怎么读返回：
-    - 「NCBI 实际执行：…」这行是改写后的查询，引用命中数时以它为准。实测打错的
-      "anchorage devcie" 会被执行成 '"anchorage"[All Fields] OR "anchorages"[All Fields]'，
-      命中数暴涨且与主题无关——不打印这行就查不出来。
-    - 「⚠️ 已丢弃」列出的词【没有】参与检索，此时命中数是剩下那几个词的，别当原查询用。
-      但这条只对**没加引号**的词成立：实测写成 "xyzzy tooth resorption"（带引号）时 NCBI 照样把
-      xyzzy 扔掉，却不填 phrasesnotfound —— 那种情况由另一行「⚠️ 引号短语里有词…找不到」负责，
-      看到它就说明这个命中数不是你这个短语的数。
-    - 日期：给了 reldate 又给了 mindate/maxdate 时，两段条件【都下发】，由 NCBI 做 AND，
-      所以「NCBI 实际执行」里会出现两段日期窗口，本工具打印的窗口也是从那里读的（不是本机算的）。
-      两段【同字段】的日期不相交时命中通常为 0，但【不必然】：实测有记录同时带有落进两段的
-      日期（〔实测 2026-11-11〕1 条，PMID 32672908）。输出里有专门的「两段同字段（…）日期不相交」
-      说明，不会跟「确实没有匹配这篇」混在一起（〔实测 2026-11-09〕旧版在这里是本机换算＋取交集，
-      两种路径给出的命中数不一样，那才是真 bug；旧版还写着「不相交直接报错」，现已改由 NCBI 判、
-      由本工具解释）。挂在不同字段上的两段（一段 [Date - Entry]、一段 [Date - Publication]）
-      【不】会说成不相交 —— 那是两个不同的轴，比端点没有意义〔实测 2026-11-10：
-      "2020:2020[edat] AND implant" 配 reldate=60 的回显就是这种形状〕。
-    - "0 条"是请求成功、不是网络故障（故障会以 NcbiError 抛出），但**不能一律读成「确实没有匹配」**。
-      〔实测 2026-11-10〕返回 0 条记录的原因不止一种，常见的有（返回里都会另起一行说清楚）：
-        ① 中文词（"牙根吸收"）→ querytranslation 为空 = NCBI 没解析出检索条件，换英文词；
-        ② 词全被当停用词（"the and of"）→ warninglist.phrasesignored 列全了词 = 生效条件为空，
-          这句 0 跟主题有没有文献无关；
-        ③ 整个引号短语不存在（'"zzzqqxnonexistentterm"'）→ warninglist.quotedphrasesnotfound；
-        ④ 两段同字段日期互斥 → 见上面「不相交」那条；
-        ⑤ retmax=0 且命中数>0（只要计数、没要记录）→ 命中数是真的，只是没取记录；
-        ⑥ retstart 越过命中总数（翻页越界）→ 往回翻页即可。
-      这些情形都不成立、且命中数确实为 0 时，「PubMed 里没有匹配」才成立。
-    - 单复数（device/devices）在 PubMed 里映射到不同词形，实测差 1 条
-      〔已作废 2026-11-10：现在 "temporary anchorage device" 与 "...devices" 都是 795 条、
-      querytranslation 逐字相同 —— NCBI 把两边都展开成同一组 OR；当年那个 1 条的差不复现，
-      但「用 MeSH 词覆盖两种写法」这条建议本身仍然有效〕。要覆盖两种写法，改用 MeSH descriptor，
-      并且【核对实际执行的式子】判断写没写对 —— 本工具不做词表查询，而 descriptor 写错有两种形状，
-      后果并不一样（〔实测 2026-11-11，本会话，三种写法各跑一次 count，见 docs/release-delta.md〕）：
-        给一个不存在的 descriptor 加引号（"Temporary Anchorage Devices"[MeSH Terms]）→ 0 条，
-          NCBI 在 warninglist.quotedphrasesnotfound 里点名这段，本工具会转述 —— 不算静默；
-        同样的词【不加引号】配 [MeSH Terms] → 照样回一个数，但「NCBI 实际执行」已被改写成
-          另一组条件（实测那次把 Devices 换成了 "equipment and supplies"[MeSH Terms]），
-          主题也收窄了 —— 【这一种才没人提醒你】，光看条数看不出来。
-        写法对的形状回显就是它自己："Orthodontic Anchorage Procedures"[MeSH Terms]（--probe
-          的联网断言会核对这条回显）。注意：回显与输入相同时，文本输出【不印】「NCBI 实际执行」
-          那一行（只在被改写时印）；要逐字核对就传 as_json=True 看 querytranslation。
-      所以别只信条数：文本里看「NCBI 实际执行」，要逐字核就用 as_json 的 querytranslation。
+    term 使用英文 PubMed 语法：resorption[Title]、"root resorption"[tiab]、AND/OR/NOT、截词 *。
+    布尔算子写大写，引号只包短语，括号须配对。MeSH 请核对实际执行式：写错的带引号词会报
+    quotedphrasesnotfound，不带引号可能改写成别的概念；有命中不证明原短语存在。
+    sort: pub_date / relevance / author；不能按期刊质量排序。
+    field 可用 Title、Title/Abstract、Journal、Author、Affiliation、Language、Grant、PMID 等；
+    未支持值会报错。MeSH/文献类型请写进 term 的 [MeSH Terms]/[Publication Type] 标签。
+    日期按发表日期；mindate/maxdate 接受 YYYY、YYYY-MM、YYYY-MM-DD 或斜杠写法。
+    单端日期自动补另一端并提示。reldate=0 不限，正数为最近天数；和显式日期同时给时做 AND。
+    retmax 默认 20，上限 1000；retstart 为零起始偏移，上限 9998，最多可翻前 9999 条。
+    只要计数用 count；需要题录直接 search，无需先 count。as_json=True 返回完整解析和结构化记录。
+    先读 ⚠️：改写后的命中数不等于原查询命中数；0 条不证明主题无文献。PMC 号不保证立即可下载。
     """
     # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
     #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
     #   上限同理留给 _esearch，那里既夹也说明。
+    json_mode = _as_bool(as_json, "as_json")    # 非法模式在联网前报错
     d = await _esearch(term, _int(retmax, "retmax", 20), sort, field, mindate, maxdate, reldate, retstart)
     ids = d.get("idlist") or []
     count = _count_of(d)
@@ -1349,12 +1390,14 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
                 f"第 9999 条以后的【永远翻不到】。别把「这一页短」读成「已取回全部」"
                 f"——要覆盖全量请按年份或字段把查询切小、分批取。"
                 if count > 9999 and win >= 9999 else "")
-    if _as_bool(as_json, "as_json"):
+    if json_mode:
         pairs = await _esummary_dicts(ids)
         # 〔实测 2026-11-09〕旧版的 as_json 分支把「窗口到顶」⚠️ 和 0 条解释整个丢掉了，
         # 而 docstring 又让脚本改用 as_json —— 走 JSON 的人恰恰拿不到「这批没取全」这句最需要的话。
         # 现在两支都进 JSON（warnings 里也放一份，脚本只看 warnings 也不会漏）。
-        warn = _note(d) + ([win_warn] if win_warn else [])
+        # 完整 querytranslation 已是独立字段，不在 warnings 再复制同一长串。
+        warn = [line for line in _note(d) if not line.startswith("NCBI 实际执行：")]
+        warn += [win_warn] if win_warn else []
         if len(pairs) != len(ids):
             # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
             # 以为 2 个 id 就是 2 条记录。
@@ -1385,6 +1428,7 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
     if len(pairs) != len(ids):
         head.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
                     f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
+    head[1] = f"命中 {count} 条，本次给 {len(pairs)} 条（retstart={d.get('retstart')}）"
     head.append("")
     return "\n".join(head) + "\n" + "\n".join([_fmt_record(r, uid) for uid, r in pairs])
 
@@ -1392,21 +1436,11 @@ async def search(term: str, retmax: int = 20, sort: str = "", field: str = "",
 @mcp.tool()
 async def count(term: str, field: str = "", mindate: str = "", maxdate: str = "",
                 reldate: int = 0) -> str:
-    """只问「这个主题有多少篇」，不取记录，最省请求。查询被改写时印出「NCBI 实际执行」那一行。
+    """只取 PubMed 命中数，不取题录；需要题录直接用 search，避免重复检索。
 
-    注意：命中数大得反常时先看 ⚠️ 和「NCBI 实际执行」——实测查不到的词被 NCBI 静默丢弃后
-    仍会返回一个非 0 的数（"zzzqqx nonexistent term" → 610 条），0 条反而是少见的情况。
-    中文查询词（实测 "牙根吸收" → 0 条 + 空 querytranslation）会得到「NCBI 没解析出任何检索条件」，
-    那不等于主题没文献，换英文词再问。
-
-    **命中数既不证明「短语存在」，也不证明「文献不存在」**〔实测 2026-11-10〕：
-    `count('41338119 AND "zygomatic implant assisted rapid palatal expansion"')` 给【1 条】，
-    而同一次返回里 NCBI 报了 quotedphrasesnotfound —— 它把整段短语换成按词 AND 执行的，
-    于是这 1 条只说明【那几个词都出现在这条记录里】；该记录标题实际是
-    "…Personalized Microimplant-Assisted Rapid Palatal Expansion…"，并没有 "zygomatic implant" 这段连续短语。
-    反过来 0 条也只说明这个式子没匹配上。要确认短语在不在，请把取回来的题录/摘要自己读一遍，
-    **别信引号**。
-    field 与 search 一样走白名单；count 拿不到数字时抛 NcbiError，不印 "?"。
+    term、field、日期参数规则同 search：英文词，大写 AND/OR/NOT，日期按发表日期。
+    返回实际执行式及 ⚠️；丢词/短语改写后的计数不能当原查询计数。0 条不证明主题无文献，
+    有命中也不证明原短语存在；确认短语须读取题录或摘要。完整解析可用 search(retmax=0, as_json=True)。
     """
     d = await _esearch(term, retmax=0, field=field, mindate=mindate, maxdate=maxdate, reldate=reldate)
     return "\n".join([f"查询：{term}", f"命中 {_count_of(d)} 条"] + _note(d))
@@ -1414,17 +1448,11 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
 
 @mcp.tool()
 async def fetch_abstracts(pmids: str) -> str:
-    """按 PMID 取摘要原文（NCBI 排版，含 INTRODUCTION/METHODS/RESULTS/CONCLUSIONS）。
+    """按逗号/空格分隔的 PMID 取 NCBI 原排版摘要；保留结构化段落、作者信息和声明。
 
-    pmids 用逗号分隔，如 "42998065,42997565"。内部每 50 个一批并发，多少个都收。
-    引用数值请以这里的原文为准，search 返回的只有标题和 DOI。
-    返回头是「要 N 条 / 实取 M 条」两个数——不存在的 PMID 会被点名（实测旧版把请求数当结果数，
-    拿 PMID 9999999999 会报「取回 1 条」再加一条空壳）。
-    口径注意：这里的「实取」= NCBI 返回了这条**记录**，不等于里面有摘要。社论、letter 本来就没有摘要，
-    〔实测 2026-11-08：PMID 42759866 → 「要 1 条 / 实取 1 条」且没有任何 ⚠️，正文里只有引文行〕
-    旧版 docstring 说这种会列进「NCBI 未返回」，是假的，已改口。要判断有没有摘要得看正文本身。
-    补零的号（如 000037427694）现在由 _parse_pmids 统一成裸号，不会再出现「实取 1 条」与
-    「NCBI 没有返回这条」同屏自相矛盾。〔实测 2026-11-08〕
+    自动去重、归一补零号、分批。建议先筛选题录，再只取需要的摘要以节省输出。
+    返回请求数、实际记录数和缺失号；有记录不等于有摘要，社论可能只有引文。
+    网络失败报错，不冒充无记录。文献数值引用仍须核对原文位置。
     """
     uniq, n_in = _parse_pmids(pmids)
     text, got = await _efetch_all(uniq)
@@ -1485,29 +1513,13 @@ async def _pmids_exist(pids):
 
 @mcp.tool()
 async def links(pmids: str, to: str = "pmc") -> str:
-    """查这些 PMID 在别的数据库里的对应记录（elink）。to=pmc 用来判断「有没有免费全文可下」。
+    """查 PMID 的数据库关联。pmids 用逗号/空格分隔，去重后最多 50 个。
 
-    to 可选 pmc / nucleotide / gene / pubmed（to=pubmed 得到「相关文献」）。
-    返回每行形如「PMID 37427694  pubmed_pmc=PMC10461258  [pubmed_pmc_refs:4 条]」〔实测 2026-11-09 逐字抄〕：
-    等号后是直接对应记录（to=pmc 时就是可以下载的 PMC 号，直接喂给下载脚本），方括号里是 NCBI 给的
-    其它方向链接的计数。没有对应记录时写「(pmc 库无直接对应记录)」，号不存在时写
-    「⚠️ PubMed 里没有这个号」——这两句是两件事，别混。
-    （这句以前举的形状是「全文:PMC…  被引在PMC:6 条」，与今天代码的实际输出不符——
-    今天按 db 改了图例，文档没跟着改。到底哪一版对应哪一天我没有逐日记录，〔未核实〕，
-    所以这里只说「现在以本段为准」，不要把旧句子当历史事实引用。）
-
-    两条实测出来的约束，别改回去：
-    1. elink 的 JSON 模式不支持 cmd 参数（传了会 HTTP 200 + 顶层 ERROR），本工具因此不下发 cmd；
-    2. 一次传多个 id 时 NCBI 会把它们【合并进一个 linkset】（ids 数组 + 并集 links），
-       归属就没了 —— 所以这里强制一个 PMID 一次请求。代价是 N 次请求，限速 10 次/秒，
-       故上限 50 个 PMID。
-
-    〔2026-11-08 晚更正〕这里原来还有第 3 条，写的是「elink 能区分号不存在与没有全文：
-    不存在的号返回的 linkset 里没有 linksetdbs 键」。**那条是错的，已作废**：
-    真号 42760028（只是没有 PMC 链接）与假号 9999999999 的 linkset 逐字同形，
-    拿它当判据会把有全文方向之外的真号说成「PubMed 里没有这个号」——存在性判断反了。
-    现在号存在性交给 esummary（假号回空壳且带 error="cannot get document summary"，真号 43 个键），
-    所以本工具每次调用会多做一次 esummary。
+    to: pmc（默认）/ gene / nucleotide / pubmed，大小写不敏感。
+    每行列直接关联号；方括号是其它关联方向的计数。关联过多时显示部分号及总数。
+    to=pubmed 是相关文献，含自身；to=pmc 是 PMC 关联，不保证开放许可或此刻可下载。
+    “无直接对应记录”与“不存在的 PMID”分开报告；存在性由 esummary 核对。
+    search 已给 PMC 时无需重复查询 links。内部逐 PMID 请求以保留归属，失败明确标注。
     """
     uniq, _ = _parse_pmids(pmids)
     db = _check_db(to)
@@ -1586,16 +1598,13 @@ async def links(pmids: str, to: str = "pmc") -> str:
     # 图例必须跟着 to 变：to=pubmed 时那串「直接对应记录」是相关文献，跟全文没关系，
     # 而固定写「有全文/有数据」会把 104 条邻居读成「这篇有免费全文」。实测 37427694 to=pubmed
     # 走的就是 mine 分支（linkname="pubmed_pubmed" 以 db 结尾），第一个邻居还是这篇自己。
-    legend = {"pmc": "直接对应记录＝这篇在 PMC 有免费全文可下；写「(pmc 库无直接对应记录)」= 没有 deposit",
+    legend = {"pmc": "直接对应记录＝PMC 关联，开放许可/当前可下载性未核实；无关联不代表其它站点无全文",
               "gene": "直接对应记录＝NCBI 把这个号关联到了 Gene 条目",
               "nucleotide": "直接对应记录＝NCBI 把这个号关联到了核酸序列条目",
               "pubmed": "直接对应记录＝NCBI 列出的【相关文献】（含这篇自己），与有没有全文无关；"
                         "要判断能不能下载请用 to=pmc"}[db]
     return ("\n".join(head) + "\n" + "\n".join(str(x) for x in out)
-            + f"\n说明：{legend}；方括号里的是 NCBI 给出的关联计数，"
-              "只说明『有这个方向的链接』，不代表具体条目。"
-              f"\n「({db} 库无直接对应记录)」与「PubMed 里没有这个号」是两件事（后者由 esummary 判），"
-              "看到后者先回去核对 PMID。")
+            + f"\n说明：{legend}；方括号为其它关联计数。")
 
 
 # ---------- 自检 ----------
@@ -1875,7 +1884,7 @@ async def _probe():
     # 这条离线断言钉住纠正后的形状，防止「静默 0 条」被重新翻出来写进说明。
     check("MeSH 说明不再把「加引号写错」说成静默，并保留「不加引号会被改写」这一支",
           "静默变成 0 条" not in _sd0 and "quotedphrasesnotfound" in _sd0
-          and "equipment and supplies" in _sd0, _sd0[:200])
+          and "不带引号可能改写" in _sd0, _sd0[:200])
     check("as_json 的字符串形状仍由 _as_bool 处理（签名是 bool|str，pydantic 那关不拦）",
           _as_bool("True", "as_json") is True and _as_bool("off", "as_json") is False, "")
     l_up = await attempt("l_up", links, "37427694", to="PMC", default="")

@@ -1,0 +1,262 @@
+[
+  {
+    "source_type": "实测/工具输出",
+    "term": "miniscrew[Title] and stability[Title]",
+    "raw": {
+      "count": "3",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"miniscrew\"[Title] AND \"and stability\"[Title]",
+      "_term": "miniscrew[Title] and stability[Title]",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"miniscrew\"[Title] AND \"and stability\"[Title]"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "miniscrew[Title] AND stability[Title]",
+    "raw": {
+      "count": "65",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"miniscrew\"[Title] AND \"stability\"[Title]",
+      "_term": "miniscrew[Title] AND stability[Title]",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"miniscrew\"[Title] AND \"stability\"[Title]"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "NOT stability[Title]",
+    "raw": {
+      "count": "120008",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"stability\"[Title]",
+      "warninglist": {
+        "phrasesignored": [],
+        "quotedphrasesnotfound": [],
+        "outputmessages": [
+          "NOT"
+        ]
+      },
+      "_term": "NOT stability[Title]",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"stability\"[Title]\nNCBI 附言：NOT"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "牙根吸收 resorption",
+    "raw": {
+      "count": "80126",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [
+        {
+          "from": "resorption",
+          "to": "\"resorption\"[All Fields] OR \"resorptional\"[All Fields] OR \"resorptions\"[All Fields] OR \"resorptive\"[All Fields] OR \"resorptives\"[All Fields]"
+        }
+      ],
+      "querytranslation": "\"resorption\"[All Fields] OR \"resorptional\"[All Fields] OR \"resorptions\"[All Fields] OR \"resorptive\"[All Fields] OR \"resorptives\"[All Fields]",
+      "_term": "牙根吸收 resorption",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"resorption\"[All Fields] OR \"resorptional\"[All Fields] OR \"resorptions\"[All Fields] OR \"resorptive\"[All Fields] OR \"resorptives\"[All Fields]"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "(miniscrew[Title] OR implant[Title] AND stability[Title]",
+    "raw": {
+      "count": "1384",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "(\"miniscrew\"[Title] OR \"implant\"[Title]) AND \"stability\"[Title]",
+      "warninglist": {
+        "phrasesignored": [],
+        "quotedphrasesnotfound": [],
+        "outputmessages": [
+          "("
+        ]
+      },
+      "_term": "(miniscrew[Title] OR implant[Title] AND stability[Title]",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：(\"miniscrew\"[Title] OR \"implant\"[Title]) AND \"stability\"[Title]\nNCBI 附言：("
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "\"miniscrew stability",
+    "raw": {
+      "count": "447",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [
+        {
+          "from": "miniscrew",
+          "to": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]"
+        },
+        {
+          "from": "stability",
+          "to": "\"stabile\"[All Fields] OR \"stabiles\"[All Fields] OR \"stabilisation\"[All Fields] OR \"stabilisations\"[All Fields] OR \"stabilise\"[All Fields] OR \"stabilised\"[All Fields] OR \"stabiliser\"[All Fields] OR \"stabilisers\"[All Fields] OR \"stabilises\"[All Fields] OR \"stabilising\"[All Fields] OR \"stabilities\"[All Fields] OR \"stability\"[All Fields] OR \"stabilization\"[All Fields] OR \"stabilizations\"[All Fields] OR \"stabilize\"[All Fields] OR \"stabilized\"[All Fields] OR \"stabilizer\"[All Fields] OR \"stabilizers\"[All Fields] OR \"stabilizes\"[All Fields] OR \"stabilizing\"[All Fields]"
+        }
+      ],
+      "querytranslation": "(\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]) AND (\"stabile\"[All Fields] OR \"stabiles\"[All Fields] OR \"stabilisation\"[All Fields] OR \"stabilisations\"[All Fields] OR \"stabilise\"[All Fields] OR \"stabilised\"[All Fields] OR \"stabiliser\"[All Fields] OR \"stabilisers\"[All Fields] OR \"stabilises\"[All Fields] OR \"stabilising\"[All Fields] OR \"stabilities\"[All Fields] OR \"stability\"[All Fields] OR \"stabilization\"[All Fields] OR \"stabilizations\"[All Fields] OR \"stabilize\"[All Fields] OR \"stabilized\"[All Fields] OR \"stabilizer\"[All Fields] OR \"stabilizers\"[All Fields] OR \"stabilizes\"[All Fields] OR \"stabilizing\"[All Fields])",
+      "warninglist": {
+        "phrasesignored": [],
+        "quotedphrasesnotfound": [],
+        "outputmessages": [
+          "Unmatched double quote ignored."
+        ]
+      },
+      "_term": "\"miniscrew stability",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：(\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]) AND (\"stabile\"[All Fields] OR \"stabiles\"[All Fields] OR \"stabilisation\"[All Fields] OR \"stabilisations\"[All Fields] OR \"stabilise\"[All Fields] OR \"stabilised\"[All Fields] OR \"stabiliser\"[All Fields] OR \"stabilisers\"[All Fields] OR \"stabilises\"[All Fields] OR \"stabilising\"[All Fields] OR \"stabilities\"[All Fields] OR \"stability\"[All Fields] OR \"stabilization\"[All Fields] OR \"stabilizations\"[All Fields] OR \"stabilize\"[All Fields] OR \"stabilized\"[All Fields] OR \"stabilizer\"[All Fields] OR \"stabilizers\"[All Fields] OR \"stabilizes\"[All Fields] OR…（截断；完整解析用 as_json=True 取）\nNCBI 附言：Unmatched double quote ignored."
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "\"zzzqqx nonexistent term\"",
+    "raw": {
+      "count": "610",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"nonexistent\"[All Fields] AND (\"term birth\"[MeSH Terms] OR (\"term\"[All Fields] AND \"birth\"[All Fields]) OR \"term birth\"[All Fields] OR \"term\"[All Fields])",
+      "warninglist": {
+        "phrasesignored": [],
+        "quotedphrasesnotfound": [
+          "\"zzzqqx nonexistent term\""
+        ],
+        "outputmessages": []
+      },
+      "_term": "\"zzzqqx nonexistent term\"",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"nonexistent\"[All Fields] AND (\"term birth\"[MeSH Terms] OR (\"term\"[All Fields] AND \"birth\"[All Fields]) OR \"term birth\"[All Fields] OR \"term\"[All Fields])\n⚠️ NCBI 明说这些【整个引号短语】在索引里不存在（warninglist.quotedphrasesnotfound）：\"zzzqqx nonexistent term\" —— 它被换成了【按词 AND】执行（上面那条「NCBI 实际执行」就是替代式），所以这 610 条【不是】你写的这个短语的命中数。要按短语查就别加引号，或改成 MeSH 词。\n⚠️ 引号短语里有词在 NCBI 的实际执行中找不到：\"zzzqqx nonexistent term\" 里的 zzzqqx —— 实测引号【内】的词被丢掉时 NCBI 不填 phrasesnotfound，所以这种丢弃不会出现在上面那行「已丢弃」里。这个命中数是【剩下的词】的数，不能读成「这个短语有 N 篇」；引号里的词并没有被当成一个短语执行，所以【按原样这个短语有多少命中，NCBI 没有给出答案】——别把上面这个数当成它的，也别把它当成 0。"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "miniscrew[Title] AND (2019[dp] OR 2035[dp])",
+    "raw": {
+      "count": "36",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"miniscrew\"[Title] AND (2019/01/01:2019/12/31[Date - Publication] OR 2035/01/01:2035/12/31[Date - Publication])",
+      "_term": "miniscrew[Title] AND (2019[dp] OR 2035[dp])",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [
+        [
+          "2019-01-01",
+          "2019-12-31",
+          "发表日期[pdat]"
+        ],
+        [
+          "2035-01-01",
+          "2035-12-31",
+          "发表日期[pdat]"
+        ]
+      ],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"miniscrew\"[Title] AND (2019/01/01:2019/12/31[Date - Publication] OR 2035/01/01:2035/12/31[Date - Publication])\n⚠️ NCBI 实际执行的两段【同字段（发表日期[pdat]）】日期不相交（2019-01-01→2019-12-31 与 2035-01-01→2035-12-31）。不相交不等于 0 条 —— 一条记录可以同时带有落进两段的日期；有命中时别把这个命中数当成日期条件生效的证据。"
+  },
+  {
+    "source_type": "实测/工具输出",
+    "term": "miniscrew[Title] AND 2019[dp] AND 2035[dp]",
+    "raw": {
+      "count": "0",
+      "retmax": "0",
+      "retstart": "0",
+      "idlist": [],
+      "translationset": [],
+      "querytranslation": "\"miniscrew\"[Title] AND 2019/01/01:2019/12/31[Date - Publication] AND 2035/01/01:2035/12/31[Date - Publication]",
+      "warninglist": {
+        "phrasesignored": [],
+        "quotedphrasesnotfound": [],
+        "outputmessages": [
+          "No items found."
+        ]
+      },
+      "_term": "miniscrew[Title] AND 2019[dp] AND 2035[dp]",
+      "_retmax": 0,
+      "_retmax_note": "",
+      "_sort_note": "",
+      "_field_applied": "",
+      "_rel": 0,
+      "_windows": [
+        [
+          "2019-01-01",
+          "2019-12-31",
+          "发表日期[pdat]"
+        ],
+        [
+          "2035-01-01",
+          "2035-12-31",
+          "发表日期[pdat]"
+        ]
+      ],
+      "_daterange": ""
+    },
+    "baseline_notes": "NCBI 实际执行：\"miniscrew\"[Title] AND 2019/01/01:2019/12/31[Date - Publication] AND 2035/01/01:2035/12/31[Date - Publication]\n⚠️ NCBI 实际执行的两段【同字段（发表日期[pdat]）】日期不相交（2019-01-01→2019-12-31 与 2035-01-01→2035-12-31）。不相交不等于 0 条 —— 一条记录可以同时带有落进两段的日期；有命中时别把这个命中数当成日期条件生效的证据。"
+  }
+]

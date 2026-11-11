@@ -1,0 +1,99 @@
+{
+  "source_type": "实测/工具输出；字符数不是模型 token 数",
+  "descriptions": {
+    "before": {
+      "search": 4199,
+      "count": 677,
+      "fetch_abstracts": 520,
+      "links": 972
+    },
+    "after": {
+      "search": 694,
+      "count": 206,
+      "fetch_abstracts": 149,
+      "links": 276
+    }
+  },
+  "note_sizes": [
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "miniscrew[Title] and stability[Title]",
+      "before_chars": 55,
+      "after_chars": 94
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "miniscrew[Title] AND stability[Title]",
+      "before_chars": 51,
+      "after_chars": 51
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "NOT stability[Title]",
+      "before_chars": 40,
+      "after_chars": 108
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "牙根吸收 resorption",
+      "before_chars": 150,
+      "after_chars": 200
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "(miniscrew[Title] OR implant[Title] AND stability[Title]",
+      "before_chars": 83,
+      "after_chars": 141
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "\"miniscrew stability",
+      "before_chars": 676,
+      "after_chars": 733
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "\"zzzqqx nonexistent term\"",
+      "before_chars": 569,
+      "after_chars": 418
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "miniscrew[Title] AND (2019[dp] OR 2035[dp])",
+      "before_chars": 262,
+      "after_chars": 121
+    },
+    {
+      "source_type": "实测/固定响应回放",
+      "term": "miniscrew[Title] AND 2019[dp] AND 2035[dp]",
+      "before_chars": 261,
+      "after_chars": 261
+    }
+  ],
+  "stdio": [
+    {
+      "tool": "count",
+      "status": "PASS",
+      "chars": 142,
+      "source_type": "实测/新 stdio 进程工具输出"
+    },
+    {
+      "tool": "search",
+      "status": "PASS",
+      "chars": 760,
+      "source_type": "实测/新 stdio 进程工具输出"
+    },
+    {
+      "tool": "fetch_abstracts",
+      "status": "PASS",
+      "chars": 2358,
+      "source_type": "实测/新 stdio 进程工具输出"
+    },
+    {
+      "tool": "links",
+      "status": "PASS",
+      "chars": 174,
+      "source_type": "实测/新 stdio 进程工具输出"
+    }
+  ]
+}

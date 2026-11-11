@@ -1,0 +1,25 @@
+test_error_bodies_redacted (test_audit_regressions.InfrastructureRegression.test_error_bodies_redacted) ... ok
+test_huge_retry_after_fails_without_sleep (test_audit_regressions.InfrastructureRegression.test_huge_retry_after_fails_without_sleep) ... ok
+test_invalid_json_shapes (test_audit_regressions.InfrastructureRegression.test_invalid_json_shapes) ... ok
+test_masks_url_encoded_key (test_audit_regressions.InfrastructureRegression.test_masks_url_encoded_key) ... ok
+test_nested_errors (test_audit_regressions.InfrastructureRegression.test_nested_errors) ... ok
+test_numeric_inputs (test_audit_regressions.InfrastructureRegression.test_numeric_inputs) ... ok
+test_retry_unicode (test_audit_regressions.InfrastructureRegression.test_retry_unicode) ... ok
+test_zero_retry_after_is_respected (test_audit_regressions.InfrastructureRegression.test_zero_retry_after_is_respected) ... ok
+test_invalid_mode_no_network (test_audit_regressions.OutputRegression.test_invalid_mode_no_network) ... ok
+test_mcp_descriptions_match_functions (test_audit_regressions.OutputRegression.test_mcp_descriptions_match_functions) ... ok
+test_missing_metadata_and_no_json_query_duplication (test_audit_regressions.OutputRegression.test_missing_metadata_and_no_json_query_duplication) ... ok
+test_publication_types_not_truncated (test_audit_regressions.OutputRegression.test_publication_types_not_truncated) ... ok
+test_captured_responses (test_audit_regressions.QueryRegression.test_captured_responses) ... ok
+test_date_boolean_semantics (test_audit_regressions.QueryRegression.test_date_boolean_semantics) ... ok
+test_lowercase_and_warns_only_when_changed (test_audit_regressions.QueryRegression.test_lowercase_and_warns_only_when_changed) ... ok
+test_malformed_syntax_and_zero (test_audit_regressions.QueryRegression.test_malformed_syntax_and_zero) ... ok
+test_mixed_cjk (test_audit_regressions.QueryRegression.test_mixed_cjk) ... ok
+test_outputmessages_marked (test_audit_regressions.QueryRegression.test_outputmessages_marked) ... ok
+test_quoted_syntax_is_not_operator (test_audit_regressions.QueryRegression.test_quoted_syntax_is_not_operator) ... ok
+test_zero_claim_is_query_limited (test_audit_regressions.QueryRegression.test_zero_claim_is_query_limited) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.022s
+
+OK
