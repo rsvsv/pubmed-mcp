@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pubmed-mcp"
-version = "1.3.0"   # 本项目自订发布版本：整合边界修复、可选精简输出与自动回归
+version = "1.4.0"   # 本项目自订发布版本：新增系统综述检索助手（check_recall/mesh/diff/export）与可选检索留痕
 description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,0 +1,26 @@
+{
+ "gold": [
+  "42988646",
+  "42970819",
+  "42966086",
+  "42950796",
+  "42949934",
+  "42941283",
+  "42937388",
+  "42934872",
+  "42923675",
+  "42904190"
+ ],
+ "count_a": 1504,
+ "count_b": 2736,
+ "recall_a_found": 0,
+ "recall_b_found": 10,
+ "diff": {
+  "added_count": 1232,
+  "removed_count": 0,
+  "common_count": 1504
+ },
+ "export_fetched": 2736,
+ "export_seconds": 5.7,
+ "audit_lines": 9
+}

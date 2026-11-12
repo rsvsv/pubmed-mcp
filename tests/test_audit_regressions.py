@@ -45,9 +45,22 @@ class QueryRegression(unittest.TestCase):
                 self.assertIn("解析有警告", m._zero_explanation(d, 0))
 
     def test_quoted_syntax_is_not_operator(self):
-        for term in ('"NOT stability"[Title]', '"(tooth)"[Title]', '"and stability"[Title]', '(tooth OR implant) AND stability'):
+        for term in ('"NOT stability"[Title]', '"(tooth)"[Title]', '"and stability"[Title]', '(tooth OR implant) AND stability',
+                     '"root resorption"[tiab] AND laser', 'laser AND "root resorption"[tiab]',
+                     '"dental implant" AND osseointegration'):  # 本项目自订回归输入；覆盖 issue 的原例
             with self.subTest(term=term):
                 self.assertFalse(m._query_warnings({"_term": term, "querytranslation": term}))
+
+    def test_parenthesized_phrase_or_block_not_boolean_start(self):
+        # 以「(短语 OR 短语)」开头不应误报「以布尔算子开头」〔实测：正畸演练 export 误报，mask 把短语抹成空格所致〕。
+        term = '("root resorption"[tiab] OR "apical root resorption"[tiab]) AND orthodontic[tiab]'
+        warns = m._query_warnings({"_term": term, "querytranslation": term})
+        self.assertFalse(any("以布尔算子开头" in w for w in warns))
+        # 真正以算子开头（含括号包裹）仍须告警
+        for bad in ("OR cancer", "(OR cancer)", "AND tooth"):
+            with self.subTest(bad=bad):
+                self.assertTrue(any("以布尔算子开头" in w
+                                    for w in m._query_warnings({"_term": bad, "querytranslation": bad})))
 
     def test_outputmessages_marked(self):
         d = {"_term": "x", "querytranslation": "x", "warninglist": {"outputmessages": ["NOT", "("]}}
@@ -175,7 +188,7 @@ class OutputRegression(unittest.TestCase):
         tools = run(m.mcp.list_tools)
         for tool in tools:
             self.assertEqual(tool.description.strip(), getattr(m, tool.name).__doc__.strip())
-        self.assertLess(sum(len(t.description) for t in tools), 2000)  # 本项目自订描述体积回归上限
+        self.assertLess(sum(len(t.description) for t in tools), 2600)  # 本项目自订描述体积回归上限（1.4.0 新增 4 工具后由 2000 上调；2026-11-11 实测合计 2304 字符）
 
 
 if __name__ == "__main__":

@@ -58,7 +58,9 @@ key 读取顺序：环境变量 NCBI_API_KEY → 文件 ~/.ncbi_api_key → 都�
 
 import functools
 import calendar
+import csv
 import datetime
+import hashlib
 import io
 import inspect                              # 只用来验「装饰后还是协程函数」这条静态事实
 import json
@@ -95,6 +97,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
+__version__ = "1.4.0"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -753,6 +756,7 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
         q.update(mindate=lo, maxdate=hi, datetype="pdat")
     d = _safe_json(await _get_async("esearch.fcgi", q, 25), "esearch").get("esearchresult", {})
     d["_term"] = term
+    d["_request_params"] = {k: v for k, v in q.items() if k not in ("api_key", "email")}
     # 〔实测 2026-11-11〕留给 _zero_explanation 判断「用户是不是只要计数」；**不能**改读 NCBI
     # 回显的 retmax（越页时回显会变成 "0"）。完整实测与原因只写在 _zero_explanation 那一支里，
     # 避免同一段证据两处各写一遍。这个字段只给解释用，不改下发参数。
@@ -851,14 +855,27 @@ def _warn_bits(d):
     return ig, qn, others
 
 
-def _query_warnings(d):
-    """只提示，不偷偷修写检索式；原始响应样例见审计回归测试。"""
-    term = str(d.get("_term") or "")
-    qt = str(d.get("querytranslation") or "")
+_FW_TAG_RE = re.compile(
+    r"^\s*(?:tiab|title/abstract|ti|title|ab|mh|mesh(?:\s+terms)?|tw|au|author|"
+    r"ta|jour|journal|dp|pdat|edat|pt|ptyp|la|lang|ad|affiliation|uid|pmid|pmc|doi|ot|sh)\s*$",
+    re.I,
+)
+
+
+def _syntax_findings(term):
+    """独立于 esearch 响应的原始检索式语法检查。返回 [(code, breaking, warning_text), ...]。
+    breaking=True 表示极可能导致概念丢失、粘连或分组错乱（供 check_recall 判失真）。
+    本项目自订检查口径：不以弯撇号判断引号配对；不单凭 /de、/ad、/su、/ab 判外库语法。
+    旧「实测」标记已作废：此前依据来自子代理、未经主会话核验（2026-11-12）。
+    """
+    term = str(term or "")
     outside = re.sub(r'"[^"\n]*"|\[[^\]]*\]', lambda m: " " * len(m[0]), term)
-    warnings = []
+    ascii_masked = re.sub(r'"[^"\n]*"', lambda m: " " * len(m[0]), term)
+    masked = re.sub(r'"[^"\n]*"|“[^“”\n]*”|\[[^\]]*\]', lambda m: " " * len(m[0]), term)
+    nodoi = re.sub(r"\b10\.\d{4,9}/\S+|\bhttps?://\S+", lambda m: " " * len(m[0]), masked)
+    out = []
     if term.count('"') % 2:
-        warnings.append("⚠️ 双引号未闭合，NCBI 可能忽略引号；请配对后重查。")
+        out.append(("dq_unclosed", True, "⚠️ 双引号未闭合，NCBI 可能忽略引号；请配对后重查。"))
     depth = 0
     bad_parentheses = False
     for c in outside:
@@ -868,9 +885,76 @@ def _query_warnings(d):
             depth -= 1
             bad_parentheses |= depth < 0
     if depth or bad_parentheses:
-        warnings.append("⚠️ 括号不配对，NCBI 可能改变组合顺序；请配对后重查。")
-    if re.match(r"^\s*\(*\s*(AND|OR|NOT)\b", outside, re.I):
-        warnings.append("⚠️ 查询以布尔算子开头，可能被忽略；请写完整的 A AND/OR/NOT B。")
+        out.append(("paren", True, "⚠️ 括号不配对，NCBI 可能改变组合顺序；请配对后重查。"))
+    # 用原始 term 而非 mask 后的 outside：outside 把引号短语抹成空格，会让
+    # `("root resorption"[tiab] OR …)` 变成 `(   OR …)` 而误报「以布尔算子开头」〔实测：正畸演练 export〕。
+    # 原始 term 里短语以 " 起头，挡住匹配；真正以算子开头（如 `OR cancer`）仍会命中。
+    if re.match(r"^\s*\(*\s*(AND|OR|NOT)\b", term, re.I):
+        out.append(("bool_start", True, "⚠️ 查询以布尔算子开头，可能被忽略；请写完整的 A AND/OR/NOT B。"))
+    if ascii_masked.count("“") != ascii_masked.count("”"):
+        out.append(("fw_quote_unpaired", True,
+                    '⚠️ 全角双引号（“”）未配对，NCBI 可能忽略未配对引号并按词拆分；请改用半角 " 并配对。'))
+    elif "“" in ascii_masked or "”" in ascii_masked:
+        out.append(("fw_quote_norm", False,
+                    '⚠️ 含全角双引号（“”）：建议改用半角 "，以便引号配对与短语检查一致。'))
+    round_groups = re.findall(r"（([^（）]+)）", masked)
+    if any(_FW_TAG_RE.match(g) for g in round_groups):
+        out.append(("fw_round_tag", True,
+                    "⚠️ 含全角圆括号包裹字段名（如（tiab））：PubMed 不识别为字段限定，会把括号内文字当普通检索词；"
+                    "请改用半角方括号 [tiab]。"))
+    elif re.search(r"[（）]", masked):
+        out.append(("fw_round", False,
+                    "⚠️ 含全角圆括号（）：PubMed 不按分组语法解析全角括号；分组请用半角 ()，字段限定请用半角 []。"))
+    lenticular_groups = re.findall(r"【([^【】]+)】", masked)
+    if any(_FW_TAG_RE.match(g) for g in lenticular_groups) or re.search(r"[0-9A-Za-z_]【|】[0-9A-Za-z_]", masked):
+        out.append(("fw_lenticular_fuse", True,
+                    "⚠️ 含全角方头括号【】与检索词相连或包裹字段名：PubMed 不识别为字段标签且可能与相邻词粘连；"
+                    "请改用半角 [ ]。"))
+    elif re.search(r"[【】]", masked):
+        out.append(("fw_lenticular", False, "⚠️ 含全角方头括号【】：PubMed 不识别为字段标签；请改用半角 [ ]。"))
+    if re.search(r"[［］]", masked):
+        out.append(("fw_square", False, "⚠️ 含全角方括号［］：建议改用半角 [ ]，避免字段标签解析差异。"))
+    if re.search(r"(?<=[0-9A-Za-z_])[、。](?=[0-9A-Za-z_])", masked):
+        out.append(("fw_fuse", True,
+                    "⚠️ 含无空格分隔的全角顿号/句号（、。）：NCBI 会将两侧英文词粘连导致词项失效；"
+                    "请改用空格配合大写 AND/OR。"))
+    elif re.search(r"[、。]", masked):
+        out.append(("fw_ideopunct", False, "⚠️ 含全角顿号/句号（、。）：请改用空格配合大写 AND/OR。"))
+    if re.search(r"[，；：]", masked):
+        out.append(("fw_and_punct", False,
+                    "⚠️ 含全角逗号/分号/冒号（，；：）：NCBI 通常按 AND 交集处理；"
+                    "若本意为同义词并列请显式写大写 OR，交集请写大写 AND。"))
+    foreign = []
+    if re.search(r"\b(?:TITLE(?:-ABS)?-KEY|LIMIT-TO)\s*\(", nodoi, re.I):
+        foreign.append("Scopus TITLE-ABS-KEY/LIMIT-TO")
+    if re.search(r"(?<![A-Za-z0-9_])(?:TS|TI|AB|AU|SO|KW|PY|LA)\s*=", nodoi):
+        foreign.append("WoS 字段等号（如 TS=）")
+    if (re.search(r"(?<=[A-Za-z])/(?:exp|ti|tw|kw|au|mh)\b", nodoi, re.I)
+            or re.search(r"(?<=[A-Za-z0-9])\s*:\s*(?:ti,ab|ab,ti|ti|ab|kw|de|au|ad|tw|mh)\b", nodoi, re.I)
+            or re.search(r"(?<![A-Za-z])exp\s+[A-Za-z][\w\- ]*/", nodoi, re.I)):
+        foreign.append("Embase /exp 或 :ti,ab 等标签")
+    if foreign:
+        out.append(("foreign_db", True,
+                    "⚠️ 检测到疑似外库检索语法（" + "、".join(foreign) + "）：PubMed 不支持该语法，"
+                    "会将其当作普通检索词；请改写为 [MeSH Terms] / [tiab] 等 PubMed 标签。"))
+    for seg in re.split(r"\b(?:AND|OR|NOT)\b|[()]", nodoi, flags=re.I):
+        toks = seg.split()
+        if (len(toks) >= 2 and toks[-1].endswith("*") and not toks[-1].startswith("*")
+                and len(toks[-1]) >= 2 and toks[-1][-2].isalnum() and not toks[-2].endswith("*")):
+            pair = " ".join(toks[-2:])
+            out.append(("wildcard_multi", False,
+                        f'⚠️ 未加引号的多词片段「{pair}」末尾带截词符 *：* 只作用于最后一个词且会关闭整段短语的 '
+                        f'MeSH 自动映射；若需短语截词请加半角双引号（如 "{pair}"）。'))
+            break
+    return out
+
+
+def _query_warnings(d):
+    """只提示，不偷偷修写检索式；原始响应样例见审计回归测试。"""
+    term = str(d.get("_term") or "")
+    qt = str(d.get("querytranslation") or "")
+    outside = re.sub(r'"[^"\n]*"|\[[^\]]*\]', lambda m: " " * len(m[0]), term)
+    warnings = [text for _, _, text in _syntax_findings(term)]
     if re.search(r"\band\b", outside) and re.search(r'"and\s', qt, re.I):
         warnings.append("⚠️ 小写 and 被实际执行式当作词的一部分；请改为大写 AND 后重查。")
     missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", term)) -
@@ -1461,8 +1545,27 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
         "brief": "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。",
         "ids": "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。",
     }[detail]
+    audit_params = {
+        "input_params": {"field": field, "sort": sort, "mindate": mindate, "maxdate": maxdate,
+                         "reldate": reldate, "retmax": retmax, "retstart": retstart, "as_json": as_json},
+        "request_params": d.get("_request_params") or {},
+        "field": d.get("_field_applied") or field or "",
+        "sort": sort or "",
+        "mindate": mindate or "",
+        "maxdate": maxdate or "",
+        "reldate": d.get("_rel") if "_rel" in d else _int(reldate, "reldate", 0),
+        "retmax": d.get("_retmax") if "_retmax" in d else _int(retmax, "retmax", 20),
+    }
     if json_mode:
-        pairs = await _esummary_dicts(ids) if detail != "ids" else []
+        try:
+            pairs = await _esummary_dicts(ids) if (ids and detail != "ids") else []
+        except NcbiError as e:
+            _audit("search", term=term, count=count, returned=0, detail=detail,
+                   retstart=int(d.get("retstart") or 0), **audit_params,
+                   querytranslation=(d.get("querytranslation") or "").strip(),
+                   warnings=_note(d, include_translation=False) + [f"⚠️ esummary 元数据获取失败：{type(e).__name__}"],
+                   error="esummary_failed")
+            raise
         # 〔实测 2026-11-09〕旧版的 as_json 分支把「窗口到顶」⚠️ 和 0 条解释整个丢掉了，
         # 而 docstring 又让脚本改用 as_json —— 走 JSON 的人恰恰拿不到「这批没取全」这句最需要的话。
         # 现在两支都进 JSON（warnings 里也放一份，脚本只看 warnings 也不会漏）。
@@ -1475,6 +1578,10 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
             # 以为 2 个 id 就是 2 条记录。
             warn.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
                         f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
+        _audit("search", term=term, count=count,
+               returned=len(ids) if detail == "ids" else len(pairs), detail=detail,
+               retstart=int(d.get("retstart") or 0), **audit_params,
+               querytranslation=(d.get("querytranslation") or "").strip(), warnings=warn)
         return json.dumps({
             "term": term, "querytranslation": (d.get("querytranslation") or "").strip(),
             "translationset": d.get("translationset") or [],
@@ -1496,21 +1603,42 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
             "warnings": warn,
         }, ensure_ascii=False)
     head = [f"查询：{term}", f"命中 {count} 条，本次给 {len(ids)} 条（retstart={d.get('retstart')}）"]
-    head += _note(d)
+    notes = _note(d)
+    head += notes
     if win_warn:
         head.append(win_warn)
     if mode_note:
         head.append(mode_note)
+    base_warn = notes + ([win_warn] if win_warn else []) + ([mode_note] if mode_note else [])
     if not ids:
+        _audit("search", term=term, count=count, returned=0, detail=detail,
+               retstart=int(d.get("retstart") or 0), **audit_params,
+               querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
         head.append("=> " + _zero_explanation(d, count))
         return "\n".join(head)
     if detail == "ids":
+        _audit("search", term=term, count=count, returned=len(ids), detail=detail,
+               retstart=int(d.get("retstart") or 0), **audit_params,
+               querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
         head[1] = f"命中 {count} 条，本次给 {len(ids)} 个 PMID（retstart={d.get('retstart')}）"
         return "\n".join(head) + "\n\n" + "\n".join(ids)
-    pairs = await _esummary_dicts(ids)
+    try:
+        pairs = await _esummary_dicts(ids)
+    except NcbiError as e:
+        _audit("search", term=term, count=count, returned=0, detail=detail,
+               retstart=int(d.get("retstart") or 0), **audit_params,
+               querytranslation=(d.get("querytranslation") or "").strip(),
+               warnings=base_warn + [f"⚠️ esummary 元数据获取失败：{type(e).__name__}"],
+               error="esummary_failed")
+        raise
     if len(pairs) != len(ids):
-        head.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
+        miss_msg = (f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
                     f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
+        head.append(miss_msg)
+        base_warn.append(miss_msg)
+    _audit("search", term=term, count=count, returned=len(pairs), detail=detail,
+           retstart=int(d.get("retstart") or 0), **audit_params,
+           querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
     head[1] = f"命中 {count} 条，本次给 {len(pairs)} 条（retstart={d.get('retstart')}）"
     head.append("")
     formatter = _fmt_brief_record if detail == "brief" else _fmt_record
@@ -1527,7 +1655,16 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
     有命中也不证明原短语存在；确认短语须读取题录或摘要。完整解析可用 search(retmax=0, as_json=True)。
     """
     d = await _esearch(term, retmax=0, field=field, mindate=mindate, maxdate=maxdate, reldate=reldate)
-    return "\n".join([f"查询：{term}", f"命中 {_count_of(d)} 条"] + _note(d))
+    n = _count_of(d)
+    notes = _note(d)
+    _audit("count", term=term, count=n,
+           input_params={"field": field, "mindate": mindate, "maxdate": maxdate, "reldate": reldate},
+           request_params=d.get("_request_params") or {},
+           field=d.get("_field_applied") or field or "",
+           mindate=mindate or "", maxdate=maxdate or "",
+           reldate=d.get("_rel") if "_rel" in d else _int(reldate, "reldate", 0),
+           querytranslation=(d.get("querytranslation") or "").strip(), warnings=notes)
+    return "\n".join([f"查询：{term}", f"命中 {n} 条"] + notes)
 
 
 @mcp.tool()
@@ -1551,10 +1688,11 @@ async def fetch_abstracts(pmids: str) -> str:
         head.append("⚠️ NCBI 没返回这些号的记录（efetch 正文里没有对应的 PMID 行）——"
                     "注意【不是】「这篇没有摘要」：实测没有摘要的社论照样返回记录、照样算实取。"
                     "这里点名的一律是取不到条目本身：" + ", ".join(missing))
+    _audit("fetch_abstracts", pmids=uniq, requested=len(uniq), returned=len(got), missing=missing)
     return "\n".join(head) + "\n\n" + text
 
 
-DB_WHITELIST = {"pmc", "nucleotide", "gene", "pubmed"}
+DB_WHITELIST = {"pmc", "nucleotide", "gene", "pubmed", "citedin", "refs"}
 
 
 def _check_db(to):
@@ -1598,12 +1736,16 @@ async def _pmids_exist(pids):
     return states
 
 
+SNOW_SINGLE_CAP = 200        # 本项目自订：links(to=citedin/refs) 单 PMID 调用最多展示关联号数
+SNOW_BATCH_CAP = 50          # 本项目自订：links(to=citedin/refs) 多 PMID 批量调用每号最多展示数，防 50×200 撑爆输出
+
+
 @mcp.tool()
 async def links(pmids: str, to: str = "pmc") -> str:
-    """查 PMID 的数据库关联。pmids 用逗号/空格分隔，去重后最多 50 个。
+    """查 PMID 的数据库关联或引文追踪。pmids 用逗号/空格分隔，去重后最多 50 个。
 
-    to: pmc（默认）/ gene / nucleotide / pubmed，大小写不敏感。
-    每行列直接关联号；方括号是其它关联方向的计数。关联过多时显示部分号及总数。
+    to: pmc（默认）/ gene / nucleotide / pubmed / citedin（施引）/ refs（参考文献），大小写不敏感。
+    每行列直接关联号；方括号是其它关联计数。citedin/refs 供滚雪球追踪（0 条仅限 PubMed 已录入关系，不等于无引文）。
     to=pubmed 是相关文献，含自身；to=pmc 是 PMC 关联，不保证开放许可或此刻可下载。
     无关联、元数据不可用与存在性未知分开报告；esummary 缺失不证明 PMID 不存在。
     search 已给 PMC 时无需重复查询 links。内部逐 PMID 请求以保留归属，失败明确标注。
@@ -1616,13 +1758,18 @@ async def links(pmids: str, to: str = "pmc") -> str:
     # 号存在性交给 esummary（理由见 _pmids_exist 的 docstring：elink 那个形状两种情况逐字相同）
     exist = await _pmids_exist(uniq)
     out = [None] * len(uniq)
+    counts = [0] * len(uniq)
     errs = []
+    snow = db in ("citedin", "refs")
+    snow_link = "pubmed_pubmed_citedin" if db == "citedin" else ("pubmed_pubmed_refs" if db == "refs" else "")
+    show_cap = (SNOW_SINGLE_CAP if len(uniq) == 1 else SNOW_BATCH_CAP) if snow else 8
 
     async def one(i, pid):
+        params = {"dbfrom": "pubmed", "db": "pubmed" if snow else db, "id": pid, "retmode": "json"}
+        if snow_link:
+            params["linkname"] = snow_link
         try:
-            d = _safe_json(await _get_async("elink.fcgi",
-                                            {"dbfrom": "pubmed", "db": db, "id": pid,
-                                             "retmode": "json"}, 25), "elink")
+            d = _safe_json(await _get_async("elink.fcgi", params, 25), "elink")
         except NcbiError as e:
             # 单个号失败只废这一行。上一版让它出组：50 行一起没结果，且只剩
             # 「unhandled errors in a TaskGroup (1 sub-exception)」那句没有信息的话。
@@ -1630,6 +1777,17 @@ async def links(pmids: str, to: str = "pmc") -> str:
             out[i] = f"PMID {pid}  请求失败（原因见表头）"
             return
         sets = d.get("linksets") or []
+        if snow and (not isinstance(sets, list) or not sets or any(not isinstance(s, dict) for s in sets)):
+            errs.append(f"PMID {pid}：elink 缺少有效 linkset，不能判断引文关系")
+            out[i] = f"PMID {pid}  请求失败（原因见表头）"
+            return
+        if snow:
+            sets = [s for s in sets if {str(x) for x in _as_list(s.get("id") or s.get("ids") or [])} == {pid}]
+            if not sets:
+                errs.append(f"PMID {pid}：elink 未返回归属于请求号的 linkset")
+                out[i] = f"PMID {pid}  请求失败（原因见表头）"
+                return
+        state = exist.get(pid, "unknown")
         if not sets:
             out[i] = (f"PMID {pid}  ⚠️ elink 没返回这个号的 linkset —— 请求没给回这个号，"
                       f"这【不是】「没有全文」，先核对 PMID")
@@ -1644,6 +1802,8 @@ async def links(pmids: str, to: str = "pmc") -> str:
             "gene": ("pubmed_gene",),
             "pubmed": ("pubmed_pubmed",),
             "nucleotide": ("pubmed_nuccore", "pubmed_nuccore_refseq"),
+            "citedin": ("pubmed_pubmed_citedin",),
+            "refs": ("pubmed_pubmed_refs",),
         }.get(db, ())
         for ls in sets:
             srcs = {str(x) for x in _as_list(ls.get("id") or [])} | {str(x) for x in _as_list(ls.get("ids") or [])}
@@ -1661,11 +1821,15 @@ async def links(pmids: str, to: str = "pmc") -> str:
                 if not is_direct:
                     other.append(f"{name}:{len(dests)} 条")
                 else:
+                    counts[i] += len(dests)
+                    more_hint = ""
+                    if len(dests) > show_cap:
+                        more_hint = f"…共 {len(dests)}" + (
+                            f"（多号批量每号限展 {SNOW_BATCH_CAP}，单号调用可展 {SNOW_SINGLE_CAP}）"
+                            if snow and len(uniq) > 1 else "")
                     mine.append(f"{name}=" + ",".join(
-                        (x if db != "pmc" else f"PMC{x}") for x in dests[:8])
-                        + (f"…共 {len(dests)}" if len(dests) > 8 else ""))
+                        (x if db != "pmc" else f"PMC{x}") for x in dests[:show_cap]) + more_hint)
         tail = ("  [" + "; ".join(other) + "]") if other else ""
-        state = exist.get(pid, "unknown")
         if mine:
             out[i] = f"PMID {pid}  " + "  ".join(mine) + tail
             if state != "present":
@@ -1675,6 +1839,10 @@ async def links(pmids: str, to: str = "pmc") -> str:
                       "请核对 PMID 或稍后重试，不能据此判断全文可用性") + tail
         elif state == "unknown":
             out[i] = f"PMID {pid}  ⚠️ 元数据缺失，存在性无法确认；请重试" + tail
+        elif snow:
+            zero_msg = ("(PubMed 未录入施引记录；0 条不等于无人引用)"
+                        if db == "citedin" else "(PubMed 未录入参考文献；0 条不等于原文无引文)")
+            out[i] = f"PMID {pid}  {zero_msg}" + tail
         else:
             out[i] = f"PMID {pid}  ({db} 库无直接对应记录)" + tail
 
@@ -1683,6 +1851,8 @@ async def links(pmids: str, to: str = "pmc") -> str:
             tg.start_soon(one, i, pid)
     if errs and len(errs) == len(uniq):
         raise NcbiError(f"elink 全部 {len(errs)} 个请求都失败，第一个原因：" + errs[0])
+    _audit("links", to=db, pmids=uniq, requested=len(uniq), direct_total=sum(counts), errors=len(errs),
+           show_cap=show_cap)
     head = [f"elink pubmed→{db}，{len(uniq)} 个 PMID（每个一次请求，另加一次 esummary 判号是否存在）："]
     if errs:
         head.append(f"⚠️ {len(errs)} 个请求失败（那是故障，不是「没有链接」）：" + "; ".join(errs[:3]))
@@ -1693,9 +1863,718 @@ async def links(pmids: str, to: str = "pmc") -> str:
               "gene": "直接对应记录＝NCBI 把这个号关联到了 Gene 条目",
               "nucleotide": "直接对应记录＝NCBI 把这个号关联到了核酸序列条目",
               "pubmed": "直接对应记录＝NCBI 列出的【相关文献】（含这篇自己），与有没有全文无关；"
-                        "要判断能不能下载请用 to=pmc"}[db]
+                        "要判断能不能下载请用 to=pmc",
+              "citedin": "直接对应记录＝PubMed 已录入的【施引文献】PMID（滚雪球向前追踪）；未收录施引不等于无人引用",
+              "refs": "直接对应记录＝PubMed 已录入的【参考文献】PMID（滚雪球向后追踪）；早期文献可能未录入引文关系"}[db]
     return ("\n".join(head) + "\n" + "\n".join(str(x) for x in out)
             + f"\n说明：{legend}；方括号为其它关联计数。")
+
+
+# ---------- 系统综述助手（1.4.0 新增） ----------
+# 设计依据与实测前提见 docs/systematic-review-plan.md（2026-11-11 探针 P1–P3）：
+#   - MeSH 库可经 esearch/esummary db=mesh 查，ds_meshterms 给入口词、ds_idxlinks 给树号与子词〔实测 P1〕
+#   - 已知集交集 `term AND (pmid[uid] OR …)` 一次 esearch 即可判定找回〔实测 P2〕
+#   - 9999 检索窗口对 history 服务器同样生效，esummary/efetch 从 history 取 retstart=10000 均被拒〔实测 P3〕
+#     → 取全只能按日期切片，不能靠 history 绕过。
+# 分工〔本项目自订〕：工具只做机械可复现的事（检索、集合运算、导出、留痕）；
+# 相关性判断、纳入排除由人与 LLM 按预设标准做，工具不声称查全率/查准率。
+
+WINDOW = 9999                # PubMed esearch 检索窗口〔实测：retstart=9998 可取、9999 起被拒〕
+EXPORT_MAX = 100000          # 本项目自订：export 安全上限，避免过宽查询跑成小时级
+GOLD_MAX = 200               # 本项目自订：check_recall 一次最多金标准 PMID 数
+GOLD_CHUNK = 50              # 本项目自订：每批交集的金标准数。〔实测 gold=200 一次交集撞 HTTP 414、gold=100 通过〕取 50 留 URL 长度余量
+MESH_RETMAX_CAP = 20         # 本项目自订：mesh 一次最多描述符数
+MESH_CHILD_SHOW = 10         # 本项目自订：每个描述符最多展示的下位词数
+MESH_PARENT_SHOW = 5         # 本项目自订：每个描述符最多展示的上位词数
+DIFF_SHOW_CAP = 200          # 本项目自订：diff 文本档每侧最多展示 PMID 数
+
+
+def _tool_version():
+    # 运行中的源码为版本依据，避免同机旧 distribution / egg-info 冒充当前代码版本。
+    return __version__
+
+
+def _audit(event, **fields):
+    """检索留痕（可选）。设 PUBMED_AUDIT_DIR 后，每次检索追加一行 JSONL，供写 PRISMA-S 检索报告。
+    默认关闭＝零行为变化。留痕是辅助功能：写失败只报 stderr，不让检索本身失败〔本项目自订〕。"""
+    d = os.environ.get("PUBMED_AUDIT_DIR", "").strip()
+    if not d:
+        return
+    rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "event": event,
+           "version": _tool_version(), **fields}
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "searches.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"⚠️ 检索留痕写入失败（不影响本次结果）：{type(e).__name__}: {e}", file=sys.stderr)
+
+
+async def _ids_in_window(term, *, mindate="", maxdate="", context=""):
+    """在 9999 窗口内分页取全某查询的 PMID（每页 1000）。
+    返回 (ids, count, first, drift)：ids 去重保序；count 为 NCBI 命中数；first 为首页 esearch
+    响应（带 _term 等，供 _note 出警告）；drift 为分页期间数据库漂移提示（无则空串）。
+    count 超窗抛 NcbiError —— 由调用方决定切片（export）还是缩小查询（diff）。"""
+    first = await _esearch(term, retmax=1000, mindate=mindate, maxdate=maxdate)
+    count = _count_of(first)
+    if count > WINDOW:
+        raise NcbiError(f"{context}命中 {count} 条，超过 PubMed esearch 的 {WINDOW} 条检索窗口"
+                        f"（实测 retstart=9998 可取、9999 起被拒），无法在窗口内取全。"
+                        f"请缩小查询，或改用 export（自动按发表日期切片取全）。")
+    ids = list(first.get("idlist") or [])
+    while len(ids) < count:
+        page = await _esearch(term, retmax=1000, mindate=mindate, maxdate=maxdate, retstart=len(ids))
+        got = page.get("idlist") or []
+        if not got:
+            raise NcbiError(f"{context}分页中断：已取 {len(ids)}/{count} 条时 NCBI 返回空页。"
+                            f"数据库可能在检索期间更新，请重试。")
+        ids.extend(got)
+    drift = ""
+    uniq = list(dict.fromkeys(ids))
+    if len(uniq) != len(ids):
+        drift = (f"⚠️ {context}分页出现重复 PMID（取 {len(ids)} 个、去重后 {len(uniq)} 个）——"
+                 f"数据库可能在分页期间更新，结果以取回时点为准。")
+    if len(uniq) != count:
+        drift += (f"⚠️ {context}实际取回（去重后）{len(uniq)} 个 ≠ NCBI 命中数 {count}；"
+                  f"数据库可能在检索期间更新，请复核。")
+    return uniq, count, first, drift
+
+
+def _term_vanished(qt):
+    """实际执行式里除金标准 PMID（[UID]）与布尔算子/括号外是否还剩内容。
+    剩不下＝term 被 NCBI 忽略（常见于中文词，翻译为空），此时 `(term) AND (uids)` 退化成只剩
+    uids，found 会假阳性地全中。〔实测 A6：term=牙根吸收 → 执行式仅 uid OR 子句、found 3/3〕
+    这是启发式判断〔本项目自订〕：只覆盖「执行式纯由 uid 构成」这一可观测症状。"""
+    if not qt or not qt.strip():
+        return False  # 缺少执行式不能证明条件被清空。
+    s = re.sub(r'"?\d+"?\s*\[UID\]', " ", qt, flags=re.I)
+    s = re.sub(r"\b(AND|OR|NOT)\b", " ", s, flags=re.I)
+    s = re.sub(r"[()\s]+", " ", s)
+    return not s.strip()
+
+
+_DEGRADING_OUTMSG_RE = re.compile(
+    r"^(?:AND|OR|NOT|[()])$|unmatched|ignored|not\s+found|unknown\s+field",
+    re.I,
+)
+
+
+def _recall_warnings_and_degraded(raw_term, batch_ds):
+    """汇总 check_recall 对原始 term 的语法警告与各批 esearch 响应警告，并判定是否存在部分词失效/失真。
+    用原始 raw_term 做语法/中文/短语缺口检查，防止外层 `({term}) AND (uids)` 吞掉括号失衡告警〔实测 2026-11-12〕。"""
+    first_d = batch_ds[0]
+    qt0 = (first_d.get("querytranslation") or "").strip()
+    lines = []
+    if not qt0:
+        hint = "（查询含中文，建议先换成对应英文词重查，如 牙根吸收 → tooth resorption）" if _CJK.search(raw_term) else ""
+        lines.append(f"⚠️ NCBI 未返回实际执行式（querytranslation 为空）{hint}"
+                     f"—— 这个结果【不能】用来说明主题有无文献")
+    elif qt0.lower() != raw_term.strip().lower():
+        if len(qt0) > 600:
+            lines.append(f"NCBI 实际执行：{qt0[:600]}…（截断；完整解析用 as_json=True 取）")
+        else:
+            lines.append(f"NCBI 实际执行：{qt0}")
+
+    seen = set(lines)
+
+    def add(msg):
+        if msg and msg not in seen:
+            seen.add(msg)
+            lines.append(msg)
+
+    raw_findings = _syntax_findings(raw_term)
+    for m in _query_warnings({"_term": raw_term, "querytranslation": qt0}):
+        add(m)
+
+    degraded = any(breaking or code == "fw_and_punct" for code, breaking, _ in raw_findings)
+    missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", str(raw_term or ""))) -
+                         set(re.findall(r"[㐀-鿿぀-ヿ]+", qt0)))
+    if qt0 and missing_cjk:
+        degraded = True
+
+    for d_b in batch_ds:
+        batch_qt = str(d_b.get("querytranslation") or "")
+        original = {**d_b, "_term": raw_term}
+        for note in _note(original, include_translation=False):
+            add(note)
+        if not batch_qt or (_CJK.search(raw_term) and
+                set(re.findall(r"[㐀-鿿぀-ヿ]+", raw_term)) - set(re.findall(r"[㐀-鿿぀-ヿ]+", batch_qt))):
+            degraded = True
+        e = d_b.get("errorlist")
+        e = e if isinstance(e, dict) else {}
+        nf = [str(x) for x in _as_list(e.get("phrasesnotfound") or []) if str(x).strip()]
+        if nf:
+            degraded = True
+            add("⚠️ NCBI 未找到这些检索片段（phrasesnotfound）：" + ", ".join(nf) +
+                "；不能据此断言它们被丢弃，也不能把计数解释成剩余词的结果。")
+        ff = [str(x) for x in _as_list(e.get("fieldsnotfound") or []) if str(x).strip()]
+        if ff:
+            degraded = True
+            add("⚠️ NCBI 未识别这些字段，请核对实际执行式：" + ", ".join(ff))
+        ig, qn, others = _warn_bits(d_b)
+        if ig:
+            add("⚠️ NCBI 把这些词当【停用词】忽略：" + ", ".join(ig))
+        if qn:
+            degraded = True
+            add("⚠️ NCBI 明说这些【整个引号短语】在索引里不存在（warninglist.quotedphrasesnotfound）：" +
+                "，".join(qn) + " —— 可能已按词拆分改写，请核对实际执行式。")
+        if others:
+            if any(_DEGRADING_OUTMSG_RE.search(x) for x in others):
+                degraded = True
+            add("⚠️ NCBI 解析警告：" + "；".join(others) + "；检索式可能被忽略或改写，请核对实际执行式。")
+        gap = _phrase_gap({"_term": raw_term, "querytranslation": d_b.get("querytranslation") or "",
+                           "errorlist": e})
+        if gap:
+            degraded = True
+            add("⚠️ 引号短语里有词在 NCBI 的实际执行中找不到：" + "；".join(gap) +
+                "；不能将替代式的计数当成原短语计数，也不能据此断言原短语为 0 条。")
+    return lines, degraded
+
+
+@mcp.tool()
+async def check_recall(term: str, pmids: str, as_json: bool | str = False) -> str:
+    """已知文献找回测试：一批已知相关 PMID 里哪些被 term 检回。pmids 逗号/空格分隔，去重后最多 200 个。
+    分批 esearch 交集判定 found/missing（每批 50 个，避免 GET URL 超长被 NCBI 414）；缺失项附标题与存在状态。
+    只证明这批已知集的找回，不代表整体查全率；金标准集本身可能有偏。
+    逐块诊断用 count("概念块 AND pmid[uid]")。查询警告原样透传；term 被忽略或部分词未生效时显著告警。
+    """
+    json_mode = _as_bool(as_json, "as_json")
+    uniq, n_in = _parse_pmids(pmids)
+    if len(uniq) > GOLD_MAX:
+        raise NcbiError(f"check_recall 一次最多 {GOLD_MAX} 个金标准 PMID（本项目自订上限），"
+                        f"收到 {len(uniq)} 个，请分批。")
+    # 分批交集：一次塞 200 个 pmid[uid] 会让 GET URL 超长被 NCBI 414〔实测 A1〕。
+    batches = [uniq[i:i + GOLD_CHUNK] for i in range(0, len(uniq), GOLD_CHUNK)]
+    found_set, batch_ds = set(), []
+    for batch in batches:
+        gold_q = f"({term}) AND (" + " OR ".join(f"{p}[uid]" for p in batch) + ")"
+        d = await _esearch(gold_q, retmax=len(batch))
+        count = _count_of(d)
+        got = d.get("idlist") or []
+        bset = set(batch)
+        if count > len(batch) or any(p not in bset for p in got):
+            raise NcbiError(f"check_recall 交集结果异常：命中 {count}、返回 {len(got)} 个（本批金标准 {len(batch)} 个）。"
+                            f"交集不应超出金标准集，请复核查询。")
+        found_set.update(got)
+        batch_ds.append(d)
+    first_d = batch_ds[0]
+    found = [p for p in uniq if p in found_set]
+    missing = [p for p in uniq if p not in found_set]
+    miss_info, meta_warn = [], ""
+    if missing:
+        try:
+            recs = dict(await _esummary_dicts(missing, include_unavailable=True))
+            for p in missing:
+                r = recs.get(p)
+                if r is not None and not r.get("error") and r.get("title"):
+                    miss_info.append({"pmid": p, "state": "present", "title": r.get("title") or ""})
+                elif r is not None and r.get("error") == "cannot get document summary":
+                    miss_info.append({"pmid": p, "state": "unavailable", "title": ""})
+                else:
+                    miss_info.append({"pmid": p, "state": "unknown", "title": ""})
+        except NcbiError as e:
+            meta_warn = f"⚠️ 缺失项标题获取失败（不影响 found/missing 判定）：{str(e)[:200]}"
+            miss_info = [{"pmid": p, "state": "unknown", "title": ""} for p in missing]
+    caveat = ("只证明这批已知集的找回，不代表整体查全率；金标准集可能有偏（如只取某综述的参考文献）。"
+              "present＝记录存在但未被本次实际执行式检回；unavailable/unknown＝存在性未确认，不能断定是 term 漏了它。")
+    qt = (first_d.get("querytranslation") or "").strip()
+    translations = [(d.get("querytranslation") or "").strip() for d in batch_ds]
+    term_ignored = any(_term_vanished(t) for t in translations)
+    warn, raw_degraded = _recall_warnings_and_degraded(term, batch_ds)
+    term_degraded = (not term_ignored) and raw_degraded
+    if term_ignored:
+        warn.append("⚠️ term 未参与实际检索：NCBI 忽略了它（常见于中文词，翻译为空），实际执行式只剩金标准 "
+                    "PMID 本身。上面的 found【不代表】term 匹配了这些文献——请换英文词或核对实际执行式后重跑。")
+    elif term_degraded:
+        warn.append("⚠️ term 存在部分概念未生效、词项未找到或语法失真（见上方警告）：多概念检索中若某侧概念被吞，"
+                    "found 可能包含仅命中剩余概念的假阳性文献——请修正检索式后重跑。")
+    if meta_warn:
+        warn.append(meta_warn)
+    if n_in != len(uniq):
+        warn.append(f"（原始输入 {n_in} 个，去重后 {len(uniq)} 个）")
+    if len(batches) > 1:
+        warn.append(f"（金标准 {len(uniq)} 个分 {len(batches)} 批交集判定，每批最多 {GOLD_CHUNK} 个，避免 URL 超长）")
+    _audit("check_recall", term=term, gold=len(uniq), found=len(found), missing=len(missing),
+           term_ignored=term_ignored, term_degraded=term_degraded, querytranslation=qt,
+           querytranslations=translations, pmids=uniq, warnings=warn)
+    if json_mode:
+        return json.dumps({"term": term, "gold_count": len(uniq), "found": found, "missing": miss_info,
+                           "term_ignored": term_ignored, "term_degraded": term_degraded,
+                           "querytranslation": qt, "querytranslations": translations,
+                           "warnings": warn, "caveat": caveat}, ensure_ascii=False)
+    head = [f"查询：{term}", f"金标准 {len(uniq)} 个 PMID，检回 {len(found)} 个，未检回 {len(missing)} 个"]
+    if term_ignored:
+        head.append("⚠️ 本次 found 不可信：term 被 NCBI 忽略，详见下方告警。")
+    elif term_degraded:
+        head.append("⚠️ 本次 found/missing 可能失真：term 存在部分词未生效或语法退化，详见下方告警。")
+    head += warn
+    if found:
+        head.append("检回：" + ", ".join(found))
+    if miss_info:
+        head.append("未检回：")
+        for mi in miss_info:
+            if mi["state"] == "present":
+                head.append(f"  PMID {mi['pmid']}（记录存在，本次未检回）{mi['title']}")
+            elif mi["state"] == "unavailable":
+                head.append(f"  PMID {mi['pmid']} ⚠️ esummary 未找到文档摘要，存在性未确认")
+            else:
+                head.append(f"  PMID {mi['pmid']} ⚠️ 元数据缺失，存在性未确认")
+    head.append("说明：" + caveat)
+    return "\n".join(head)
+
+
+@mcp.tool()
+async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str = False) -> str:
+    """查 MeSH 主题词表：描述符、入口词（同义词）、树号、上下位词、历史前身词（previous indexing）、范围注、引入年份。
+    词表以查询时点 NCBI 返回为准；retmax 默认 5、上限 20（本批候选内精确匹配置顶）。
+    历史前身词供扩展旧标引词，不保证补齐；下位词（最多展 10 个）供决定是否展开。
+    无描述符命中不等于主题无文献；NCBI 报 phrasesnotfound 时告警。
+    """
+    json_mode = _as_bool(as_json, "as_json")
+    if not (term or "").strip():
+        raise NcbiError("term 不能为空")
+    n_req = _int(retmax, "retmax", 5)
+    if n_req < 1:
+        raise NcbiError(f"retmax={retmax!r} 要正数；查词给正整数（上限 {MESH_RETMAX_CAP}）。")
+    n = min(n_req, MESH_RETMAX_CAP)
+    clamp_note = "" if n_req <= MESH_RETMAX_CAP else f"retmax={n_req} 超过本项目自订上限，已夹到 {n}。"
+    d = _safe_json(await _get_async("esearch.fcgi",
+                                    {"db": "mesh", "term": term, "retmax": n, "retmode": "json"}, 25),
+                   "esearch(mesh)")
+    er = d.get("esearchresult")
+    if not isinstance(er, dict):
+        raise NcbiError("mesh esearch 返回结构异常")
+    er["_term"] = term
+    count = _count_of(er)
+    ids = er.get("idlist")
+    if (not isinstance(ids, list) or any(not isinstance(u, str) or not u.isdigit() for u in ids)
+            or len(set(ids)) != len(ids) or len(ids) > min(count, n) or (count and not ids)):
+        raise NcbiError("mesh esearch 的 UID 列表缺失、异常或与计数不符")
+    qt = (er.get("querytranslation") or "").strip()
+    warn = _note(er)
+    e_er = er.get("errorlist")
+    e_er = e_er if isinstance(e_er, dict) else {}
+    if _as_list(e_er.get("phrasesnotfound") or []) or _warn_bits(er)[1]:
+        warn.append("⚠️ MeSH 检索片段未找到或被改写；这不能证明片段已被丢弃。"
+                    "请核对实际执行式，并尝试单数词形或核心词根重查。")
+    if clamp_note:
+        warn.append("⚠️ " + clamp_note)
+    if not ids:
+        note = f"MeSH 库未命中「{term}」的描述符。无描述符不等于主题无文献；请用标题/摘要同义词补充检索。"
+        _audit("mesh", term=term, count=count, descriptors=0, querytranslation=qt, warnings=warn)
+        if json_mode:
+            return json.dumps({"term": term, "count": count, "descriptors": [],
+                               "querytranslation": qt, "warnings": warn, "note": note}, ensure_ascii=False)
+        return "\n".join([f"查询：{term}", note] + warn)
+    s = _safe_json(await _get_async("esummary.fcgi",
+                                    {"db": "mesh", "id": ",".join(ids), "retmode": "json"}, 25),
+                   "esummary(mesh)")
+    res = s.get("result")
+    if not isinstance(res, dict):
+        raise NcbiError("mesh esummary 返回结构异常")
+    uids = res.get("uids")
+    if (not isinstance(uids, list) or any(not isinstance(u, str) for u in uids)
+            or set(uids) != set(ids) or len(set(uids)) != len(uids)):
+        raise NcbiError("mesh esummary 返回的 UID 列表与请求不符，不能作为有效词表数据")
+    descs, child_want, parent_want = [], [], []
+    q_norm = term.strip().lower()
+    for uid in uids:
+        rec = res.get(uid)
+        if not isinstance(rec, dict) or rec.get("error") or not rec.get("ds_meshterms"):
+            raise NcbiError(f"mesh esummary 的 UID {uid} 记录结构异常或不可用，不能作为有效词表数据")
+        if "uid" in rec and rec["uid"] != uid:
+            raise NcbiError(f"mesh esummary 的 UID {uid} 与记录内部 uid 不一致，不能作为有效词表数据")
+        terms = [str(t) for t in _as_list(rec.get("ds_meshterms") or []) if str(t).strip()]
+        idx = _as_list(rec.get("ds_idxlinks") or [])
+        kids, pars = [], []
+        for x in idx:
+            if not isinstance(x, dict):
+                continue
+            p_uid = x.get("parent")
+            if p_uid is not None and str(p_uid).strip() and str(p_uid) != uid and str(p_uid) not in pars:
+                pars.append(str(p_uid))
+            for c in _as_list(x.get("children") or []):
+                c = str(c)
+                if c and c not in kids:
+                    kids.append(c)
+        prev_idx = [str(x).strip() for x in _as_list(rec.get("ds_previousindexing") or []) if str(x).strip()]
+        rtype_raw = _as_list(rec.get("ds_recordtype") or [])
+        rtype = str(rtype_raw[0]).strip() if rtype_raw and rtype_raw[0] is not None else ""
+        name = terms[0] if terms else "( unnamed )"
+        exact = q_norm in {t.lower() for t in ([name] + terms)}
+        descs.append({
+            "uid": uid, "ui": rec.get("ds_meshui") or "",
+            # ds_meshterms 首项为主题词名〔实测 P1 一例〕；完整词表都在 entry_terms 里，首项异常也不丢信息。
+            "name": name,
+            "record_type": rtype,
+            "exact_match": exact,
+            "entry_terms": terms,
+            "treenums": [str(x.get("treenum")) for x in idx if isinstance(x, dict) and x.get("treenum")],
+            "parents": pars[:MESH_PARENT_SHOW], "parents_total": len(pars),
+            "children": kids[:MESH_CHILD_SHOW], "children_total": len(kids),
+            "previous_indexing": prev_idx,
+            "scope_note": rec.get("ds_scopenote") or "",
+            "year_introduced": rec.get("ds_yearintroduced") or "",
+        })
+        child_want.extend(kids[:MESH_CHILD_SHOW])
+        parent_want.extend(pars[:MESH_PARENT_SHOW])
+    rel_names = {de["uid"]: de["name"] for de in descs if de["name"] != "( unnamed )"}
+    child_warns = []
+    want = [u for u in dict.fromkeys(child_want + parent_want) if u not in rel_names]
+    for i in range(0, len(want), ESUMMARY_CHUNK):
+        chunk = want[i:i + ESUMMARY_CHUNK]
+        try:
+            cs = _safe_json(await _get_async("esummary.fcgi",
+                                             {"db": "mesh", "id": ",".join(chunk), "retmode": "json"}, 25),
+                            "esummary(mesh 下位词)")
+            cres = cs.get("result")
+            if not isinstance(cres, dict) or not isinstance(cres.get("uids"), list):
+                raise NcbiError("mesh 关联词 esummary 返回结构异常")
+            returned = cres["uids"]
+            if (any(not isinstance(u, str) for u in returned) or set(returned) != set(chunk)
+                    or len(set(returned)) != len(returned)):
+                raise NcbiError("mesh 关联词 UID 列表与请求不符")
+            names = {}
+            for cu in returned:
+                cr = cres.get(cu)
+                if (not isinstance(cr, dict) or cr.get("error") or not cr.get("ds_meshterms")
+                        or ("uid" in cr and str(cr["uid"]) != cu)):
+                    raise NcbiError("mesh 关联词记录缺失或内部 UID 不符")
+                names[cu] = str(_as_list(cr["ds_meshterms"])[0])
+            rel_names.update(names)
+        except NcbiError as e:
+            child_warns.append(f"⚠️ 下位词名称获取失败（本批上位词亦仅显示 UID；其他批继续）：{str(e)[:200]}")
+    warn.extend(dict.fromkeys(child_warns))
+    for de in descs:
+        de["children"] = [{"uid": c, "name": rel_names.get(c, "")} for c in de["children"]]
+        de["parents"] = [{"uid": p, "name": rel_names.get(p, "")} for p in de["parents"]]
+    exact_i = next((i for i, de in enumerate(descs) if de["exact_match"]), None)
+    moved_from = None
+    if exact_i is not None and exact_i > 0:
+        picked = descs.pop(exact_i)
+        descs.insert(0, picked)
+        moved_from = exact_i + 1
+    elif exact_i is None and count > len(descs):
+        warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个中无字面精确匹配；"
+                    f"可增大 retmax（上限 {MESH_RETMAX_CAP}）查看后续条目。")
+    _audit("mesh", term=term, count=count, descriptors=len(descs), querytranslation=qt, warnings=warn)
+    if json_mode:
+        return json.dumps({"term": term, "count": count, "descriptors": descs,
+                           "querytranslation": qt, "warnings": warn}, ensure_ascii=False)
+    head = [f"查询：{term}", f"MeSH 命中 {count} 个描述符，本次给 {len(descs)} 个"] + warn
+    for de in descs:
+        head.append("")
+        badge = ""
+        if moved_from and de is descs[0]:
+            badge = f" [精确匹配，已由第 {moved_from} 位置顶]"
+        elif de["exact_match"] and len(descs) > 1:
+            badge = " [精确匹配]"
+        head.append(f"MeSH {de['ui']}｜{de['name']}"
+                    + (f"（{de['year_introduced']} 年引入）" if de["year_introduced"] else "")
+                    + badge)
+        head.append("  入口词：" + "; ".join(de["entry_terms"]))
+        if de["treenums"]:
+            head.append("  树号：" + "; ".join(de["treenums"]))
+        if de["parents"]:
+            pshown = "; ".join((f"{p['name']} (UID {p['uid']})" if p["name"] else f"UID {p['uid']}")
+                               for p in de["parents"])
+            pmore = f"…共 {de['parents_total']} 个" if de["parents_total"] > len(de["parents"]) else ""
+            head.append("  上位词：" + pshown + pmore)
+        if de["children"]:
+            shown = "; ".join((f"{c['name']} (UID {c['uid']})" if c["name"] else f"UID {c['uid']}")
+                              for c in de["children"])
+            more = f"…共 {de['children_total']} 个" if de["children_total"] > len(de["children"]) else ""
+            head.append("  下位词：" + shown + more)
+        if de["previous_indexing"]:
+            head.append("  历史前身词（previous indexing）：" + "; ".join(de["previous_indexing"])
+                        + "（检索引入年份之前的文献需补旧主题词）")
+        if de["scope_note"]:
+            head.append("  范围注：" + de["scope_note"])
+    head.append("")
+    head.append("说明：词表以查询时点 NCBI 返回为准；MeSH 覆盖不全，无描述符的概念请用标题/摘要同义词补充。")
+    return "\n".join(head)
+
+
+@mcp.tool()
+async def diff(term_a: str, term_b: str, max_show: StrictInt | StrictStr = 20,
+               as_json: bool | str = False) -> str:
+    """对比两个 PubMed 查询的结果集：b 相对 a 新增、丢失了哪些 PMID。
+    检索式迭代前后核对增减；两查询都须在 9999 窗口内，超窗报错（先缩小或改用 export）。
+    max_show 默认 20、上限 200，文本档每侧只展示部分；as_json=True 给完整列表。
+    集合差只描述增减，不判断相关性；命中更多不等于更好。两次查询间数据库可能更新。
+    """
+    json_mode = _as_bool(as_json, "as_json")
+    ms_req = _int(max_show, "max_show", 20)
+    if ms_req < 0:
+        raise NcbiError(f"max_show={max_show!r} 不能为负；不想看列表给 0。")
+    ms = min(ms_req, DIFF_SHOW_CAP)
+    sides = [None, None]
+    side_errs = [None, None]
+    async with anyio.create_task_group() as tg:
+        async def fetch_side(idx, q, ctx):
+            try:
+                sides[idx] = await _ids_in_window(q, context=ctx)
+            except NcbiError as e:
+                side_errs[idx] = e
+                tg.cancel_scope.cancel()
+        tg.start_soon(fetch_side, 0, term_a, "diff term_a：")
+        tg.start_soon(fetch_side, 1, term_b, "diff term_b：")
+    for e in side_errs:
+        if e is not None:
+            raise e
+    a_ids, a_count, a_first, a_drift = sides[0]
+    b_ids, b_count, b_first, b_drift = sides[1]
+    sa, sb = set(a_ids), set(b_ids)
+    added = [p for p in b_ids if p not in sa]
+    removed = [p for p in a_ids if p not in sb]
+    common = len(sa & sb)
+    warn_a, warn_b = _note(a_first), _note(b_first)
+    if a_drift:
+        warn_a.append(a_drift)
+    if b_drift:
+        warn_b.append(b_drift)
+    qt_a = (a_first.get("querytranslation") or "").strip()
+    qt_b = (b_first.get("querytranslation") or "").strip()
+    caveat = "集合差只描述增减，不判断相关性；命中更多不等于更好。两次查询间数据库可能更新，结果以取回时点为准。"
+    _audit("diff", term_a=term_a, term_b=term_b, count_a=a_count, count_b=b_count,
+           added=len(added), removed=len(removed), common=common,
+           querytranslation_a=qt_a, querytranslation_b=qt_b,
+           warnings_a=warn_a, warnings_b=warn_b)
+    if json_mode:
+        return json.dumps({"term_a": term_a, "term_b": term_b, "count_a": a_count, "count_b": b_count,
+                           "added_count": len(added), "removed_count": len(removed), "common_count": common,
+                           "added": added, "removed": removed,
+                           "querytranslation_a": qt_a, "querytranslation_b": qt_b,
+                           "warnings_a": warn_a, "warnings_b": warn_b, "caveat": caveat}, ensure_ascii=False)
+    head = [f"term_a：{term_a}", f"  命中 {a_count}，取回 {len(a_ids)}"]
+    head += ["  " + w for w in warn_a]
+    head += [f"term_b：{term_b}", f"  命中 {b_count}，取回 {len(b_ids)}"]
+    head += ["  " + w for w in warn_b]
+    head.append(f"新增 {len(added)} 条（b 有 a 无）；丢失 {len(removed)} 条（a 有 b 无）；共同 {common} 条")
+    if ms:
+        if added:
+            head.append(f"新增（展示 {min(ms, len(added))}/{len(added)}）：" + ", ".join(added[:ms]))
+        if removed:
+            head.append(f"丢失（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
+    head.append("说明：" + caveat)
+    return "\n".join(head)
+
+
+def _date_mid(lo, hi):
+    a = datetime.date.fromisoformat(lo)
+    b = datetime.date.fromisoformat(hi)
+    return (a + (b - a) / 2).isoformat()
+
+
+def _next_day(d):
+    return (datetime.date.fromisoformat(d) + datetime.timedelta(days=1)).isoformat()
+
+
+async def _export_slice(term, lo, hi, state):
+    """按发表日期递归二分，直到每片落进 9999 窗口。返回 (ids, 片数, 切片计数和)。
+    切片经 mindate/maxdate（datetype=pdat）下发，不改用户 term；term 自带的日期条件由 NCBI 做 AND。"""
+    d = await _esearch(term, retmax=0, mindate=lo, maxdate=hi)
+    c = _count_of(d)
+    if c == 0:
+        return [], 0, 0
+    if c <= WINDOW:
+        ids, c2, first, drift = await _ids_in_window(term, mindate=lo, maxdate=hi,
+                                                     context=f"export 切片 {lo}→{hi}：")
+        if drift:
+            state["drift"].append(drift)
+        return ids, 1, c
+    mid = _date_mid(lo, hi)
+    if lo >= hi or mid < lo or mid >= hi:
+        raise NcbiError(f"export：区间 {lo}→{hi} 仍有 {c} 条超过 {WINDOW} 窗口且无法再二分；"
+                        f"请缩小查询（加字段/日期限定）后重试。")
+    lids, ln, lc = await _export_slice(term, lo, mid, state)
+    rids, rn, rc = await _export_slice(term, _next_day(mid), hi, state)
+    return lids + rids, ln + rn, lc + rc
+
+
+async def _export_csv(path, ids):
+    """核心题录字段写 CSV〔字段本项目自订〕；utf-8-sig 便于 Excel 直接打开。
+    元数据缺失/不可用的行在 note 列标明，不静默丢弃。返回 (记录数, 问题号列表)。"""
+    recs = dict(await _esummary_dicts(ids, include_unavailable=True))
+    problems = []
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["pmid", "pubdate", "title", "journal", "authors", "author_count", "doi", "pmc", "pubtype", "note"])
+        for p in ids:
+            r = recs.get(p)
+            if r is None:
+                w.writerow([p, "", "", "", "", "", "", "", "", "元数据缺失"])
+                problems.append(p)
+                continue
+            if r.get("error"):
+                w.writerow([p, "", "", "", "", "", "", "", "", "esummary 不可用：" + str(r.get("error"))[:80]])
+                problems.append(p)
+                continue
+            parts = _record_parts(p, r)
+            w.writerow([parts["pmid"], parts["pubdate"], parts["title"], parts["journal"],
+                        parts["authors"], parts["author_count"], parts["doi"], parts["pmc"],
+                        "/".join(parts["pubtype"]), ""])
+    return len(ids) - len(problems), problems
+
+
+async def _export_medline(path, ids):
+    """efetch MEDLINE 格式（.nbib）分批写文件。按 ^PMID- 行校验归属（MEDLINE 排版用 PMID-，
+    与摘要端的 PMID: 不同）。返回 (PMID- 行数, 缺记录的号)。"""
+    chunks = [ids[i:i + EFETCH_CHUNK] for i in range(0, len(ids), EFETCH_CHUNK)]
+    out = [None] * len(chunks)
+    errs = []
+
+    async def one(i, c):
+        try:
+            text = await _get_async("efetch.fcgi",
+                                    {"db": "pubmed", "id": ",".join(c), "rettype": "medline", "retmode": "text"},
+                                    min(60, 20 + 0.4 * len(c)))
+            head = text.lstrip()[:200].lower()
+            if head.startswith("<!doctype") or head.startswith("<html"):
+                raise NcbiError("efetch 回的是 HTML 页面（HTTP 200 也可能是故障页），不是 MEDLINE 正文。原文开头："
+                                + _mask(text.lstrip()[:200]))
+            got = re.findall(r"^PMID- (\d+)", text, re.M)
+            if len(got) != len(set(got)) or not set(got).issubset(c):
+                raise NcbiError("efetch MEDLINE 返回的 PMID 与请求不符或重复，不能作为有效导出")
+            if not got and not re.fullmatch(r"\s*(?:\d+\.\s*)+", text):
+                raise NcbiError("efetch 返回了无法识别的 MEDLINE 正文；原文开头：" + _mask(text.lstrip()[:200]))
+            out[i] = text
+        except NcbiError as e:
+            errs.append(e)
+
+    async with anyio.create_task_group() as tg:
+        for i, c in enumerate(chunks):
+            tg.start_soon(one, i, c)
+    if errs:
+        raise errs[0]
+    text = "\n\n".join(t for t in out if t)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text + ("\n" if text else ""))
+    got = re.findall(r"^PMID- (\d+)", text, re.M)
+    missing = [p for p in ids if p not in set(got)]
+    return len(got), missing
+
+
+def _publish_no_clobber(tmp, p):
+    """原子发布且不覆盖。无可用原语时失败，不退回 exists + replace。"""
+    try:
+        if os.name == "nt":
+            os.rename(tmp, p)  # Windows rename 在目标存在时失败；POSIX rename 会覆盖。
+        else:
+            os.link(tmp, p)  # 同目录硬链接：目标存在时原子失败。
+    except FileExistsError as e:
+        raise NcbiError(f"文件已存在：{p}。本工具不覆盖已有文件，请换个路径或先移走旧文件。") from e
+    except OSError as e:
+        raise NcbiError(f"无法安全发布导出文件（{p}）：{e}；请使用支持原子不覆盖发布的本地文件系统。") from e
+
+
+@mcp.tool()
+async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"] = "pmids",
+                 as_json: bool | str = False) -> str:
+    """取全某查询的 PMID 并写文件；超 9999 窗口自动按发表日期二分切片。
+    format: pmids（纯 PMID 列表）/ csv（核心题录字段，不含摘要）/ medline（.nbib，保留来源中已有的摘要与主题词）。
+    只回摘要（总数/片数/去重/路径/sha256），不回记录本身。path 显式给出且不得已存在（不覆盖）。
+    切片计数与总数核对，不一致如实报告；检索期间数据库可能更新，结果以导出时点为准。
+    自订安全上限 10 万条。筛选工具导入兼容性以对方文档为准；不保证与 PubMed 网页导出逐字一致。
+    """
+    if format not in ("pmids", "csv", "medline"):
+        raise NcbiError("format 只支持 pmids / csv / medline")
+    json_mode = _as_bool(as_json, "as_json")
+    raw_p = os.path.expanduser((path or "").strip())
+    if not raw_p:
+        raise NcbiError("path 不能为空；请给明确的输出文件路径。")
+    p = os.path.abspath(raw_p)
+    if os.path.isdir(p):
+        raise NcbiError(f"path 是已存在的目录而非文件路径：{p}")
+    if os.path.exists(p):
+        raise NcbiError(f"文件已存在：{p}。本工具不覆盖已有文件，请换个路径或先移走旧文件。")
+    t0 = datetime.datetime.now().isoformat(timespec="seconds")
+    nreq0 = _NREQ
+    d0 = await _esearch(term, retmax=0)
+    total = _count_of(d0)
+    qt = (d0.get("querytranslation") or "").strip()
+    warn = _note(d0, include_translation=False)
+    if total > EXPORT_MAX:
+        raise NcbiError(f"查询命中 {total} 条，超过 export 本项目自订安全上限 {EXPORT_MAX}；"
+                        f"请缩小查询（加字段/日期限定）后重试。")
+    state = {"drift": []}
+    if total <= WINDOW:
+        ids, cnt, first, drift = await _ids_in_window(term, context="export：")
+        n_slices, slice_sum = 1, cnt
+        if drift:
+            state["drift"].append(drift)
+    else:
+        ids, n_slices, slice_sum = await _export_slice(term, NO_BEGIN, NO_END, state)
+    raw_n = len(ids)
+    ids = list(dict.fromkeys(ids))
+    d_end = await _esearch(term, retmax=0)
+    total_end = _count_of(d_end)
+    t1 = datetime.datetime.now().isoformat(timespec="seconds")
+    mismatch = []
+    if slice_sum != total:
+        mismatch.append(f"⚠️ 切片计数和 {slice_sum} ≠ 起始总数 {total}：可能有记录带多个发表日期，"
+                        f"或检索期间数据库更新；已按 PMID 去重。")
+    if total_end != total:
+        mismatch.append(f"⚠️ 结束重数 {total_end} ≠ 起始 {total}：检索期间数据库有更新，结果以导出时点为准。")
+    if raw_n != len(ids):
+        mismatch.append(f"⚠️ 切片间有重复：取回 {raw_n} 个、去重后 {len(ids)} 个。")
+    if len(ids) != total:
+        mismatch.append(f"⚠️ 实际取回 {len(ids)} 个 ≠ 命中数 {total}：请复核（数据库可能更新，"
+                        f"或无发表日期的记录未被日期切片覆盖）。")
+    parent = os.path.dirname(p)
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as e:
+        raise NcbiError(f"无法创建导出父目录（{parent}）：{e}") from e
+    import tempfile
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(p) + ".", suffix=".part", dir=parent)
+        os.close(fd)
+    except OSError as e:
+        raise NcbiError(f"无法创建导出临时文件（{parent}）：{e}") from e
+    coverage = ""
+    try:
+        if format == "pmids":
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write("\n".join(ids) + ("\n" if ids else ""))
+        elif format == "csv":
+            ok, problems = await _export_csv(tmp, ids)
+            if problems:
+                coverage = (f"⚠️ CSV 有 {len(problems)} 个号元数据缺失/不可用，已在 note 列标明（不静默丢弃）："
+                            + ", ".join(problems[:10]) + ("…" if len(problems) > 10 else ""))
+        else:
+            n_rec, miss = await _export_medline(tmp, ids)
+            if miss:
+                coverage = (f"⚠️ MEDLINE 正文有 {n_rec} 条 PMID- 行，{len(miss)} 个号没取到记录："
+                            + ", ".join(miss[:10]) + ("…" if len(miss) > 10 else ""))
+        with open(tmp, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        _publish_no_clobber(tmp, p)
+    except OSError as e:
+        raise NcbiError(f"导出文件写入失败（{p}）：{e}") from e
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"⚠️ 导出临时文件清理失败（{tmp}）：{e}", file=sys.stderr)
+    nreq = _NREQ - nreq0
+    warn += mismatch + state["drift"] + ([coverage] if coverage else [])
+    _audit("export", term=term, path=p, format=format, count_start=total, count_end=total_end,
+           slices=n_slices, unique=len(ids), sha256=sha, querytranslation=qt, warnings=warn)
+    if json_mode:
+        return json.dumps({"term": term, "path": p, "format": format, "count_start": total,
+                           "count_end": total_end, "slices": n_slices, "fetched": raw_n, "unique": len(ids),
+                           "sha256": sha, "started": t0, "ended": t1, "requests": nreq,
+                           "querytranslation": qt, "warnings": warn}, ensure_ascii=False)
+    head = [f"导出完成：{p}", f"查询：{term}", f"NCBI 实际执行：{qt}",
+            f"命中 {total} 条；切片 {n_slices} 片；取回 {raw_n} 个 PMID，去重后 {len(ids)} 个；格式 {format}",
+            f"时间 {t0} → {t1}；本次约 {nreq} 次 HTTP 请求（含重试，本项目自订口径）",
+            f"sha256 {sha}"]
+    head += warn
+    head.append("⚠️ 结果以导出时点为准；筛选工具导入兼容性以对方文档为准。")
+    return "\n".join(head)
 
 
 # ---------- 自检 ----------
@@ -2380,7 +3259,11 @@ async def _probe():
     # 所以这三条不新增 HTTP，本轮请求数仍是 89。
     for _wt, _wa, _wn in (("count", {"term": "x", "field": "ISSN"}, "ISSN"),
                           ("fetch_abstracts", {"pmids": "abc"}, "不是 PMID"),
-                          ("links", {"pmids": "37427694", "to": "PMCID"}, "不是本工具支持的库")):
+                          ("links", {"pmids": "37427694", "to": "PMCID"}, "不是本工具支持的库"),
+                          ("check_recall", {"term": "x", "pmids": " ".join(str(i) for i in range(1, GOLD_MAX + 2))}, "最多"),
+                          ("mesh", {"term": ""}, "不能为空"),
+                          ("diff", {"term_a": "x", "term_b": "y", "max_show": -1}, "不能为负"),
+                          ("export", {"term": "x", "path": ""}, "不能为空")):  # 本项目自订离线探针输入
         try:
             _w2 = str(await mcp.call_tool(_wt, _wa))
         except Exception as _w2e:
@@ -2398,9 +3281,10 @@ async def _probe():
     # （1.x 是裸调用＝本文件占住事件循环；2.x 自己 to_thread 卸载）。装饰器返回值随 SDK 版本变，
     # 所以要问的是【装饰之后】那个名字，不是源码里的 def。
     # 〔实测 2026-11-11：mcp 1.30.0 与 2.3.0 两代下，四个名字装饰后都仍是协程函数〕
-    _coro = [f for f in (search, count, fetch_abstracts, links) if inspect.iscoroutinefunction(f)]
-    check("四个工具装饰后仍是协程函数（行为契约第 9 条后半句的承重前提，离线）",
-          len(_coro) == 4, "%d/4 是协程函数" % len(_coro))
+    _tools = (search, count, fetch_abstracts, links, check_recall, mesh, diff, export)
+    _coro = [f for f in _tools if inspect.iscoroutinefunction(f)]
+    check("全部工具装饰后仍是协程函数（离线）",
+          len(_coro) == len(_tools), f"{len(_coro)}/{len(_tools)} 是协程函数")
     # C：⚠️ 必须在 gbk/charmap 上编得出来——这里不碰真 stdout，只验「reconfigure 之后
     #      用的是 utf-8」这件事，以及输出文本里的特殊符号在非 utf-8 上确实编不出（旧版会炸）。
     _probe_line = "⚠️ 检索式被 NCBI 改写 牙根吸收 ✓"
@@ -2582,6 +3466,7 @@ def main(argv=None):
     elif args and args[0] == "--concurrent":
         anyio.run(_check, args[1] if len(args) > 1 else "tooth resorption")
     elif args and args[0] == "--check-key":
+        print("pubmed-mcp:", _tool_version())
         _check_key()
     else:
         if args:

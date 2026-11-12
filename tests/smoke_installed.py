@@ -21,21 +21,28 @@ async def smoke(cli, workdir):
                 await session.initialize()
                 tools = (await session.list_tools()).tools
                 names = [t.name for t in tools]
-                assert set(names) == {"search", "count", "fetch_abstracts", "links"}, names
+                assert set(names) == {"search", "count", "fetch_abstracts", "links",
+                                      "check_recall", "mesh", "diff", "export"}, names
                 assert len(names) == len(set(names)), names
                 assert all(t.description for t in tools)
                 search = next(t for t in tools if t.name == "search")
                 schema = getattr(search, "inputSchema", None) or getattr(search, "input_schema")
                 assert schema["properties"]["detail"]["default"] == "full"
                 assert schema["properties"]["detail"]["enum"] == ["full", "brief", "ids"]
-                # Invalid mode must fail before any NCBI request, through the wire protocol.
-                result = await session.call_tool("search", {"term": "tooth", "detail": "invalid"})
-                error = getattr(result, "isError", None)
-                if error is None:
-                    error = getattr(result, "is_error", False)
-                assert error, result
-                assert "detail" in "\n".join(getattr(c, "text", "") for c in result.content)
-                print("Installed stdio tools/list and invalid-mode tools/call: PASS")
+                export = next(t for t in tools if t.name == "export")
+                eschema = getattr(export, "inputSchema", None) or getattr(export, "input_schema")
+                assert eschema["properties"]["format"]["default"] == "pmids"
+                assert eschema["properties"]["format"]["enum"] == ["pmids", "csv", "medline"]
+                # Invalid mode/format must fail before any NCBI request, through the wire protocol.
+                for tool, args, word in (("search", {"term": "tooth", "detail": "invalid"}, "detail"),
+                                         ("export", {"term": "tooth", "path": "x.txt", "format": "invalid"}, "format")):
+                    result = await session.call_tool(tool, args)
+                    error = getattr(result, "isError", None)
+                    if error is None:
+                        error = getattr(result, "is_error", False)
+                    assert error, result
+                    assert word in "\n".join(getattr(c, "text", "") for c in result.content)
+                print("Installed stdio tools/list and invalid-mode/format tools/call: PASS")
 
 
 if __name__ == "__main__":

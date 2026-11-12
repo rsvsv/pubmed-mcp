@@ -1,0 +1,117 @@
+[
+ [
+  "A1 recall gold=200",
+  "ERR",
+  "NcbiError: esearch.fcgi 失败：HTTP 414；NCBI 原文：(空响应体)（本次带上 api_key（长度 36））"
+ ],
+ [
+  "A2 recall gold=100",
+  "OK",
+  "{\"term\": \"tooth\", \"gold_count\": 100, \"found\": [\"43008849\", \"43008848\", \"43008807\", \"43008165\", \"43007557\", \"43007501\", \"43007448\", \"43007034\", \"43007033\", \"43006742\", \"43006296\", \"43006262\", \"43006147\", \"43006139\", \"4300"
+ ],
+ [
+  "A3 recall gold=50",
+  "OK",
+  "{\"term\": \"tooth\", \"gold_count\": 50, \"found\": [\"43008849\", \"43008848\", \"43008807\", \"43008165\", \"43007557\", \"43007501\", \"43007448\", \"43007034\", \"43007033\", \"43006742\", \"43006296\", \"43006262\", \"43006147\", \"43006139\", \"43005"
+ ],
+ [
+  "A4 recall leading-zero",
+  "OK",
+  "{\"term\": \"tooth\", \"gold_count\": 1, \"found\": [\"37427694\"], \"missing\": [], \"querytranslation\": \"(\\\"teeth s\\\"[All Fields] OR \\\"teeths\\\"[All Fields] OR \\\"tooth\\\"[MeSH Terms] OR \\\"tooth\\\"[All Fields] OR \\\"teeth\\\"[All Fields] "
+ ],
+ [
+  "A5 recall nonexistent",
+  "OK",
+  "{\"term\": \"tooth\", \"gold_count\": 1, \"found\": [], \"missing\": [{\"pmid\": \"9999999999\", \"state\": \"unavailable\", \"title\": \"\"}], \"querytranslation\": \"(tooth) AND (9999999999[uid])\", \"warnings\": [], \"caveat\": \"只证明这批已知集的找回，不代表整体查"
+ ],
+ [
+  "A6 recall CJK term",
+  "OK",
+  "{\"term\": \"牙根吸收\", \"gold_count\": 3, \"found\": [\"43008849\", \"43008848\", \"43008807\"], \"missing\": [], \"querytranslation\": \"43008849[UID] OR 43008848[UID] OR 43008807[UID]\", \"warnings\": [\"NCBI 实际执行：43008849[UID] OR 43008848[UID"
+ ],
+ [
+  "A7 recall unbalanced term",
+  "OK",
+  "{\"term\": \"(tooth\", \"gold_count\": 3, \"found\": [\"43008849\", \"43008848\", \"43008807\"], \"missing\": [], \"querytranslation\": \"(\\\"teeth s\\\"[All Fields] OR \\\"teeths\\\"[All Fields] OR \\\"tooth\\\"[MeSH Terms] OR \\\"tooth\\\"[All Fields] "
+ ],
+ [
+  "A8 recall bad as_json",
+  "ERR",
+  "NcbiError: as_json 要布尔，收到 'garbage'（可写 true/false，也容忍 \"True\"/\"1\"/\"yes\"）"
+ ],
+ [
+  "B1 mesh CJK",
+  "OK",
+  "{\"term\": \"牙根吸收\", \"count\": 0, \"descriptors\": [], \"querytranslation\": \"\", \"warnings\": [\"⚠️ NCBI 未返回实际执行式（querytranslation 为空）（查询含中文，建议先换成对应英文词重查，如 牙根吸收 → tooth resorption）—— 这个结果【不能】用来说明主题有无文献\", \"⚠️ NCBI 解析警告：empty query；Q"
+ ],
+ [
+  "B2 mesh broad retmax=20",
+  "OK",
+  "{\"term\": \"infarction\", \"count\": 23, \"descriptors\": [{\"uid\": \"68059409\", \"ui\": \"D059409\", \"name\": \"Stroke, Lacunar\", \"entry_terms\": [\"Stroke, Lacunar\", \"Lacunar Stroke\", \"Lacunar Strokes\", \"Strokes, Lacunar\", \"Lacunar Syn"
+ ],
+ [
+  "B3 mesh nonsense",
+  "OK",
+  "{\"term\": \"zzzqqxnonexistent\", \"count\": 0, \"descriptors\": [], \"querytranslation\": \"(zzzqqxnonexistent[All Fields])\", \"warnings\": [\"NCBI 实际执行：(zzzqqxnonexistent[All Fields])\", \"⚠️ NCBI 未找到这些检索片段（phrasesnotfound）：zzzqqxnone"
+ ],
+ [
+  "C1 diff huge term_a",
+  "ERR",
+  "NcbiError: diff term_a：命中 73612 条，超过 PubMed esearch 的 9999 条检索窗口（实测 retstart=9998 可取、9999 起被拒），无法在窗口内取全。请缩小查询，或改用 export（自动按发表日期切片取全）。"
+ ],
+ [
+  "C2 diff nonsense both",
+  "OK",
+  "{\"term_a\": \"zzzqqx1\", \"term_b\": \"zzzqqx2\", \"count_a\": 0, \"count_b\": 0, \"added_count\": 0, \"removed_count\": 0, \"common_count\": 0, \"added\": [], \"removed\": [], \"querytranslation_a\": \"zzzqqx1\", \"querytranslation_b\": \"zzzqqx2\""
+ ],
+ [
+  "C3 diff max_show=10000",
+  "ERR",
+  "NcbiError: diff term_a：命中 129422 条，超过 PubMed esearch 的 9999 条检索窗口（实测 retstart=9998 可取、9999 起被拒），无法在窗口内取全。请缩小查询，或改用 export（自动按发表日期切片取全）。"
+ ],
+ [
+  "D1 export over cap",
+  "ERR",
+  "NcbiError: 查询命中 4422669 条，超过 export 本项目自订安全上限 100000；请缩小查询（加字段/日期限定）后重试。"
+ ],
+ [
+  "D2 export path is dir",
+  "ERR",
+  "NcbiError: 文件已存在：D:\\Documents\\CC\\3\\pubmcp-audit\\sr-adversarial\\run-20261111-230338。本工具不覆盖已有文件，请换个路径或先移走旧文件。"
+ ],
+ [
+  "D3 export nested parent",
+  "OK",
+  "导出完成：D:\\Documents\\CC\\3\\pubmcp-audit\\sr-adversarial\\run-20261111-230338\\deep\\nested\\out.txt 查询：miniscrew[tiab] AND stability[tiab] NCBI 实际执行：\"miniscrew\"[Title/Abstract] AND \"stability\"[Title/Abstract] 命中 289 条；切片 1 片；取回 2"
+ ],
+ [
+  "D4 export date-filtered big",
+  "OK",
+  "{\"term\": \"dental implant AND 2010:2020[dp]\", \"path\": \"D:\\\\Documents\\\\CC\\\\3\\\\pubmcp-audit\\\\sr-adversarial\\\\run-20261111-230338\\\\dated.pmids\", \"format\": \"pmids\", \"count_start\": 28544, \"count_end\": 28544, \"slices\": 7, \"fetc"
+ ],
+ [
+  "D5 export zero result",
+  "OK",
+  "导出完成：D:\\Documents\\CC\\3\\pubmcp-audit\\sr-adversarial\\run-20261111-230338\\zero.txt 查询：zzzqqxnonexistent[tiab] NCBI 实际执行：zzzqqxnonexistent[tiab] 命中 0 条；切片 1 片；取回 0 个 PMID，去重后 0 个；格式 pmids 时间 2026-11-11T23:05:14 → 2026-11-11T"
+ ],
+ [
+  "D6 export bad format",
+  "ERR",
+  "NcbiError: format 只支持 pmids / csv / medline"
+ ],
+ [
+  "E1 SDK wire new tools",
+  "OK",
+  "{\"mesh\": \"ok(711 chars)\", \"check_recall\": \"ok(665 chars)\", \"diff\": \"ERROR:Error executing tool diff: diff term_a：命中 129422 条，超过 PubMed esearch 的 9999 条检索窗口（实测 retstart=9998 可取、9999 起被拒），无法在窗口内取全\", \"export\": \"ok(416 chars"
+ ],
+ [
+  "F1 audit unicode dir",
+  "OK",
+  "null"
+ ],
+ [
+  "F1 audit unicode dir",
+  "OK",
+  "lines=14"
+ ]
+]

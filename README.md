@@ -3,7 +3,9 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前统一发布版本为 `1.3.0`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕，整合响应边界修复、可选精简输出和自动回归。默认检索与完整摘要行为保持兼容。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.0`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕，新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+
+本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
 
 **它存在的唯一理由**：把「查不到」和「没有」分开。
 文献工具最常见的失败是**静默**——参数被吞掉、词被丢弃、编码不对、请求根本没跑完，
@@ -180,7 +182,7 @@ python pubmed_mcp.py --check-key
 
 ## 工具
 
-四个 `@mcp.tool()`〔本 README 逐字对照源码装饰的定义数出，2026-11-10〕：
+八个 `@mcp.tool()`〔本 README 逐字对照源码装饰的定义数出，2026-11-11〕：
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
@@ -188,6 +190,10 @@ python pubmed_mcp.py --check-key
 | `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
 | `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」 |
 | `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
+| `check_recall` | 已知文献找回测试：一批已知相关 PMID 哪些被 `term` 检回 | 分批 esearch 交集判定 found/missing（每批 50，避免 URL 超长 414）；缺失项附标题与存在状态（present/unavailable/unknown）；term 被 NCBI 忽略时显著告警；只证明已知集找回，不代表查全率 |
+| `mesh` | 查 MeSH 主题词表 | 描述符、入口词（同义词）、树号、下位词、范围注；无描述符命中不等于主题无文献 |
+| `diff` | 对比两个查询的结果集 | 新增/丢失/共同 PMID；两查询都须在 9999 窗口内；集合差不判断相关性 |
+| `export` | 取全某查询的 PMID 并写文件 | 超 9999 窗口自动按发表日期切片；`pmids`/`csv`/`medline` 三种格式；只回摘要+sha256；不覆盖已有文件 |
 
 旧说明“判断有没有免费全文可下”已作废，原因：数据库关联不能证明开放许可或此刻下载可用〔修订记录：2026-11-11；依据：links 当前工具说明〕。
 
@@ -211,6 +217,23 @@ search('"root resorption"[tiab]', detail="ids", as_json=True)
 ```
 
 精简不保证每次输出更短：少量短题录可能因必要说明而抵消节省。尚未测量实际模型 token 或费用收益。
+
+### 系统综述检索助手（1.4.0 新增）
+
+四个新工具加可选留痕，支撑系统综述的检索环节。设计依据与实测前提见 [docs/systematic-review-plan.md](docs/systematic-review-plan.md)，方法学工作流见 [docs/systematic-review-workflow.md](docs/systematic-review-workflow.md)（亦作为 `/systematic-review` skill 随仓库分发）。
+
+分工〔本项目自订〕：工具只做机械可复现的事（检索、集合运算、导出、留痕）；拆概念、选同义词、判断相关性、定纳入排除由人与 LLM 按预设标准做。**工具不声称查全率/查准率**，已知集找回只证明这批已知文献被检回。
+
+- `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。任一批仅剩 UID 条件时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
+- `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
+- `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/丢失/共同。任一超窗拒绝并提示改用 export。
+- `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
+- **检索留痕**：设环境变量 `PUBMED_AUDIT_DIR`，工具在完成路径追加 JSONL 到 `searches.jsonl`。search/count 区分 `input_params` 与实际 `request_params`；记录实际返回数、执行式、警告和运行源码版本，search 元数据失败另记 `error`。fetch_abstracts/links 记录请求 PMID；check_recall 记录各批执行式。留痕默认关闭；写失败报 stderr。参数校验失败、网络中断等并非所有失败路径都有日志，不能当完整请求流水账。
+- **引文补查**：`links(to="refs")` / `links(to="citedin")` 给参考文献/施引文献；有展示上限并显示截断，只限 PubMed 已录入关系。
+
+实测注意〔2026-11-11 live，verify_sr_live.py〕：大题目切片计数和可能**大于**总数——同一记录带多个发表日期时会落进多个年份切片，去重后与总数一致；警告会如实说明，这不是错误。例：`dental implant` 命中 73612，切片计数和 78474，去重后 73612〔实测；重复数 4862 为推算 DV-SR-DEDUP〕。
+
+验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。
 
 ### 自动回归
 
@@ -261,7 +284,7 @@ python -I tests/run_offline.py
    〔实测 2026-11-10：这一条**只在 1.x 成立** —— 2.3.0 把该文件挪到
    `mcp/server/mcpserver/utilities/func_metadata.py`，非 async 分支改成
    `await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))`，也就是 SDK 自己开始卸载了。
-   本服务四个工具全是 `async def`，两代下都不会是占住事件循环的那一方，所以写法照旧正确、不回退。
+   本服务全部工具均为 `async def`；装饰后协程属性和包装层透传由离线测试与源码 stdio 烟测覆盖。
    〔**这条后半句此前没有断言钉住**——而它才是承重的部分：装饰之后的名字一旦不再是协程函数，
    SDK 就走同步分支。现在有一条离线断言专门问【装饰之后】那四个名字，两代各测一次都仍是协程函数
    〔实测 2026-11-11〕。〕
@@ -292,9 +315,10 @@ python pubmed_mcp.py --concurrent "tooth resorption"
 
 ## Limits（诚实清单）
 
-- **只索引英文。** 中文词（如「牙根吸收」）会让 NCBI 返回空 `querytranslation` + 0 条；
-  这条 0 会被明说成「NCBI 没解析出检索条件」，而不是「该主题没有文献」。
+- **查询以实际执行式为准。** 中文片段可能消失，混合查询仍可能命中剩余英文概念；不能把命中数当成完整原查询结果。
+  【已作废，修订日期：2026-11-12】旧“只索引英文”与“空执行式等于没解析出条件”结论过强；缺少执行式只能说明解析信息不足。
 - **esearch 最多取回前 9,999 条**，`retstart` 上限 9998（NCBI 硬墙，越界本工具直接报错）。
+  1.4.0 的 `export` 通过按发表日期切片取全超过此窗口的结果（history 服务器同样受此限制〔实测 2026-11-11〕）；`search`/`diff` 仍受窗口约束。
 - **`retmax` 上限 1000 是本工具自订的**，不是 NCBI 的限制；要一次多拿就改那个常量，
   或按年份/字段把查询切小分批取。夹过都会在输出里说明是**本工具**夹的。
 - **PubMed 没有「按期刊影响力排序」这个概念**，`sort` 里不存在这种值。本仓库也不含这类脚本
