@@ -23,7 +23,7 @@
 
 ## 真实联网验收
 
-脚本 pubmcp-audit/verify_sr_live.py，原始输出存 audit-evidence/sr_live_acceptance.log〔实测〕。
+脚本 pubmcp-audit/verify_sr_live.py，原始输出存 evidence/sr_live_acceptance.log〔实测〕。
 
 - mesh：tooth resorption → D014091，入口词 4 个词形，树号 C07.793.901/G10.549.855，下位词 Root Resorption (UID 68012391)〔实测〕。myocardial infarction 查询返回的描述符入口词含非倒置同义词（如 "Inferior Wall Myocardial Infarction"）〔实测〕——ds_meshterms 确含入口词，非仅倒置形。
 - check_recall：金标准 4 篇（3 篇实查 tooth resorption[tiab] + 1 篇 migraine[tiab]），found 3 / missing 1，missing 状态 present〔实测〕。窄式（AND 2030[dp]）→ found 0 / missing 3〔实测〕。
@@ -39,7 +39,7 @@
 
 ## 对抗性探针找坑与修复（2026-11-11）
 
-脚本 pubmcp-audit/adversarial_sr.py，23 案例真实联网〔实测〕。原始输出 sr-adversarial/run-20261111-230338/；耐久副本 docs/audit-evidence/sr_adversarial.json（探针）、sr_confirm_fix.json（修复复测）。
+脚本 pubmcp-audit/adversarial_sr.py，23 案例真实联网〔实测〕。原始输出 sr-adversarial/run-20261111-230338/；耐久副本 docs/history/evidence/sr_adversarial.json（探针）、sr_confirm_fix.json（修复复测）。
 16 OK / 7 ERR，其中 6 个 ERR 是**正确的校验拦截**（非法 as_json、diff/export 超窗、export 超安全上限、路径是目录、非法 format），1 个是真 bug；另发现 1 个静默假阳性。真实题目演练中又发现第 3 个（布尔开头误报）。三处均已修复并复测（pubmcp-audit/confirm_fix.py 5 案例全过＋演练 export 复跑〔实测〕）。
 
 | 坑 | 症状〔实测〕 | 修复 | 复测 |
@@ -58,7 +58,7 @@
 
 ## 真实题目端到端演练（2026-11-11）
 
-脚本 pubmcp-audit/demo_sr.py，题目「正畸治疗相关牙根吸收」〔实测〕。原始输出 sr-demo/demo-20261111-233511/；耐久副本 docs/audit-evidence/sr_demo_summary.json。
+脚本 pubmcp-audit/demo_sr.py，题目「正畸治疗相关牙根吸收」〔实测〕。原始输出 sr-demo/demo-20261111-233511/；耐久副本 docs/history/evidence/sr_demo_summary.json。
 金标准由实查精确式 `"root resorption"[tiab] AND orthodontic[tiab]` 取 10 篇构造——**演示用，非多来源，有循环偏倚风险〔自订口径〕**，不能据此声称查全率。
 
 | 步骤 | 结果〔实测〕 | 耗时 |

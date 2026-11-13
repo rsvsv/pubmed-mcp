@@ -44,7 +44,7 @@ grep -n 'check("' pubmed_mcp.py        # 所有断言的行号与标签
 | 8 | 探针 :2091 / :2094 / :2102 | 新增 3 条**离线**断言（200+HTML → `NcbiError`；docstring 三个 sort 值；`_mask` 不留片段）＋一行说明「分组号按补丁号命名，17-19 没新增断言所以跳号」 | `blanket-shijing-01`：README 承诺「每条都有源码依据」，而 `200 + HTML` 那半边此前只有假定式措辞、无任何断言覆盖。与其把承诺改弱，不如让它落地。 |
 | 9 | 文件末尾 :2194 | 新增 `def main(argv=None)` 命令行入口；`if __name__ == "__main__": main()`；stdout/stderr 的 utf-8 `reconfigure` 一起搬进入口 | 让 `pip install` 后的 `pubmed-mcp` 命令可用（`lineage-03`：不搬 `reconfigure` 的话，编码兼容对 console-script 就失效了）。 |
 | 10 | 同上的注释 | 订正开发版那句「cp936 与 cp1252 两种都复现 rc=1」，并补一条：**`-I` 会忽略 `PYTHONIOENCODING`，复现此 bug 别加 `-I`** | `repro-cp936-claim-too-wide` / `repro-dash-i-disables-env`。本会话实测：带 `-I` 时 `sys.stdout.encoding = utf-8`，不带是 `gbk`——所以拿 `-I` 验证会得出「旧版也没问题」的假结论。`--check-key` 的输出不含 `⚠️`，旧写法在 cp936 下其实 rc=0，两种码页都炸的是 `--probe`/`--selftest`/`--concurrent`。〔**口径限定 2026-11-11**：这两次码页验证跑在 11-10 那版发布件上；此后本文件又动了第 16、17、18 行。11-11 的发布验收覆盖四路——`--check-key`、stdio 客户端握手＋`count`、四工具包装层文本、两代全量 `--probe`——**不含**「cp936 ＋重定向」那条路径。所以这一行证明的是「那句旧话说过头了」，不是「现在的 CLI 在任何码页上都没问题」。要把它升成后者，得重跑一次码页测试。〕 |
-| 11 | :96-159 SDK 兼容层（`_SDK_RANGE` :96、取类 `try` :107） | `mcp.server.fastmcp.FastMCP`（1.x）取不到就取 `mcp.server.mcpserver.MCPServer`（2.x）；两代都取不到就抛**带处置命令**的 `ImportError`，不让别人停在一条裸 `ModuleNotFoundError` 上 | 本会话干净 venv 实测：原先 `mcp>=1.2` 会解析到 mcp 2.3.0，装完第一次运行即崩，而作者本机 1.29.0 永远复现不出来。逐字签名与两条通路的回归结果见 `docs/mcp-sdk-v2.md`。**这一层旧开发版没有**——它只在「发给别人装」的场景下才有意义，所以是发布专用改动。 |
+| 11 | :96-159 SDK 兼容层（`_SDK_RANGE` :96、取类 `try` :107） | `mcp.server.fastmcp.FastMCP`（1.x）取不到就取 `mcp.server.mcpserver.MCPServer`（2.x）；两代都取不到就抛**带处置命令**的 `ImportError`，不让别人停在一条裸 `ModuleNotFoundError` 上 | 本会话干净 venv 实测：原先 `mcp>=1.2` 会解析到 mcp 2.3.0，装完第一次运行即崩，而作者本机 1.29.0 永远复现不出来。逐字签名与两条通路的回归结果见 `docs/history/mcp-sdk-v2.md`。**这一层旧开发版没有**——它只在「发给别人装」的场景下才有意义，所以是发布专用改动。 |
 | 12 | 探针 :2106 | 第 4 条新增离线断言：兼容层拿到的是可用服务类（可构造、有 `tool`、有 `run`） | 「同时支持 mcp 1.x 与 2.x」是一句会被下一次改写悄悄作废的承诺；没有断言就等于没支持。断言里带 `FastMCP.__module__`，跑起来能直接看出走的是哪一代。 |
 | 13 | 模块 docstring :7-9 与 README 第 9 条 | 把「FastMCP 对非 async 工具是裸 `return fn(**kwargs)`、没有 threadpool」限定成 **1.x 行为**，并写入 2.3.0 的实测：该文件挪到 `mcp/server/mcpserver/utilities/func_metadata.py`，非 async 分支变成 `await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))` | 本会话读 mcp 2.3.0 源码实测。原断言不删、只加版本范围——因为它后面本来就挂了一句对冲（「SDK 若改成 threadpool，本文件的 async 写法依然正确，不必回退」），而这次正是那句对冲被触发的时刻。旧开发版没有这条。 |
 | 14 | 顶部兼容层 :96-159 + `NcbiError` 基类 :159 + 探针 :2119 | 兼容层从「MCP 工具」段挪到 `import anyio` 之后（基类必须在类定义之前拿到）；`NcbiError` 改成继承**当前那代 SDK 的** `ToolError`；多接一种普通 `ImportError`（「区间内但太老」抛的不是 `ModuleNotFoundError`，原先那句友好报错根本不触发）；新增一条**走 `mcp.call_tool` 包装层**的断言 | 本会话 A/B 实测〔2026-11-11〕：未修前同一个拦截在 mcp 2.3.0 下调用方只拿到 27 字符 `Error executing tool search`，NCBI 原文与改写建议全被剥——打穿的是主承诺「失败绝不静默」，不是文案问题。旧开发版连兼容层都没有，同样带这个缺陷。 |
@@ -155,7 +155,7 @@ _zero_explanation :933 | async def search :1195 | _check_db :1383 | main :2258
 - **【已作废 2026-11-10，本会话实测推翻】**这一条原先写「`pip install git+https://…` 的完整依赖解析
   没测，本地只做了 `--no-deps` 安装 + 入口可跑」。测了以后的结果是**装不上**：`mcp>=1.2` 解析到
   mcp 2.3.0，而 2.x 没有 `mcp.server.fastmcp`。原话留着不删，是因为「`--no-deps` 装通了」当时
-  确实让我以为整条链路没问题——那句话正是这次漏检的根据。现状见 `docs/mcp-sdk-v2.md`。
+  确实让我以为整条链路没问题——那句话正是这次漏检的根据。现状见 `docs/history/mcp-sdk-v2.md`。
 - **【已作废 2026-11-11，被自己的另一句话反证】**README 的「版本要求」一节原先直接写着断言条数
   （138→140→144→145 一路跟着改），而同一个 README 的「自检」一节又明写「本 README 故意不写死
   任何条数——写死过一次就注定过期」。**同一个人一天之内为这个数字改了四次 README**，正是那句
@@ -176,7 +176,7 @@ _zero_explanation :933 | async def search :1195 | _check_db :1383 | main :2258
 | `pip install --no-deps .` 进临时 venv | 成功，产出 `pubmed-mcp.exe` |
 | `pubmed-mcp --check-key`（走安装后的入口） | rc=0，输出与直接跑文件一致 |
 | `pubmed-mcp` 不带参数 + 一条真实 MCP `initialize` | **握手成功**，回包 `serverInfo.name = "PubMed"`，stderr 干净 |
-| `pip install git+https://…` 的完整依赖解析 | **第一次实测就是坏的**：`mcp>=1.2` 解析到 mcp 2.3.0，装完 `ModuleNotFoundError`，rc=1 → 见 `docs/mcp-sdk-v2.md` |
+| `pip install git+https://…` 的完整依赖解析 | **第一次实测就是坏的**：`mcp>=1.2` 解析到 mcp 2.3.0，装完 `ModuleNotFoundError`，rc=1 → 见 `docs/history/mcp-sdk-v2.md` |
 | 收成 `mcp>=1.2,<2` 后，干净 venv 重装（本地目录，走完整 PyPI 解析） | 解析到 **mcp 1.30.0**，PIP_RC=0；`pubmed-mcp --check-key` rc=0 |
 | 用 mcp SDK 的 stdio 客户端连**安装后的** `pubmed-mcp.exe` | `initialize` 成功、`tools/list` = 四个工具、`tools/call count("tooth resorption")` → `isError=False`，回文「命中 11918 条」＋NCBI 实际执行串 |
 | **发布件** `b1c1851` 走 git+https 的干净 venv 全流程 | 默认解析到 **mcp 2.3.0**（区间已是 `<3`）、`pubmed-mcp 1.1.0`；`--check-key` rc=0；stdio 客户端：`version=''`、`protocol=2025-11-25`、四个工具描述长度 3392/667/520/972、`count` → `isError=False`；**site-packages 里那份与已发布 blob 逐字节一致**（sha256 前 16 位 `7c7b83bb767173fc`） |
@@ -184,7 +184,7 @@ _zero_explanation :933 | async def search :1195 | _check_db :1383 | main :2258
 | **已发布 v1.2.0**（`.py` = sha `7b090831f034`，即 `431ae0e`/`b165759` 的 blob）走 git+https 全流程，干净 venv | `Collecting mcp<3,>=1.26` → 装上 **mcp 2.3.0** + `pubmed-mcp 1.2.0`，PIP_RC=0，**无弃用警告**；`--check-key` rc=0（`依赖: mcp 2.3.0, anyio 4.16.0, pydantic 2.14.3`）；stdio 客户端 `server=PubMed`、`protocol=2025-11-25`、`TOOLS=['count','fetch_abstracts','links','search']`；`count` → `isError=False`「命中 11918 条」；走包装层 `search(sort="journal")` **323 字符**、`count(field="ISSN")` **244 字符**，两条都含 NCBI 原文〔实测 2026-11-11，后台任务 `b1850yh8w`〕 |
 | 装出来的文件 == 仓库 blob | `git show HEAD:pubmed_mcp.py` 与工作区文件 sha256 前 12 位同为 `7b090831f034`〔实测 2026-11-11，第 16 行改动之前〕 |
 | **最终件（2199 行，sha `d804df6810e6`）**重装进两代 venv 后跑全量 `--probe` | mcp **1.30.0**：140 / 0，89 次请求，rc=0；mcp **2.3.0**：140 / 0，89 次请求，rc=0；装出来的三份文件 sha 逐字节同为 `d804df6810e6`〔实测 2026-11-11，`_gate3.log`，后台任务 `byzaqzyt4`〕 |
-| **四个工具**走包装层的拦截文本（两代 × 四个） | `search` 323 字符、`count` 244、`fetch_abstracts` 77、`links` 130，两代**逐字相同**；反向对照 `links(to="PMC")` → `isError=False` 且回 `pubmed_pmc=PMC10461258`〔实测 2026-11-11，`_gate3.log` 第 19-23 / 31-35 行〕。这一条把 `docs/mcp-sdk-v2.md`「还没验的」里 `fetch_abstracts` 与 `links` 那条 ⚠️ 关掉 |
+| **四个工具**走包装层的拦截文本（两代 × 四个） | `search` 323 字符、`count` 244、`fetch_abstracts` 77、`links` 130，两代**逐字相同**；反向对照 `links(to="PMC")` → `isError=False` 且回 `pubmed_pmc=PMC10461258`〔实测 2026-11-11，`_gate3.log` 第 19-23 / 31-35 行〕。这一条把 `docs/history/mcp-sdk-v2.md`「还没验的」里 `fetch_abstracts` 与 `links` 那条 ⚠️ 关掉 |
 | **已发布 `7468e55`**（sha `d804df6810e6`）再走一遍 README 头条命令，外加四工具包装层 | 干净 venv：`Successfully installed ... mcp-2.3.0 ... pubmed-mcp-1.2.0`，PIP_RC=0；`--check-key` rc=0；stdio：`server=PubMed`、`TOOLS=['count','fetch_abstracts','links','search']`、四个描述长度 3392/667/520/972、`count` → `isError=False`「命中 11918 条」＋NCBI 实际执行串；四工具包装层 **323 / 244 / 77 / 130 字符**全部到位，`to="PMC"` 反向对照成功；**装出来的文件与仓库 blob 同为 `d804df6810e6`**〔实测 2026-11-11，后台任务 `bkeusabph`，`_pubfinal.log`〕 |
 | **在别人那种安装上跑全量自检**（已发布 `21ca02b`，`.py` = `cac33ff5bf31`） | 干净 venv `pip install git+https://…` → `mcp-2.3.0` + `pubmed-mcp-1.2.0`，PIP_RC=0；`--check-key` rc=0；**然后直接跑装出来的 `pubmed-mcp.exe --probe`：144 通过 / 0 失败，89 次请求，rc=0**；装出来的文件与仓库 blob 同为 `cac33ff5bf31`〔实测 2026-11-11，后台任务 `bdizez4p6`，`_pubfinal2.log`〕。**这是第一次**——发布件此前只验到 check-key＋客户端握手＋包装层文本，从没在「装出去的那一份」上跑过全量自检 |
 | 补锁之后（2219 行，sha `cac33ff5bf31`）重装进两代 venv 跑全量 `--probe` | mcp **1.30.0**：**144 / 0**，89 次请求，rc=0；mcp **2.3.0**：**144 / 0**，89 次请求，rc=0；三份装出来的文件同为 `cac33ff5bf31`；四工具包装层文本仍 323/244/77/130，`to="PMC"` 反向对照仍成功〔实测 2026-11-11，`_gate5.log`，后台任务 `bzza9ilks`。请求数没涨：新四条都在联网前抛〕 |
@@ -211,7 +211,7 @@ _zero_explanation :933 | async def search :1195 | _check_db :1383 | main :2258
 
 确认并改掉的：
 1. 「12 行」那个计数原先只给数字、没给判据 → 补上方法（模式清单本身不落进公开仓库）。
-2. `docs/mcp-sdk-v2.md` 的标题「都在客户端侧，本服务不读」过宽——正是这句让 2.x 剥异常文本
+2. `docs/history/mcp-sdk-v2.md` 的标题「都在客户端侧，本服务不读」过宽——正是这句让 2.x 剥异常文本
    漏了一整轮 → 收窄成「四条都在客户端回包里」，并写明 `serverInfo.version` 那个空串是
    **服务端产出**、只是被客户端读到。
 3. 本表第 10 行的 cp936 证据跑在 11-10 那版上，而 11-11 的验收四路不含码页路径 → 加口径限定。

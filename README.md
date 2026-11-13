@@ -3,9 +3,17 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.4`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.4 修 8 处小 bug（check_recall 空 term/[uid] 误报、mesh 补充概念与 retmax 建议、export 0 条说明与并发请求计数、fetch_abstracts 无效号碎片、links 的 pubmed_pmc_refs 说明，见 [docs/p3-fixes.md](docs/p3-fixes.md)；后续计划见 [docs/roadmap.md](docs/roadmap.md)）。1.4.3 给 `export` 加 `format="ris"`（全作者全名、摘要、卷期页/文章号、撤稿注记，见 [docs/ris-export.md](docs/ris-export.md)）；1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.4`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)，文档目录见 [docs/README.md](docs/README.md)，后续计划见 [docs/roadmap.md](docs/roadmap.md)。
 
-本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
+| 版本 | 主要变化 |
+|---|---|
+| 1.4.4 | 修 8 处小 bug（check_recall、mesh 补充概念、export 0 条与请求计数、fetch_abstracts、links 说明） |
+| 1.4.3 | `export(format="ris")`：全作者全名、摘要、卷期页/文章号、撤稿注记，可导入 Zotero/EndNote |
+| 1.4.2 | `fetch_abstracts` 精简字段、结构化 JSON、写文件（`fields` / `as_json` / `out_path`） |
+| 1.4.1 | 检索式本地语法检查（拼错的字段标签、`AND NOT`、前导截词等）；count 0 条解释 |
+| 1.4.0 | 系统综述检索助手 `check_recall` / `mesh` / `diff` / `export`；可选检索留痕 |
+
+既有基础工具的默认行为各版保持兼容。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
 **它存在的唯一理由**：把「查不到」和「没有」分开。
 文献工具最常见的失败是**静默**——参数被吞掉、词被丢弃、编码不对、请求根本没跑完，
@@ -26,7 +34,7 @@ pubmed-mcp --check-key
 
 `--check-key` 应返回 rc=0 并打印 key 形状/限速档/依赖版本。mcp 1.x 与 2.x 都支持；要是它报
 `拿不到 MCP 服务类`，说明你环境里的 mcp 既不是一代也不是二代，`pip install "mcp>=1.26,<3"` 即可
-（缘由见下面「版本要求」与 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)）。
+（缘由见下面「版本要求」与 [docs/history/mcp-sdk-v2.md](docs/history/mcp-sdk-v2.md)）。
 
 然后告诉 Claude Code 去哪儿找它 —— 在 `~/.claude.json` 里加：
 
@@ -123,11 +131,11 @@ claude mcp add pubmed -- pubmed-mcp
 （下面「自检」一节同此口径）。**这句自己就过期过一回**：此处原先写着「请求数仍是 89 次」，
 后来又加了**联网**的冒烟断言（文档示例能不能真查到东西，光离线测不出来），89 已经不是实际值——
 同一段文字里一边说「不写死条数」、一边写死另一个数，正是本 README 批评过的形状。
-现在的条数、请求数与它们的变化链记在 [docs/release-delta.md](docs/release-delta.md) 的验收表里。
+现在的条数、请求数与它们的变化链记在 [docs/history/release-delta.md](docs/history/release-delta.md) 的验收表里。
 其中四条**专门走 SDK 的工具包装层**（`search` / `count` / `fetch_abstracts` / `links` 各一条）。
 为什么值得为它们各写一条：2.x 会把非 `ToolError` 异常的文本剥掉，这条通路一旦退化，四个工具的
 「为什么被拦」会同时缩成一句没有信息的 `Error executing tool xxx`，而探针其余断言都直调协程、
-结构上看不见这一层。〔实测依据见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)〕
+结构上看不见这一层。〔实测依据见 [docs/history/mcp-sdk-v2.md](docs/history/mcp-sdk-v2.md)〕
 
 **【已作废 2026-11-11，本会话 A/B 实测推翻】**这一段原先写「v2 变了的那些（客户端字段改
 snake_case、`serverInfo.version` 变空串、多 `structuredContent`）都在**客户端侧**，本服务不读，
@@ -137,7 +145,7 @@ snake_case、`serverInfo.version` 变空串、多 `structuredContent`）都在**
 路上被打穿了。现在 `NcbiError` 继承当前那代 SDK 的 `ToolError`，两代拿到的文本逐字相同；
 `--probe` 里补了一条**走包装层**的断言当回归锁（其余断言都直调协程，结构上看不见这一层）。
 原话留着不删，是因为「我不读那个字段，所以那个改动与我无关」这种推理会再犯第二次。
-细节与逐字签名见 [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。
+细节与逐字签名见 [docs/history/mcp-sdk-v2.md](docs/history/mcp-sdk-v2.md)。
 
 新环境里 `pip install` 会拿范围内的最高版（眼下是 mcp 2.3.0）。想固定走 1.x：
 `pip install "mcp<2"`。两代本仓库都跑过全量 `--probe`，但**你的其它 MCP 应用如果要求
@@ -233,7 +241,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 ### 系统综述检索助手（1.4.0 新增）
 
-四个新工具加可选留痕，支撑系统综述的检索环节。设计依据与实测前提见 [docs/systematic-review-plan.md](docs/systematic-review-plan.md)，方法学工作流见 [docs/systematic-review-workflow.md](docs/systematic-review-workflow.md)（亦作为 `/systematic-review` skill 随仓库分发）。
+四个新工具加可选留痕，支撑系统综述的检索环节。设计依据与实测前提见 [docs/history/systematic-review-plan.md](docs/history/systematic-review-plan.md)，方法学工作流见 [docs/systematic-review-workflow.md](docs/systematic-review-workflow.md)（亦作为 `/systematic-review` skill 随仓库分发）。
 
 分工〔本项目自订〕：工具只做机械可复现的事（检索、集合运算、导出、留痕）；拆概念、选同义词、判断相关性、定纳入排除由人与 LLM 按预设标准做。**工具不声称查全率/查准率**，已知集找回只证明这批已知文献被检回。
 
@@ -246,7 +254,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 实测注意〔2026-11-11 live，verify_sr_live.py〕：大题目切片计数和可能**大于**总数——同一记录带多个发表日期时会落进多个年份切片，去重后与总数一致；警告会如实说明，这不是错误。例：`dental implant` 命中 73612，切片计数和 78474，去重后 73612〔实测；重复数 4862 为推算 DV-SR-DEDUP〕。
 
-验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。（以上为 1.4.0 验收时的数字。截至 1.4.4：离线 160 项；描述总字符 2563，按 `inspect.cleandoc` 口径，与 Python 版本无关〔实测 2026-11-13 list_tools〕。）
+验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/history/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。（以上为 1.4.0 验收时的数字。截至 1.4.4：离线 160 项；描述总字符 2563，按 `inspect.cleandoc` 口径，与 Python 版本无关〔实测 2026-11-13 list_tools〕。）
 
 ### 自动回归
 
@@ -272,7 +280,7 @@ python -I tests/run_offline.py
    或 200 + `{"ERROR": ...}` 都算失败，不会被说成「NCBI 里没有这篇」。
    〔实测 2026-11-11：这条曾在 mcp 2.x 上被打穿过——SDK 把非 `ToolError` 的异常文本剥掉，调用方
    只剩一句 `Error executing tool <name>`。现在的基类写法与那条走包装层的回归断言见
-   [docs/mcp-sdk-v2.md](docs/mcp-sdk-v2.md)。〕
+   [docs/history/mcp-sdk-v2.md](docs/history/mcp-sdk-v2.md)。〕
 2. **`0 条`必须说清是哪一种 0。** 真的没有匹配 / 词被当停用词忽略 / 整个引号短语在索引里不存在 /
    两段同字段日期不相交 / `retstart` 越页 / `retmax=0` 且命中>0（只要计数、没要记录）——这几种各说各的话，
    不统一兜底成「PubMed 里没有匹配」。
@@ -341,7 +349,7 @@ python pubmed_mcp.py --concurrent "tooth resorption"
   1.4.0 的 `export` 通过按发表日期切片取全超过此窗口的结果（history 服务器同样受此限制〔实测 2026-11-11〕）；`search`/`diff` 仍受窗口约束。
 - **`retmax` 上限 1000 是本工具自订的**，不是 NCBI 的限制；要一次多拿就改那个常量，
   或按年份/字段把查询切小分批取。夹过都会在输出里说明是**本工具**夹的。
-- **不生成 Vancouver/APA 等引文格式。** 引文格式交给文献管理软件：`export(format="ris")` 或 `medline` 导入 Zotero/EndNote 后由它们排版〔本项目自订分工，见 docs/systematic-review-plan.md §7〕。RIS 已用 rispy 0.10.0 解析校验，**未做 Zotero/EndNote 真机导入**。`csv` 格式保持 1.4.0 的 10 列不变（作者仍只列前 3 位缩写），全作者请用 ris。
+- **不生成 Vancouver/APA 等引文格式。** 引文格式交给文献管理软件：`export(format="ris")` 或 `medline` 导入 Zotero/EndNote 后由它们排版〔本项目自订分工，见 docs/history/systematic-review-plan.md §7〕。RIS 已用 rispy 0.10.0 解析校验，**未做 Zotero/EndNote 真机导入**。`csv` 格式保持 1.4.0 的 10 列不变（作者仍只列前 3 位缩写），全作者请用 ris。
 - **PubMed 没有「按期刊影响力排序」这个概念**，`sort` 里不存在这种值。本仓库也不含这类脚本
   ——要那种排序得自己接外部期刊指标数据源。
 - 默认 `datetype="pdat"`（发表日期）。不带 `datetype` 时 NCBI 按入库日期算，两者结果不同〔实测〕。
@@ -359,10 +367,14 @@ python pubmed_mcp.py --concurrent "tooth resorption"
 
 ## 这份发布版与作者开发版的关系
 
-公开仓库里的 `pubmed_mcp.py` **不是**作者机器上正在跑那份的逐字节副本：它带着若干处发布专用改动
-（`_mask` 收口、`--selftest` 不再打印 key 前缀、工具说明补上 `author`、journal-rank 指路改成不指向
-本仓库没有的文件，以及三条新增离线断言）。逐处理由与依据见
-[docs/release-delta.md](docs/release-delta.md)。
+当前 `main` 上的 `pubmed_mcp.py` 与作者本机运行的副本逐字节一致〔实测 2026-11-13，`cmp` 比对 1.4.4〕。
+
+【已作废 2026-11-13，理由：当日实测两份逐字节一致，「不是逐字节副本」已不成立】下段是早期的说明，保留原文不删：
+
+> 公开仓库里的 `pubmed_mcp.py` **不是**作者机器上正在跑那份的逐字节副本：它带着若干处发布专用改动
+> （`_mask` 收口、`--selftest` 不再打印 key 前缀、工具说明补上 `author`、journal-rank 指路改成不指向
+> 本仓库没有的文件，以及三条新增离线断言）。逐处理由与依据见
+> [docs/history/release-delta.md](docs/history/release-delta.md)。
 
 ## License
 

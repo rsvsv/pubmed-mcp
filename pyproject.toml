@@ -19,7 +19,7 @@ dependencies = [
   # mcp 2.3.0，而 2.x 把 mcp.server.fastmcp 删了 —— 别人第一次安装就 ModuleNotFoundError。
   # 作者本机是 1.29.0，在自己机器上这条永远复现不出来。
   # 现在放开到 `<3`：2.x 由源码里的 SDK 兼容层支持（v1 与 v2 两条通路各跑过完整 --probe，
-  # 逐字签名见 docs/mcp-sdk-v2.md）。3.x 是没验过的下一代，宁可在解析阶段挡掉，
+  # 逐字签名见 docs/history/mcp-sdk-v2.md）。3.x 是没验过的下一代，宁可在解析阶段挡掉，
   # 也不让别人的默认安装走进没测过的版本 —— 这次翻车就是这么来的。
   # 下界也是量出来的，不是随手写：〔实测 2026-11-11，干净 venv 配 pydantic 2.14.3〕
   # mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport' from

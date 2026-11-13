@@ -7,7 +7,7 @@
 - 修复 [引号短语开头被误报为布尔算子开头](https://github.com/rsvsv/pubmed-mcp/issues/1)：开头判断读取原始检索式；其他语法检查保持各自的遮罩。回归测试包含 issue 原例及真正错误的算子开头。
 - 新增 `check_recall`、`mesh`、`diff`、`export`；扩展引文追踪和检索留痕，补齐 MeSH 历史词及上下位词。
 - 查询失真、异常响应、导出不覆盖和日期切片边界有专门回归。
-- 详细修复证据见 [演练验证](exercise-fixes-validation.md)，系统综述使用流程见 [工作流](systematic-review-workflow.md)。
+- 详细修复证据见 [演练验证](exercise-fixes-validation.md)，系统综述使用流程见 [工作流](../systematic-review-workflow.md)。
 
 ## 发布前验证
 
@@ -20,7 +20,7 @@
 | 本机运行副本 | 已按用户授权同步主程序；真实全局 `--probe` 输出 173 通过、0 失败〔实测：前一轮全局路径 probe 输出〕 |
 | 已重启服务的 issue 原例 | 两种词序均无误报警告，命中数均为 138〔实测：本轮 MCP search；时点计数，不承诺日后固定〕 |
 
-构建与回归日志在维护者工作区保存；本页是工具输出的人工摘要。既有联网原响应归档在 `docs/audit-evidence/exercise-fixes.jsonl`。
+构建与回归日志在维护者工作区保存；本页是工具输出的人工摘要。既有联网原响应归档在 `docs/history/evidence/exercise-fixes.jsonl`。
 
 ## 发布范围与限制
 

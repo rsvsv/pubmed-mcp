@@ -25,7 +25,7 @@ NCBI 对 term 里写错的语法大多**不报错**，而是静默改写后照�
 | `mixed_boolean` | 同一层括号里 AND 与 OR 混用 | 否（结果确定，只是可能不合本意） |
 
 白名单与无效写法表**逐个实测**：`miniscrew[<tag>]` 的执行式若与裸词逐字相同，判为被忽略。
-原始数据：[audit-evidence/tag_probe_20261113.json](audit-evidence/tag_probe_20261113.json)、[tag_probe2_20261113.json](audit-evidence/tag_probe2_20261113.json)。
+原始数据：[history/evidence/tag_probe_20261113.json](history/evidence/tag_probe_20261113.json)、[tag_probe2_20261113.json](history/evidence/tag_probe2_20261113.json)。
 探针脚本同目录，约 290 次 esearch〔实测 2026-11-13〕。
 
 ## 关键实测（2026-11-13，esearch retmax=0）

@@ -72,7 +72,7 @@
       querytranslation 逐字相同 —— NCBI 把两边都展开成同一组 OR；当年那个 1 条的差不复现，
       但「用 MeSH 词覆盖两种写法」这条建议本身仍然有效〕。要覆盖两种写法，改用 MeSH descriptor，
       并且【核对实际执行的式子】判断写没写对 —— 本工具不做词表查询，而 descriptor 写错有两种形状，
-      后果并不一样（〔实测 2026-11-11，本会话，三种写法各跑一次 count，见 docs/release-delta.md〕）：
+      后果并不一样（〔实测 2026-11-11，本会话，三种写法各跑一次 count，见 docs/history/release-delta.md〕）：
         给一个不存在的 descriptor 加引号（"Temporary Anchorage Devices"[MeSH Terms]）→ 0 条，
           NCBI 在 warninglist.quotedphrasesnotfound 里点名这段，本工具会转述 —— 不算静默；
         同样的词【不加引号】配 [MeSH Terms] → 照样回一个数，但「NCBI 实际执行」已被改写成

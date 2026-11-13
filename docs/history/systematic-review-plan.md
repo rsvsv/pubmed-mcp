@@ -1,6 +1,6 @@
 # 把 pubmed-mcp 变成系统综述助手：设计方案（提案）
 
-状态：第一阶段已实现并验证（2026-11-11，见 docs/sr-tools-validation.md）；第二阶段未做。技术前提已于 2026-11-11 实测核实（§3）。
+状态：第一阶段已实现并验证（2026-11-11，见 docs/history/sr-tools-validation.md）；第二阶段未做。技术前提已于 2026-11-11 实测核实（§3）。
 一句话结论：先做「已知文献找回测试＋MeSH 查词＋检索式对比＋取全导出＋检索留痕」，方法学放进配套 skill；工具只做机械可复现的事，判断留给人和 LLM。
 
 ## 1. 目标与总原则
@@ -178,5 +178,5 @@ check_recall → mesh → diff → export → 留痕 → skill。
 
 第一阶段六项全部落地：check_recall / mesh / diff / export / 检索留痕（PUBMED_AUDIT_DIR）/ 配套 skill（.claude/skills/systematic-review）。
 验收：离线 80 项（两代 SDK 各 80）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS〔实测〕。
-详见 docs/sr-tools-validation.md；方法学工作流见 docs/systematic-review-workflow.md。
+详见 docs/history/sr-tools-validation.md；方法学工作流见 docs/systematic-review-workflow.md。
 尚未构建发布归档、未提交、未推送、未跑远端 CI。

@@ -5,7 +5,7 @@ description: 用 pubmed-mcp 做系统综述的检索环节：拆概念查 MeSH�
 
 # 系统综述检索工作流
 
-完整方法学见仓库 docs/systematic-review-workflow.md；工具设计与实测前提见 docs/systematic-review-plan.md。本 skill 是执行入口。
+完整方法学见仓库 docs/systematic-review-workflow.md；工具设计与实测前提见 docs/history/systematic-review-plan.md。本 skill 是执行入口。
 
 ## 先决条件
 - 明确的研究问题（PICO）与事先写好的纳入排除标准。

@@ -24,7 +24,7 @@
 ## 输出与调用成本
 
 - 工具历史说明逐字移到 [tool-description-history.md](tool-description-history.md)，包括原有未核实/作废标记；当前工具描述仅保留调用规则。
-- 实测 MCP `list_tools` 描述总字符：修改前 6368，修改后 1325；来源：audit-evidence/delivery_metrics.json 的 descriptions。与 AST 清理后的 docstring 字符计数不是同一口径。
+- 实测 MCP `list_tools` 描述总字符：修改前 6368，修改后 1325；来源：evidence/delivery_metrics.json 的 descriptions。与 AST 清理后的 docstring 字符计数不是同一口径。
 - 推算字符减少约 79.2%，登记 DV-AUDIT-DESC；不能证明 token、费用或任务总耗时同比减少。
 - 实测固定短语案例的说明字符：修改前 569，修改后 418；来源：上述 metrics 的 `"zzzqqx nonexistent term"` 条目。推算字符减少约 26.5%，登记 DV-AUDIT-PHRASE；不能推广到其它查询或 token 比例。
 - JSON 中完整 querytranslation 仍保留，不再在 warnings 重复复制。文本仍显示实际执行式，原有截断提示及完整 JSON 获取路径保留。
@@ -34,9 +34,9 @@
 
 ## 验证
 
-- 实测原有完整探针：169 通过 / 0 失败，92 次 HTTP 请求；来源：audit-evidence/probe_after.log 末行。此为本次快照，不是未来固定验收数。
-- 实测新增离线测试：20 项通过；来源：audit-evidence/offline_after.log 末尾。涵盖固定 NCBI 响应回放、合成故障、正常反例、描述与 SDK 一致性。
-- 实测新 stdio 进程：search、count、fetch_abstracts、links 均调用成功；来源：audit-evidence/delivery_metrics.json 的 stdio。
+- 实测原有完整探针：169 通过 / 0 失败，92 次 HTTP 请求；来源：evidence/probe_after.log 末行。此为本次快照，不是未来固定验收数。
+- 实测新增离线测试：20 项通过；来源：evidence/offline_after.log 末尾。涵盖固定 NCBI 响应回放、合成故障、正常反例、描述与 SDK 一致性。
+- 实测新 stdio 进程：search、count、fetch_abstracts、links 均调用成功；来源：evidence/delivery_metrics.json 的 stdio。
 - 本轮测试环境实测 mcp 1.29.0；来源：主流程 importlib.metadata.version 工具输出。SDK 另一代本轮未重新测试，历史通过记录不能冒充本轮验证。
 - 主流程运行 git diff --check 无空白错误；独立审阅未报告新增缺陷，但这不是全面无 bug 的证明。
 

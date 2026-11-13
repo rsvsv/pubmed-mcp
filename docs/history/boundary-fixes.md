@@ -1,6 +1,6 @@
 # 检索解释、响应完整性与重试边界修复
 
-本记录对应后续边界修复。证据中的响应是工具实测，故障注入中的文献号、等待时长和返回数量为本项目自订测试输入，不是文献事实。测试源码见 `tests/test_boundary_regressions.py`；原始输出保存在 `docs/audit-evidence/boundary_*`。
+本记录对应后续边界修复。证据中的响应是工具实测，故障注入中的文献号、等待时长和返回数量为本项目自订测试输入，不是文献事实。测试源码见 `tests/test_boundary_regressions.py`；原始输出保存在 `docs/history/evidence/boundary_*`。
 
 ## 修复内容
 
@@ -24,8 +24,8 @@
 
 ## 验证与兼容性
 
-- 实测离线回归：41 项通过；来源：audit-evidence/boundary_offline_complete.log 末尾。包括原有回归及本轮新增边界测试。
-- 实测完整联网探针：169 通过、0 失败，92 次 HTTP 请求；来源：audit-evidence/boundary_probe_final.log 末行。探针启动后的最后一处零结果提示措辞调整由上述离线测试覆盖。
+- 实测离线回归：41 项通过；来源：evidence/boundary_offline_complete.log 末尾。包括原有回归及本轮新增边界测试。
+- 实测完整联网探针：169 通过、0 失败，92 次 HTTP 请求；来源：evidence/boundary_probe_final.log 末行。探针启动后的最后一处零结果提示措辞调整由上述离线测试覆盖。
 
 - 实测新 stdio 进程：search、count、fetch_abstracts、links 均完成正常调用；布尔日期参数返回工具错误。原始输出：boundary_live.json。
 - 实测本机依赖：mcp 1.29.0、anyio 4.14.2、pydantic 2.13.4；来源：主流程 importlib.metadata.version 输出。本轮没有重测另一代 SDK 或整个依赖版本区间，历史通过记录不代替当前验证。

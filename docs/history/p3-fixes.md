@@ -27,4 +27,4 @@
 
 ## 本批未修
 
-见 [roadmap.md](roadmap.md)：mesh 精简档、export 描述措辞（#93）、CSV 全字段等。
+见 [../roadmap.md](../roadmap.md)：mesh 精简档、export 描述措辞（#93）、CSV 全字段等。

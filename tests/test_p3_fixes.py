@@ -1,7 +1,7 @@
 """1.4.4 small-bug regressions (audit P3): check_recall empty / uid-only term, MeSH supplemental records,
 mesh retmax hint at cap, export zero explanation, per-call request counter, fetch_abstracts placeholder
 fragment, links pubmed_pmc_refs gloss.
-Behaviours were reproduced live 实测 2026-11-13 (see docs/p3-fixes.md); literals below are 本项目自订测试输入.
+Behaviours were reproduced live 实测 2026-11-13 (see docs/history/p3-fixes.md); literals below are 本项目自订测试输入.
 Run: python -I -m unittest discover -s <repo>/tests -v
 """
 import importlib.util

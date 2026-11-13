@@ -83,7 +83,7 @@ from pydantic import StrictInt, StrictStr
 #   mcp 1.x：  mcp.server.fastmcp.FastMCP → 1.29.0（本机）/ 1.30.0（干净 venv）
 #   mcp 2.x：  该模块名【不存在】，改名 mcp.server.mcpserver.MCPServer → 2.3.0
 # 本文件对 SDK 只用到三处，两代签名都兼容：`FastMCP(名字)`（v2 第一参数仍是 name）、
-# `@mcp.tool()` 裸装饰、`mcp.run()` 默认 stdio。逐字签名见 docs/mcp-sdk-v2.md。
+# `@mcp.tool()` 裸装饰、`mcp.run()` 默认 stdio。逐字签名见 docs/history/mcp-sdk-v2.md。
 # 〔加这层之前，`mcp>=1.2` 会让别人第一次安装就 ModuleNotFoundError：作者本机是 1.29.0，
 #  在自己机器上永远复现不出来。别把「我机器能跑」当「装得上」的证据。〕
 #
@@ -126,7 +126,7 @@ except ModuleNotFoundError:                                       # v2 抛的就
         ) from _sdk_err
 except ImportError as _sdk_imp_err:
     # 「在区间内但太老」或依赖冲突时炸的是普通 ImportError，上面那条友好报错根本不会触发。
-    # 〔本会话实测过 mcp 1.2/1.21/1.26 配新 pydantic 的 import 结果，见 docs/mcp-sdk-v2.md〕
+    # 〔本会话实测过 mcp 1.2/1.21/1.26 配新 pydantic 的 import 结果，见 docs/history/mcp-sdk-v2.md〕
     raise ImportError(
         "mcp 装了但导入失败（%s）。这一般是版本太老或与 pydantic 冲突，不是本文件的问题。"
         "先跑 `pip install -U \"%s\"`；还不行请把这条报错和 `pip show mcp pydantic` 一起贴到 "
@@ -2454,7 +2454,7 @@ async def links(pmids: str, to: str = "pmc") -> str:
 
 
 # ---------- 系统综述助手（1.4.0 新增） ----------
-# 设计依据与实测前提见 docs/systematic-review-plan.md（2026-11-11 探针 P1–P3）：
+# 设计依据与实测前提见 docs/history/systematic-review-plan.md（2026-11-11 探针 P1–P3）：
 #   - MeSH 库可经 esearch/esummary db=mesh 查，ds_meshterms 给入口词、ds_idxlinks 给树号与子词〔实测 P1〕
 #   - 已知集交集 `term AND (pmid[uid] OR …)` 一次 esearch 即可判定找回〔实测 P2〕
 #   - 9999 检索窗口对 history 服务器同样生效，esummary/efetch 从 history 取 retstart=10000 均被拒〔实测 P3〕

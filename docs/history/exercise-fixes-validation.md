@@ -19,7 +19,7 @@
 
 ## 最终验证
 
-原始证据集中保存于 [exercise-fixes.jsonl](audit-evidence/exercise-fixes.jsonl)。每行带来源；可按 `source` 定位对应日志或联网响应。
+原始证据集中保存于 [exercise-fixes.jsonl](evidence/exercise-fixes.jsonl)。每行带来源；可按 `source` 定位对应日志或联网响应。
 
 | 检查 | 结果与来源 |
 |---|---|
