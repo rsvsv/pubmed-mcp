@@ -10,14 +10,18 @@ permissions:
 
 jobs:
   regression:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10 # 本项目自订：单个作业超时分钟数
+    defaults:
+      run:
+        shell: bash # Windows 上默认是 pwsh，"$MCP_SPEC" 会被当成 pwsh 变量而非环境变量
     strategy:
       fail-fast: false
       matrix:
+        os: ['ubuntu-latest', 'windows-latest'] # 1.4.5：Windows 专属分支（不覆盖发布、UTF-16/BOM key、改码页）此前无自动覆盖
         python: ['3.10', '3.13'] # 本项目自订：覆盖声明的 Python 下界及开发版本
         sdk: ['mcp>=1.26,<2', 'mcp>=2,<3'] # 本项目自订：分代解析兼容依赖；不代表覆盖所有版本
-    name: Python ${{ matrix.python }} / ${{ matrix.sdk }}
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.sdk }}
     env:
       MCP_SPEC: ${{ matrix.sdk }}
       NCBI_API_KEY: ''

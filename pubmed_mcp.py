@@ -98,7 +98,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
-__version__ = "1.4.4"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
+__version__ = "1.4.5"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -133,6 +133,23 @@ except ImportError as _sdk_imp_err:
         "https://github.com/rsvsv/pubmed-mcp/issues（这里不会带上你的 API key）。"
         "底层错误：%s" % (_mcp_ver(), _SDK_RANGE, str(_sdk_imp_err)[:200])
     ) from _sdk_imp_err
+
+# 多余/拼错的参数必须被拒，不能静默丢掉。〔实测 2026-11-13，1.4.4：export(..., formt="csv") 不报错，
+# 按默认 pmids 照写文件——正是本工具主承诺里的「参数被吞掉」。〕根因：两代 SDK 都用 pydantic 按函数签名
+# 建参数模型，基类 ArgModelBase 未设 extra，pydantic 默认 extra="ignore"。这里在 @mcp.tool() 注册【之前】
+# 改基类配置，之后建的参数模型都继承 extra="forbid"，tools/list 的 schema 也随之带 additionalProperties:false。
+# 取舍：会往 arguments 里塞额外字段的客户端将被拒——拒掉比静默吞掉好（README 版本要求一节有说明）。
+# 拿不到基类时不静默跳过：_EXTRA_FORBID 留空因，--check-key 打印，--probe 记 FAIL。
+_EXTRA_FORBID = ""
+try:
+    try:
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase as _ArgModelBase     # 1.x
+    except ModuleNotFoundError:
+        from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase as _ArgModelBase   # 2.x
+    _ArgModelBase.model_config = {**_ArgModelBase.model_config, "extra": "forbid"}
+except Exception as _xf_err:
+    _EXTRA_FORBID = f"本代 SDK（{_mcp_ver()}）无法禁止多余参数：{type(_xf_err).__name__}: {_xf_err}"
+    print("⚠️ " + _EXTRA_FORBID + "——拼错的参数名会被静默忽略。", file=sys.stderr)
 
 BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 TOOL = "claude-pubmed-mcp"
@@ -270,10 +287,15 @@ def _mask(s):
         return s
     # 旧注释的「第三条仍未处理」已作废：本轮同时替换 URL 编码形式，见离线回归。
     variants = {k, urllib.parse.quote(k, safe=""), urllib.parse.quote_plus(k)}
+    # 〔实测 2026-11-13，1.4.4〕key 极短（如 1 个字符 'f'）时全局替换会把整句诊断打花
+    # （'failed' → '***ailed'）。短于 8 字符〔本项目自订阈值；NCBI 真 key 为 36 位〕只掩 api_key=<值> 形态。
+    short = len(k) < 8
     for value in sorted(variants, key=len, reverse=True):
         encoded = re.escape(value)
         if "%" in value:
             encoded = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: "(?i:%" + m[1] + ")", encoded)
+        if short:
+            encoded = r"(?<=api_key=)" + encoded + r"(?=[&\s'\"]|$)"
         s = re.sub(encoded, "***", s)
     return s
 
@@ -474,8 +496,9 @@ def _as_bool(v, name):
     raise NcbiError(f'{name} 要布尔，收到 {v!r}（可写 true/false，也容忍 "True"/"1"/"yes"）')
 
 
-def _int(v, name, default=0, lo=None, hi=None):
-    """数字参数统一收口：报错要说清是哪个参数，别抛裸 ValueError('invalid literal for int()')。"""
+def _int(v, name, *, lo=None, hi=None):
+    """数字参数统一收口：报错要说清是哪个参数，别抛裸 ValueError('invalid literal for int()')。
+    〔1.4.5〕删掉了从未被读过的 default 参数：空串照样报错（不替用户编一个默认值），lo/hi 改为仅限关键字。"""
     if isinstance(v, bool) or not isinstance(v, (int, str)):
         raise NcbiError(f"{name} 要整数，收到 {v!r}；不接受布尔或浮点数")
     try:
@@ -683,7 +706,7 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
         # retstart=0，调用方以为拿到了 -5 起始的窗口。与上面 retmax 负数同口径：直接报。
         raise NcbiError(f"retstart={retstart!r} 是负数，本工具不替它编一个意思（旧版会静默夹成 0＝第一页）。"
                         f"要第一页就写 0；翻页请给非负整数，上限 {RETSTART_MAX}。")
-    rs = _int(retstart, "retstart", 0, 0)
+    rs = _int(retstart, "retstart", lo=0)
     if rs > RETSTART_MAX:
         raise NcbiError(f"retstart={rs} 超出 PubMed esearch 的检索窗口。〔实测 2026-11-09〕"
                         f"retstart=9998 还取得到东西，9999 和 10000 都被 NCBI 拒绝，原文是 "
@@ -701,7 +724,7 @@ async def _esearch(term, retmax=20, sort="", field="", mindate="", maxdate="", r
     if _rm_req is not None and _rm_req < 0:
         raise NcbiError(f"retmax={retmax!r} 是负数，本工具不替它编一个意思。"
                         f"要几条就写正数（上限 {RETMAX_CAP}）；只想知道命中数就用 count()。")
-    _rm = _int(retmax, "retmax", 0, 0, RETMAX_CAP)
+    _rm = _int(retmax, "retmax", lo=0, hi=RETMAX_CAP)
     _rm_note = ("" if _rm_req is None or _rm_req <= RETMAX_CAP else
                 f"retmax={_rm_req} 超过本工具上限，已夹到 {_rm}。"
                 f"〔实测 2026-11-10〕上限 {RETMAX_CAP} 是【本工具自订】的（NCBI 那边 esearch 允许更大），"
@@ -1501,7 +1524,10 @@ def _parse_pmids(pmids):
     #   现在整串（去掉首尾分隔符）与逐个 token 都按同一套判据看一遍，全角逗号也按千位分隔符处理。
     whole = s.strip().strip(";，、, \t\r\n")
     amb = [whole] if re.fullmatch(r"\d{1,3}(?:[,，]\d{3})+", whole) else []
-    amb += [t for t in re.split(r"[;，、\s]+", s) if t and re.fullmatch(r"\d{1,3}(?:,\d{3})+", t)]
+    # 〔实测 2026-11-13，1.4.4〕'1,234, 567' 切出 token '1,234,'——行尾逗号让 fullmatch 落空，被当成 1/234/567
+    #   三个号放行。逐 token 判之前先剥掉首尾 ASCII 逗号。
+    amb += [t.strip(",") for t in re.split(r"[;，、\s]+", s)
+            if t and re.fullmatch(r"\d{1,3}(?:,\d{3})+", t.strip(","))]
     if amb:
         raise NcbiError(
             f"这些串看着像【带千位分隔符的数字】，没法判断是一个号还是好几个号：{amb[:3]}。"
@@ -1598,8 +1624,10 @@ def _record_parts(uid, r):
     src = r.get("source") or r.get("fulljournalname") or "?"
     vol, issue, pages = r.get("volume") or "", r.get("issue") or "", r.get("pages") or ""
     cite = ""
-    if vol or pages:
+    if vol:
         cite = f" {vol}" + (f"({issue})" if issue else "") + (f":{pages}" if pages else "")
+    elif pages:
+        cite = f" {pages}"    # 〔1.4.5〕无卷号时旧版拼成 ':123-30'，冒号前没有东西
     # authorlist 兜底到 authors 是必需的：实测 esummary 对 37427694 不返回 authorlist，
     # 作者全走 authors；重构时别把 `or r.get("authors")` 当冗余删掉。
     auth = r.get("authorlist") or r.get("authors") or []
@@ -1609,10 +1637,9 @@ def _record_parts(uid, r):
     # 会让脚本切出假名字、数逗号数错人数。人数由 author_count 单独给；文本输出的人话后缀在
     # _fmt_record 里加（2026-11-11 改，旧版的 authors 字段两种输出共用同一段拼串）。
     ptypes = [p for p in _as_list(r.get("pubtype") or []) if isinstance(p, str)]
-    ptag = ""
-    specific = [p for p in ptypes if p != "Journal Article"]
-    if specific:
-        ptag = "｜" + "/".join(specific)    # 不截掉撤稿、勘误或试验类型
+    # 不截掉撤稿、勘误或试验类型。〔1.4.5〕ptag 不再带展示分隔符「｜」：旧版把它漏进 as_json（'｜Review'），
+    # 分隔符改由 _fmt_record 拼文本时加。
+    ptag = "/".join(p for p in ptypes if p != "Journal Article")
     return {
         "pmid": uid,
         "pubdate": r.get("pubdate") or "?",
@@ -1643,7 +1670,7 @@ def _fmt_brief_record(r, uid):
 
 def _fmt_record(r, uid):
     p = _record_parts(uid, r)
-    head = f"PMID {p['pmid']}｜{p['pubdate']}｜{p['journal']}{(' ' + p['citation']) if p['citation'] else ''}{p['ptag']}"
+    head = f"PMID {p['pmid']}｜{p['pubdate']}｜{p['journal']}{(' ' + p['citation']) if p['citation'] else ''}{('｜' + p['ptag']) if p['ptag'] else ''}"
     tail = []
     if p["doi"]:
         tail.append("doi:" + p["doi"])
@@ -1715,6 +1742,7 @@ async def _efetch_all(pmids):
 ABSTRACT_FIELDS = ("title", "abstract", "authors", "journal", "pubdate", "ids", "pt", "lang", "mesh",
                    "comments", "coi", "other_abstracts")
 ABSTRACT_DEFAULT_FIELDS = ("title", "abstract", "authors", "journal", "pubdate", "ids", "pt", "lang", "comments")
+FETCH_MAX = 2000              # 本项目自订：fetch_abstracts 单次 PMID 上限（2000 号 = 40 批；更多请分次或用 export）
 FETCH_WARN_CHARS = 60000      # 本项目自订：默认文本档超过此字符数时追加「可能超出客户端结果上限」提示；
 #                               客户端真实上限未核实〔审查子代理观察：60 篇约 15.7 万字符被拒，20 篇正常〕
 
@@ -1983,6 +2011,20 @@ def _fmt_compact(rec, fields):
     return "\n".join(lines)
 
 
+def _write_text(path, text):
+    """UTF-8、LF 换行写文本。同步函数，调用方用 anyio.to_thread 卸载。"""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def _write_new_file(path, body):
     """原子写新文件且不覆盖（同 export）。返回 (绝对路径, 字节数, sha256)。"""
     import tempfile
@@ -2065,7 +2107,7 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
     if detail not in ("full", "brief", "ids"):
         raise NcbiError("detail 只支持 full / brief / ids")
     json_mode = _as_bool(as_json, "as_json")    # 非法模式在联网前报错
-    d = await _esearch(term, _int(retmax, "retmax", 20), sort, field, mindate, maxdate, reldate, retstart)
+    d = await _esearch(term, _int(retmax, "retmax"), sort, field, mindate, maxdate, reldate, retstart)
     ids = d.get("idlist") or []
     count = _count_of(d)
     # 〔实测 2026-11-09 更正〕检索窗口的真实边界（旧注释有一条不复现，跟着它写的分支也就走不到）：
@@ -2092,8 +2134,8 @@ async def search(term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", 
         "sort": sort or "",
         "mindate": mindate or "",
         "maxdate": maxdate or "",
-        "reldate": d.get("_rel") if "_rel" in d else _int(reldate, "reldate", 0),
-        "retmax": d.get("_retmax") if "_retmax" in d else _int(retmax, "retmax", 20),
+        "reldate": d.get("_rel") if "_rel" in d else _int(reldate, "reldate"),
+        "retmax": d.get("_retmax") if "_retmax" in d else _int(retmax, "retmax"),
     }
     if json_mode:
         try:
@@ -2201,7 +2243,7 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
            request_params=d.get("_request_params") or {},
            field=d.get("_field_applied") or field or "",
            mindate=mindate or "", maxdate=maxdate or "",
-           reldate=d.get("_rel") if "_rel" in d else _int(reldate, "reldate", 0),
+           reldate=d.get("_rel") if "_rel" in d else _int(reldate, "reldate"),
            querytranslation=(d.get("querytranslation") or "").strip(), warnings=notes)
     # 0 条与 search 同口径给出「是哪一种 0」（1.4.1 补；旧版 count 只印执行式，0 的语义要靠调用方猜）。
     zero = ["=> " + _zero_explanation(d, n)] if n == 0 else []
@@ -2220,6 +2262,11 @@ async def fetch_abstracts(pmids: str, fields: str = "", as_json: bool | str = Fa
     mesh,comments,coi,other_abstracts 或 all。out_path 写新文件，只回路径与 sha256；篇数多时用。
     """
     uniq, n_in = _parse_pmids(pmids)
+    if len(uniq) > FETCH_MAX:
+        # 〔1.4.5〕旧版无上限：5000 号＝100 批，全部正文留在内存里，超长提示要等拼完才出。
+        raise NcbiError(f"fetch_abstracts 一次最多 {FETCH_MAX} 个 PMID（本项目自订上限），收到 {len(uniq)} 个"
+                        f"（约 {(len(uniq) + EFETCH_CHUNK - 1) // EFETCH_CHUNK} 批）。请分次取；只要题录可用 "
+                        f'export(format="ris" 或 "medline") 落盘。')
     json_mode = _as_bool(as_json, "as_json")
     structured = bool(json_mode or str(fields or "").strip())
     flds = _parse_fields(fields) if structured else []
@@ -2258,7 +2305,7 @@ async def fetch_abstracts(pmids: str, fields: str = "", as_json: bool | str = Fa
     else:
         body = "\n".join(head) + ("\n\n" + text if text else "")
     if outp:
-        p, nbytes, sha = _write_new_file(outp, body)
+        p, nbytes, sha = await anyio.to_thread.run_sync(_write_new_file, outp, body)
         summary = {"path": p, "bytes": nbytes, "sha256": sha, "format": "json" if json_mode else "text",
                    "requested": len(uniq), "returned": len(got), "missing": missing}
         if json_mode:
@@ -2724,7 +2771,7 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
     json_mode = _as_bool(as_json, "as_json")
     if not (term or "").strip():
         raise NcbiError("term 不能为空")
-    n_req = _int(retmax, "retmax", 5)
+    n_req = _int(retmax, "retmax")
     if n_req < 1:
         raise NcbiError(f"retmax={retmax!r} 要正数；查词给正整数（上限 {MESH_RETMAX_CAP}）。")
     n = min(n_req, MESH_RETMAX_CAP)
@@ -2921,7 +2968,7 @@ async def diff(term_a: str, term_b: str, max_show: StrictInt | StrictStr = 20,
     集合差只描述增减，不判断相关性；命中更多不等于更好。两次查询间数据库可能更新。
     """
     json_mode = _as_bool(as_json, "as_json")
-    ms_req = _int(max_show, "max_show", 20)
+    ms_req = _int(max_show, "max_show")
     if ms_req < 0:
         raise NcbiError(f"max_show={max_show!r} 不能为负；不想看列表给 0。")
     ms = min(ms_req, DIFF_SHOW_CAP)
@@ -3014,23 +3061,26 @@ async def _export_csv(path, ids):
     元数据缺失/不可用的行在 note 列标明，不静默丢弃。返回 (记录数, 问题号列表)。"""
     recs = dict(await _esummary_dicts(ids, include_unavailable=True))
     problems = []
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["pmid", "pubdate", "title", "journal", "authors", "author_count", "doi", "pmc", "pubtype", "note"])
-        for p in ids:
-            r = recs.get(p)
-            if r is None:
-                w.writerow([p, "", "", "", "", "", "", "", "", "元数据缺失"])
-                problems.append(p)
-                continue
-            if r.get("error"):
-                w.writerow([p, "", "", "", "", "", "", "", "", "esummary 不可用：" + str(r.get("error"))[:80]])
-                problems.append(p)
-                continue
-            parts = _record_parts(p, r)
-            w.writerow([parts["pmid"], parts["pubdate"], parts["title"], parts["journal"],
-                        parts["authors"], parts["author_count"], parts["doi"], parts["pmc"],
-                        "/".join(parts["pubtype"]), ""])
+    rows = [["pmid", "pubdate", "title", "journal", "authors", "author_count", "doi", "pmc", "pubtype", "note"]]
+    for p in ids:
+        r = recs.get(p)
+        if r is None:
+            rows.append([p, "", "", "", "", "", "", "", "", "元数据缺失"])
+            problems.append(p)
+            continue
+        if r.get("error"):
+            rows.append([p, "", "", "", "", "", "", "", "", "esummary 不可用：" + str(r.get("error"))[:80]])
+            problems.append(p)
+            continue
+        parts = _record_parts(p, r)
+        rows.append([parts["pmid"], parts["pubdate"], parts["title"], parts["journal"],
+                     parts["authors"], parts["author_count"], parts["doi"], parts["pmc"],
+                     "/".join(parts["pubtype"]), ""])
+
+    def write():
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            csv.writer(f).writerows(rows)
+    await anyio.to_thread.run_sync(write)     # 〔1.4.5〕大文件写盘不占事件循环（契约 #9 原只覆盖网络）
     return len(ids) - len(problems), problems
 
 
@@ -3064,9 +3114,9 @@ async def _export_medline(path, ids):
             tg.start_soon(one, i, c)
     if errs:
         raise errs[0]
-    text = "\n\n".join(t for t in out if t)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text + ("\n" if text else ""))
+    # 全无效号的批只回「1. 」占位（与 fetch_abstracts 同一现象），不写进 .nbib。
+    text = "\n\n".join(t for t in out if t and re.search(r"^PMID- \d+", t, re.M))
+    await anyio.to_thread.run_sync(_write_text, path, text + ("\n" if text else ""))
     got = re.findall(r"^PMID- (\d+)", text, re.M)
     missing = [p for p in ids if p not in set(got)]
     return len(got), missing
@@ -3148,8 +3198,7 @@ def _ris_block(r):
 async def _export_ris(path, ids):
     """efetch XML 分批解析后写 RIS。返回 (记录数, 缺记录的号)。"""
     recs = await _efetch_xml_all(ids)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n\n".join(_ris_block(r) for r in recs) + ("\n" if recs else ""))
+    await anyio.to_thread.run_sync(_write_text, path, "\n\n".join(_ris_block(r) for r in recs) + ("\n" if recs else ""))
     got = {r["pmid"] for r in recs}
     return len(recs), [p for p in ids if p not in got]
 
@@ -3235,8 +3284,7 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
     coverage = ""
     try:
         if format == "pmids":
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                f.write("\n".join(ids) + ("\n" if ids else ""))
+            await anyio.to_thread.run_sync(_write_text, tmp, "\n".join(ids) + ("\n" if ids else ""))
         elif format == "csv":
             ok, problems = await _export_csv(tmp, ids)
             if problems:
@@ -3252,9 +3300,8 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
             if miss:
                 coverage = (f"⚠️ MEDLINE 正文有 {n_rec} 条 PMID- 行，{len(miss)} 个号没取到记录："
                             + ", ".join(miss[:10]) + ("…" if len(miss) > 10 else ""))
-        with open(tmp, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()
-        _publish_no_clobber(tmp, p)
+        sha = await anyio.to_thread.run_sync(_sha256_file, tmp)
+        await anyio.to_thread.run_sync(_publish_no_clobber, tmp, p)
     except OSError as e:
         raise NcbiError(f"导出文件写入失败（{p}）：{e}") from e
     finally:
@@ -3276,7 +3323,10 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
                            "count_end": total_end, "slices": n_slices, "fetched": raw_n, "unique": len(ids),
                            "sha256": sha, "started": t0, "ended": t1, "requests": nreq,
                            "querytranslation": qt, "warnings": warn}, ensure_ascii=False)
-    head = [f"导出完成：{p}", f"查询：{term}", f"NCBI 实际执行：{qt}",
+    # 〔1.4.5〕执行式为空时不印空行（空执行式的告警已在 warn 里）；超长按 _note 同一规则截 600 字。
+    qt_line = ([] if not qt else [f"NCBI 实际执行：{qt[:600]}…（截断；完整执行式见 as_json 的 querytranslation）"]
+               if len(qt) > 600 else [f"NCBI 实际执行：{qt}"])
+    head = [f"导出完成：{p}", f"查询：{term}"] + qt_line + [
             f"命中 {total} 条；切片 {n_slices} 片；取回 {raw_n} 个 PMID，去重后 {len(ids)} 个；格式 {format}",
             f"时间 {t0} → {t1}；本次约 {nreq} 次 HTTP 请求（含重试，本项目自订口径）",
             f"sha256 {sha}"]
@@ -3978,6 +4028,15 @@ async def _probe():
             _w2 = str(_w2e)
         check("包装层文本完整：%s（与 search 同一条通路，不是一次性实测）" % _wt,
               _wn in _w2, _w2[:120])
+    # 〔1.4.5〕拼错/多出的参数名必须在包装层被拒，而不是被 SDK 静默丢掉后按默认值照跑
+    # 〔实测 2026-11-13：1.4.4 下 export(..., formt="csv") 照写 pmids 文件〕。path 为空会在联网前被拒，
+    # 所以这条若没被 extra=forbid 拦下，也只会得到「path 不能为空」而不会发请求或写文件。
+    try:
+        _wx = str(await mcp.call_tool("export", {"term": "x", "path": "", "formt": "csv"}))
+    except Exception as _wxe:
+        _wx = str(_wxe)
+    check("未知参数必须被包装层拒绝并点名（formt），不能静默丢弃" + (f"：{_EXTRA_FORBID}" if _EXTRA_FORBID else ""),
+          not _EXTRA_FORBID and "formt" in _wx and "不能为空" not in _wx, _wx[:160])
     # 〔第 9 条〕把上面那条改口的依据钉住：库名大小写不敏感。纯函数，离线，不发请求。
     # 依据：实测 links(to="PMC") 走的是【成功】分支（回 pubmed_pmc=PMC10461258），
     # 而旧报错却写「不认 'PMC'」——那句在它自己的报错里反证了自己（见 _check_db 上方的已作废说明）。
@@ -4144,6 +4203,7 @@ def _check_key():
         print(", ".join(f"{p} {version(p)}" for p in ("mcp", "anyio", "pydantic")))
     except Exception as e:
         print("读版本失败", e)
+    print("多余参数:", "⚠️ " + _EXTRA_FORBID if _EXTRA_FORBID else "拒绝（拼错或多出的参数名会报错，不会被静默忽略）")
 
 
 def main(argv=None):

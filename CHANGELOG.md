@@ -3,6 +3,16 @@
 版本号是本项目自定的，以 `pyproject.toml` 中的 `project.version` 为准。各版本的 tag（`v1.3.0` 起）指向对应提交。
 后续计划见 [docs/roadmap.md](docs/roadmap.md)。
 
+## 1.4.5 — 2026-11-13
+
+处理一份外部审查（基于 1.4.4 sdist）中复现成立的问题。详情见 [docs/history/review-1.4.4-fixes.md](docs/history/review-1.4.4-fixes.md)。
+
+- **参数校验：** 拼错或多出的参数名改为报错，不再被 SDK 静默丢弃后按默认值照跑；`tools/list` 的 schema 带 `additionalProperties: false`。
+- **PMID 解析：** `1,234, 567` 这类带空格的千分位写法也会被拦下。
+- **fetch_abstracts：** 单次最多 2000 个 PMID〔本项目自订〕。
+- **小 bug：** 短 key 掩码不再打花诊断文本；无卷号时题录不再输出 `:123-30`；as_json 的 `ptag` 不再带 `｜`；export 不再打印空的执行式行，超长执行式截到 600 字；MEDLINE 导出不再写入无效号的 `1. ` 占位；写文件与 sha256 移出事件循环。
+- **CI：** 增加 Windows。
+
 ## 1.4.4 — 2026-11-13
 
 修复 8 处小 bug。正常调用的输出和工具描述都没有变化。详情见 [docs/history/p3-fixes.md](docs/history/p3-fixes.md)。

@@ -99,9 +99,10 @@ class SearchModes(unittest.TestCase):
 
     def test_invalid_detail_fails_before_network_direct_and_sdk(self):
         for value in ("", "summary", None, True):
-            with self.subTest(value=value), self.assertRaises(Exception):
+            with self.subTest(value=value), self.assertRaisesRegex(m.NcbiError, "detail 只支持"):
                 run(m.search, "tooth", detail=value)
-            with self.subTest(sdk=value), self.assertRaises(Exception):
+            # SDK 层由 pydantic 先拦（英文原文，含字段名 detail 与允许值）。
+            with self.subTest(sdk=value), self.assertRaisesRegex(m._SdkToolError, "detail"):
                 run(m.mcp.call_tool, "search", {"term": "tooth", "detail": value})
         self.esearch.assert_not_awaited()
 

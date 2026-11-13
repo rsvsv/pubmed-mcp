@@ -49,7 +49,7 @@
 
 ## 测试
 
-`tests/test_abstract_modes.py` 共 19 条。fixture 来自上述实测响应，已裁剪（删参考文献、单位、研究者名单）：
+`tests/test_abstract_modes.py` 共 19 条（1.4.2 时；1.4.3 加 RIS 后为 25 条〔实测 2026-11-13〕）。fixture 来自上述实测响应，已裁剪（删参考文献、单位、研究者名单）：
 `tests/fixtures/efetch_sample.xml`、`efetch_sample_abstract.txt`。MANIFEST 已把 `*.xml *.txt` 纳入 sdist。
 
 - 离线全套 144 条：mcp 1.29.0（本机）、1.30.0、2.3.0 均通过〔实测 2026-11-13〕。

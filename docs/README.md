@@ -30,4 +30,5 @@
 | [history/release-1.4.0.md](history/release-1.4.0.md) | 1.4.0 发布前的安装包检查 |
 | [history/tool-description-history.md](history/tool-description-history.md) | 被改写前的工具描述原文 |
 | [history/p3-fixes.md](history/p3-fixes.md) | 1.4.4 小 bug 修复记录 |
+| [history/review-1.4.4-fixes.md](history/review-1.4.4-fixes.md) | 1.4.5 外部审查修复记录 |
 | [history/evidence/](history/evidence/) | 上述记录引用的原始日志、JSON 与探针脚本 |

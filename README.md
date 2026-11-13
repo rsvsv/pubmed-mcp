@@ -3,12 +3,13 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.4`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)，文档目录见 [docs/README.md](docs/README.md)，后续计划见 [docs/roadmap.md](docs/roadmap.md)。
+当前版本为 `1.4.5`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)，文档目录见 [docs/README.md](docs/README.md)，后续计划见 [docs/roadmap.md](docs/roadmap.md)。
 
 | 版本 | 主要变化 |
 |---|---|
+| 1.4.5 | 拼错/多出的参数名改为报错（不再被静默忽略）；千分位 PMID 拦截补缝；fetch_abstracts 单次上限 2000；CI 加 Windows |
 | 1.4.4 | 修 8 处小 bug（check_recall、mesh 补充概念、export 0 条与请求计数、fetch_abstracts、links 说明） |
-| 1.4.3 | `export(format="ris")`：全作者全名、摘要、卷期页/文章号、撤稿注记，可导入 Zotero/EndNote |
+| 1.4.3 | `export(format="ris")`：全作者全名、摘要、卷期页/文章号、撤稿注记，供 Zotero/EndNote 导入（未做真机导入测试） |
 | 1.4.2 | `fetch_abstracts` 精简字段、结构化 JSON、写文件（`fields` / `as_json` / `out_path`） |
 | 1.4.1 | 检索式本地语法检查（拼错的字段标签、`AND NOT`、前导截词等）；count 0 条解释 |
 | 1.4.0 | 系统综述检索助手 `check_recall` / `mesh` / `diff` / `export`；可选检索留痕 |
@@ -107,7 +108,7 @@ claude mcp add pubmed -- pubmed-mcp
 后续更新：已加入 [自动回归配置](.github/workflows/regression.yml)，下面“本仓库没有 CI”为历史状态，现已作废。矩阵是测试目标，实际通过情况以对应提交的 Actions 结果为准；本地运行不能代替远端运行。
 
 `requires-python = ">=3.10"`。〔本项目口径：源码用了 `bool | str` 联合类型标注，3.10 以下在
-运行时求值会失败。**但作者机器只有 3.13，本仓库没有 CI，所以这条下限错了也不会有人发现**——
+运行时求值会失败。**但作者机器只有 3.13，本仓库没有 CI【已作废 2026-11-12，理由：已有 CI 覆盖 3.10，见上段】，所以这条下限错了也不会有人发现**——
 〔推算〕，别当已验证事实。〕
 
 依赖：Python 标准库 + `mcp`（FastMCP 随它一起装）+ `anyio`。HTTP 走 stdlib `urllib`，
@@ -146,6 +147,8 @@ snake_case、`serverInfo.version` 变空串、多 `structuredContent`）都在**
 `--probe` 里补了一条**走包装层**的断言当回归锁（其余断言都直调协程，结构上看不见这一层）。
 原话留着不删，是因为「我不读那个字段，所以那个改动与我无关」这种推理会再犯第二次。
 细节与逐字签名见 [docs/history/mcp-sdk-v2.md](docs/history/mcp-sdk-v2.md)。
+
+**多余参数一律报错（1.4.5）。** 两代 SDK 默认会把调用里多出来或拼错的参数名静默丢掉、按默认值照跑〔实测 2026-11-13：1.4.4 下 `export(..., formt="csv")` 照写 pmids 文件〕。现在参数模型设为 `extra="forbid"`，`tools/list` 的 schema 带 `additionalProperties: false`，拼错的参数名会被拒并点名。代价：若某个客户端往 arguments 里塞额外字段，它的调用也会被拒——这是刻意的，拒掉比静默吞掉好。`--check-key` 会打印这一项是否生效。
 
 新环境里 `pip install` 会拿范围内的最高版（眼下是 mcp 2.3.0）。想固定走 1.x：
 `pip install "mcp<2"`。两代本仓库都跑过全量 `--probe`，但**你的其它 MCP 应用如果要求
@@ -197,7 +200,7 @@ python pubmed_mcp.py --check-key
 | `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：字段标签（写法与「引号只包短语、别把 `[Tag]` 包进去」的说明见 `search` 的工具说明）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
 | `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
 | `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」；可选 `fields`/`as_json` 精简、`out_path` 落盘（1.4.2） |
-| `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
+| `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed`/`citedin`（施引文献）/`refs`（参考文献） |
 | `check_recall` | 已知文献找回测试：一批已知相关 PMID 哪些被 `term` 检回 | 分批 esearch 交集判定 found/missing（每批 50，避免 URL 超长 414）；缺失项附标题与存在状态（present/unavailable/unknown）；term 被 NCBI 忽略时显著告警；只证明已知集找回，不代表查全率 |
 | `mesh` | 查 MeSH 主题词表 | 描述符、入口词（同义词）、树号、下位词、范围注；无描述符命中不等于主题无文献 |
 | `diff` | 对比两个查询的结果集 | 新增/丢失/共同 PMID；两查询都须在 9999 窗口内；集合差不判断相关性 |
@@ -248,7 +251,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 - `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。term 为空直接报错（1.4.4）；任一批仅剩 UID 条件且 term 本身不是纯 `PMID[uid]` 时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
 - `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；补充概念记录（SCR）单独标注、给映射主题词并提示用 `[nm]` 检索（1.4.4）；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
 - `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/丢失/共同。任一超窗拒绝并提示改用 export。
-- `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
+- `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重（这项核对只能发现重复与计数漂移；分页期间数据库更新造成的跳号发现不了）。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
 - **检索留痕**：设环境变量 `PUBMED_AUDIT_DIR`，工具在完成路径追加 JSONL 到 `searches.jsonl`。search/count 区分 `input_params` 与实际 `request_params`；记录实际返回数、执行式、警告和运行源码版本，search 元数据失败另记 `error`。fetch_abstracts/links 记录请求 PMID；check_recall 记录各批执行式。留痕默认关闭；写失败报 stderr。参数校验失败、网络中断等并非所有失败路径都有日志，不能当完整请求流水账。
 - **引文补查**：`links(to="refs")` / `links(to="citedin")` 给参考文献/施引文献；有展示上限并显示截断，只限 PubMed 已录入关系。
 
@@ -310,8 +313,8 @@ python -I tests/run_offline.py
    SDK 就走同步分支。现在有一条离线断言专门问【装饰之后】那四个名字，两代各测一次都仍是协程函数
    〔实测 2026-11-11〕。〕
 10. **key 一个字符都不外泄。** 错误文本里只报 key 长度不报片段；`_mask` 无条件整串替换成定长掩码
-    （旧写法既留前 4 位、又只在长度 > 8 时才掩）。〔已知边界：key 以 URL 百分号编码形态出现在
-    报错文本里时仍替换不到——过度设计，记着当边界，别当已修好。〕
+    （旧写法既留前 4 位、又只在长度 > 8 时才掩）。【已作废 2026-11-12，理由：百分号编码形态已一并替换，见 `test_masks_url_encoded_key`】〔已知边界：key 以 URL 百分号编码形态出现在
+    报错文本里时仍替换不到——过度设计，记着当边界，别当已修好。〕1.4.5 起 key 短于 8 字符〔本项目自订阈值〕时只掩 `api_key=<值>` 形态，避免把整句诊断打花。
 
 11. **term 里写错的语法要说出来。**〔1.4.1，实测 2026-11-13，详见 [docs/query-lint.md](docs/query-lint.md)〕
     NCBI 对 term 内认不出的半角字段标签（`[tiabb]`、`[ab]`、`[keywords]`、`[Title / Abstract]`）**不报错**，

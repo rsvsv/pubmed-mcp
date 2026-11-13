@@ -1,0 +1,110 @@
+{
+ "out_dir": "D:\\Documents\\CC\\3\\pubmcp-audit\\sr-live\\run-20261111-223855",
+ "mesh_tooth_resorption": {
+  "ui": "D014091",
+  "entry_terms": [
+   "Tooth Resorption",
+   "Resorptions, Tooth",
+   "Resorption, Tooth",
+   "Tooth Resorptions"
+  ],
+  "treenums": [
+   "C07.793.901",
+   "G10.549.855"
+  ],
+  "children": [
+   {
+    "uid": "68012391",
+    "name": "Root Resorption"
+   }
+  ]
+ },
+ "mesh_mi_entry_terms": [
+  "Inferior Wall Myocardial Infarction",
+  "Inferior Myocardial Infarction",
+  "Infarction, Inferior Myocardial",
+  "Infarctions, Inferior Myocardial",
+  "Inferior Myocardial Infarctions",
+  "Myocardial Infarction, Inferior",
+  "Myocardial Infarctions, Inferior",
+  "Diaphragmatic Myocardial Infarction",
+  "Diaphragmatic Myocardial Infarctions",
+  "Infarction, Diaphragmatic Myocardial",
+  "Infarctions, Diaphragmatic Myocardial",
+  "Myocardial Infarction, Diaphragmatic",
+  "Myocardial Infarctions, Diaphragmatic",
+  "Myocardial Infarction, Inferior Wall",
+  "Acute Inferior Myocardial Infarction"
+ ],
+ "check_recall": {
+  "gold": [
+   "42903264",
+   "42885097",
+   "42865720",
+   "43009340"
+  ],
+  "found": [
+   "42903264",
+   "42885097",
+   "42865720"
+  ],
+  "missing_states": {
+   "43009340": "present"
+  }
+ },
+ "check_recall_narrow": {
+  "found": 0,
+  "missing": 3
+ },
+ "diff": {
+  "count_a": 370,
+  "count_b": 5246,
+  "added_count": 5150,
+  "removed_count": 274,
+  "common_count": 96
+ },
+ "export_small": {
+  "term": "miniscrew[tiab] AND stability[tiab]",
+  "count": 289,
+  "formats": {
+   "pmids": {
+    "unique": 289,
+    "sha256": "e5a6f1c3650e6e4c",
+    "requests": 3
+   },
+   "csv": {
+    "unique": 289,
+    "sha256": "0bee2d4986303248",
+    "requests": 6
+   },
+   "medline": {
+    "unique": 289,
+    "sha256": "b44a886e5a5841a3",
+    "requests": 9
+   }
+  }
+ },
+ "export_big": {
+  "term": "dental implant",
+  "count_start": 73612,
+  "count_end": 73612,
+  "slices": 12,
+  "unique": 73612,
+  "requests": 122,
+  "warnings": [
+   "⚠️ 切片计数和 78474 ≠ 起始总数 73612：可能有记录带多个发表日期，或检索期间数据库更新；已按 PMID 去重。",
+   "⚠️ 切片间有重复：取回 78474 个、去重后 73612 个。"
+  ]
+ },
+ "audit": {
+  "lines": 11,
+  "events": [
+   "check_recall",
+   "diff",
+   "export",
+   "mesh",
+   "search"
+  ]
+ }
+}
+LIVE ACCEPTANCE: PASS

@@ -1,0 +1,505 @@
+{
+ "source": "实测 2026-11-13 NCBI eutils db=mesh 原始响应（mesh('Biodentine') 依次发出的请求）",
+ "calls": [
+  {
+   "path": "esearch.fcgi",
+   "params": {
+    "db": "mesh",
+    "term": "Biodentine",
+    "retmax": 5,
+    "retmode": "json"
+   },
+   "body": {
+    "header": {
+     "type": "esearch",
+     "version": "0.3"
+    },
+    "esearchresult": {
+     "count": "2",
+     "retmax": "2",
+     "retstart": "0",
+     "idlist": [
+      "67506393",
+      "67086631"
+     ],
+     "translationset": [
+      {
+       "from": "Biodentine",
+       "to": "\"tricalcium silicate\"[All Fields] OR Biodentine[Text Word]"
+      }
+     ],
+     "translationstack": [
+      {
+       "term": "\"tricalcium silicate\"[All Fields]",
+       "field": "All Fields",
+       "count": "2",
+       "explode": "N"
+      },
+      {
+       "term": "Biodentine[Text Word]",
+       "field": "Text Word",
+       "count": "1",
+       "explode": "N"
+      },
+      "OR",
+      "GROUP"
+     ],
+     "querytranslation": "\"tricalcium silicate\"[All Fields] OR Biodentine[Text Word]"
+    }
+   }
+  },
+  {
+   "path": "esummary.fcgi",
+   "params": {
+    "db": "mesh",
+    "id": "67506393,67086631",
+    "retmode": "json"
+   },
+   "body": {
+    "header": {
+     "type": "esummary",
+     "version": "0.3"
+    },
+    "result": {
+     "uids": [
+      "67506393",
+      "67086631"
+     ],
+     "67506393": {
+      "uid": "67506393",
+      "ds_yearintroduced": "",
+      "ds_scopenote": "might be used as injectable bioactive cement",
+      "ds_registrynumber": "404G39282C",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "tricalcium silicate",
+       "tricalcium silicon pentaoxide",
+       "Ca3SiO5",
+       "biodentine"
+      ],
+      "ds_subheading": [],
+      "ds_papx": [],
+      "ds_previousindexing": [],
+      "ds_seerelated": [],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 1000048,
+        "treenum": "@152523",
+        "children": []
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [
+       "68017610",
+       "68017640"
+      ],
+      "ds_recordtype": "supplemental-record",
+      "ds_meshui": "C506393"
+     },
+     "67086631": {
+      "uid": "67086631",
+      "ds_yearintroduced": "",
+      "ds_scopenote": "contains tricalcium silicate, tricalcium aluminate, tricalcium oxide, silicate oxide, and a few other mineral oxides; powder consists of fine hydrophilic particles which set in the presence of moisture",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "mineral trioxide aggregate",
+       "MT aggregate",
+       "MTA cement",
+       "aggregate ProRoot",
+       "ProRoot (aggregate)",
+       "MTA-Fillapex",
+       "OrthoMTA",
+       "RetroMTA"
+      ],
+      "ds_subheading": [],
+      "ds_papx": [],
+      "ds_previousindexing": [],
+      "ds_seerelated": [],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 1000048,
+        "treenum": "@71369",
+        "children": []
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [
+       "68004338",
+       "68010087",
+       "68017607",
+       "68017610",
+       "68017640"
+      ],
+      "ds_recordtype": "supplemental-record",
+      "ds_meshui": "C086631"
+     }
+    }
+   }
+  },
+  {
+   "path": "esummary.fcgi",
+   "params": {
+    "db": "mesh",
+    "id": "68017610,68017640,68004338,68010087,68017607",
+    "retmode": "json"
+   },
+   "body": {
+    "header": {
+     "type": "esummary",
+     "version": "0.3"
+    },
+    "result": {
+     "uids": [
+      "68017610",
+      "68017640",
+      "68004338",
+      "68010087",
+      "68017607"
+     ],
+     "68017610": {
+      "uid": "68017610",
+      "ds_yearintroduced": "1994",
+      "ds_scopenote": "Inorganic compounds that contain calcium as an integral part of the molecule.",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "Calcium Compounds",
+       "Compounds, Calcium"
+      ],
+      "ds_subheading": [
+       "administration and dosage",
+       "adverse effects",
+       "agonists",
+       "analysis",
+       "antagonists and inhibitors",
+       "blood",
+       "cerebrospinal fluid",
+       "chemical synthesis",
+       "chemistry",
+       "classification",
+       "economics",
+       "history",
+       "immunology",
+       "isolation and purification",
+       "metabolism",
+       "pharmacokinetics",
+       "pharmacology",
+       "poisoning",
+       "radiation effects",
+       "standards",
+       "supply and distribution",
+       "therapeutic use",
+       "toxicity",
+       "urine"
+      ],
+      "ds_papx": [],
+      "ds_previousindexing": [
+       "Calcium (1966-1993)"
+      ],
+      "ds_seerelated": [],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 68007287,
+        "treenum": "D01.146",
+        "children": [
+         "68002119",
+         "68002122",
+         "68019355",
+         "68002124",
+         "68002126",
+         "68002130",
+         "68002133",
+         "68002136"
+        ]
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [],
+      "ds_recordtype": "descriptor",
+      "ds_meshui": "D017610"
+     },
+     "68017640": {
+      "uid": "68017640",
+      "ds_yearintroduced": "1994",
+      "ds_scopenote": "The generic term for salts derived from silica or the silicic acids. They contain silicon, oxygen, and one or more metals, and may contain hydrogen. (From McGraw-Hill Dictionary of Scientific and Technical Terms, 4th Ed)",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "Silicates",
+       "Silicate"
+      ],
+      "ds_subheading": [
+       "administration and dosage",
+       "adverse effects",
+       "agonists",
+       "analysis",
+       "antagonists and inhibitors",
+       "blood",
+       "cerebrospinal fluid",
+       "chemical synthesis",
+       "chemistry",
+       "classification",
+       "economics",
+       "history",
+       "immunology",
+       "isolation and purification",
+       "metabolism",
+       "pharmacokinetics",
+       "pharmacology",
+       "poisoning",
+       "radiation effects",
+       "standards",
+       "supply and distribution",
+       "therapeutic use",
+       "toxicity",
+       "urine"
+      ],
+      "ds_papx": [],
+      "ds_previousindexing": [
+       "Silicic Acid (1981-1993)"
+      ],
+      "ds_seerelated": [],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 68008903,
+        "treenum": "D01.578.725",
+        "children": [
+         "68000538",
+         "68001194",
+         "68017633"
+        ]
+       },
+       {
+        "parent": 68012824,
+        "treenum": "D01.837.725.700.760",
+        "children": [
+         "68000538",
+         "68001194",
+         "68017633"
+        ]
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [],
+      "ds_recordtype": "descriptor",
+      "ds_meshui": "D017640"
+     },
+     "68004338": {
+      "uid": "68004338",
+      "ds_yearintroduced": "1973(1971)",
+      "ds_scopenote": "Single preparations containing two or more active agents, for the purpose of their concurrent administration as a fixed dose mixture.",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "Drug Combinations",
+       "Combinations, Drug",
+       "Drug Combination",
+       "Combination, Drug"
+      ],
+      "ds_subheading": [],
+      "ds_papx": [],
+      "ds_previousindexing": [
+       "Dosage Forms (1966-1970)"
+      ],
+      "ds_seerelated": [
+       "68004357",
+       "68004359",
+       "68019338"
+      ],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 68004364,
+        "treenum": "D26.310",
+        "children": [
+         "2009880",
+         "2009852",
+         "68000628",
+         "2009842",
+         "2009887",
+         "68019980",
+         "2028103",
+         "2009824",
+         "68061265",
+         "2009851",
+         "2010020",
+         "2010015",
+         "2028124",
+         "2103308",
+         "68003277",
+         "68004111",
+         "2009813",
+         "2010026",
+         "2009861",
+         "2010016",
+         "2010018",
+         "2009817",
+         "2028037",
+         "2009871",
+         "68057985",
+         "2028121",
+         "2009902",
+         "2028175",
+         "68015662"
+        ]
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [],
+      "ds_recordtype": "descriptor",
+      "ds_meshui": "D004338"
+     },
+     "68010087": {
+      "uid": "68010087",
+      "ds_yearintroduced": "1966",
+      "ds_scopenote": "Binary compounds of oxygen containing the anion O(2-). The anion combines with metals to form alkaline oxides and non-metals to form acidic oxides.",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "Oxides",
+       "Oxide"
+      ],
+      "ds_subheading": [
+       "administration and dosage",
+       "adverse effects",
+       "agonists",
+       "analysis",
+       "antagonists and inhibitors",
+       "blood",
+       "cerebrospinal fluid",
+       "chemical synthesis",
+       "chemistry",
+       "classification",
+       "economics",
+       "history",
+       "immunology",
+       "isolation and purification",
+       "metabolism",
+       "pharmacokinetics",
+       "pharmacology",
+       "poisoning",
+       "radiation effects",
+       "standards",
+       "supply and distribution",
+       "therapeutic use",
+       "toxicity",
+       "urine"
+      ],
+      "ds_papx": [],
+      "ds_previousindexing": [],
+      "ds_seerelated": [
+       "68003497",
+       "68003498",
+       "68003499"
+      ],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 68000838,
+        "treenum": "D01.248.497.158.685",
+        "children": [
+         "68010545"
+        ]
+       },
+       {
+        "parent": 68017601,
+        "treenum": "D01.650.550",
+        "children": [
+         "68000537",
+         "2027948",
+         "68002245",
+         "68002248",
+         "68006997",
+         "68008277",
+         "68009589",
+         "68009993",
+         "68010545",
+         "68012822",
+         "68013461",
+         "68013911",
+         "68014867",
+         "68015034"
+        ]
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [],
+      "ds_recordtype": "descriptor",
+      "ds_meshui": "D010087"
+     },
+     "68017607": {
+      "uid": "68017607",
+      "ds_yearintroduced": "1994",
+      "ds_scopenote": "Inorganic compounds that contain aluminum as an integral part of the molecule.",
+      "ds_registrynumber": "",
+      "ds_headingmappedto": "",
+      "ds_meshterms": [
+       "Aluminum Compounds",
+       "Compounds, Aluminum"
+      ],
+      "ds_subheading": [
+       "administration and dosage",
+       "adverse effects",
+       "agonists",
+       "analysis",
+       "antagonists and inhibitors",
+       "blood",
+       "cerebrospinal fluid",
+       "chemical synthesis",
+       "chemistry",
+       "classification",
+       "economics",
+       "history",
+       "immunology",
+       "isolation and purification",
+       "metabolism",
+       "pharmacokinetics",
+       "pharmacology",
+       "poisoning",
+       "radiation effects",
+       "standards",
+       "supply and distribution",
+       "therapeutic use",
+       "toxicity",
+       "urine"
+      ],
+      "ds_papx": [],
+      "ds_previousindexing": [
+       "Aluminum (1966-1993)"
+      ],
+      "ds_seerelated": [],
+      "ds_palist": [],
+      "ds_idxlinks": [
+       {
+        "parent": 68007287,
+        "treenum": "D01.056",
+        "children": [
+         "68000534",
+         "2028027",
+         "68000536",
+         "68000537"
+        ]
+       }
+      ],
+      "ds_entrydate": "1/01/01 00:00",
+      "ds_revisiondate": "1/01/01 00:00",
+      "ds_headingmappedtolist": [],
+      "ds_recordtype": "descriptor",
+      "ds_meshui": "D017607"
+     }
+    }
+   }
+  }
+ ]
+}

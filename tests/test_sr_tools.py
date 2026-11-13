@@ -347,7 +347,8 @@ class Export(TempDir):
         with self.assertRaisesRegex(m.NcbiError, "metadata outage"):
             run(m.export, "tooth", p, format="csv")
         self.assertFalse(os.path.exists(p))
-        self.assertFalse(os.path.exists(p + ".part"))
+        # mkstemp 实际命名是 basename.<随机>.part；旧断言查 p + ".part" 恒为真，查不出残留〔1.4.5 外部审查指出〕。
+        self.assertEqual(list(Path(p).parent.glob(Path(p).name + ".*.part")), [])
 
     def test_slicing_over_window(self):
         # 本项目自订测试数据：6000 条落在 2019、4001 条落在 2020，合计 10001 > 9999 窗口。
@@ -398,7 +399,7 @@ class Export(TempDir):
         tool = next(t for t in tools if t.name == "export")
         schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema")
         self.assertEqual(schema["properties"]["format"]["enum"], ["pmids", "csv", "medline", "ris"])
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(m._SdkToolError, "format"):
             run(m.mcp.call_tool, "export", {"term": "tooth", "path": "x.txt", "format": "invalid"})
         self.esearch.assert_not_awaited()
 
