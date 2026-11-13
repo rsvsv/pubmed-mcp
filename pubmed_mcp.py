@@ -97,7 +97,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
-__version__ = "1.4.2"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
+__version__ = "1.4.3"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -1793,6 +1793,8 @@ def _xml_record(node):
             "pt": [_xml_text(p) for p in bd.findall("PublicationType")],
             "lang": [_xml_text(x) for x in bd.findall("Language")],
             "mesh": [], "comments": [], "coi": "", "other_abstracts": [],
+            "_issn": [], "_artdate": "", "_keywords": [_xml_text(k) for k in bd.findall("KeywordList/Keyword") if _xml_text(k)],
+            "_publisher": " ".join(x for x in (_xml_text(book.find("Publisher/PublisherName")) if book is not None else "",) if x),
         }
     mc = node.find("MedlineCitation")
     art = mc.find("Article")
@@ -1834,6 +1836,12 @@ def _xml_record(node):
         "lang": [_xml_text(x) for x in art.findall("Language")],
         "mesh": mesh, "comments": comments, "coi": _xml_text(mc.find("CoiStatement")),
         "other_abstracts": other,
+        # 以下只给 RIS 用（不在 ABSTRACT_FIELDS 里，fetch_abstracts 输出不受影响）
+        "_issn": [(_xml_text(x), x.get("IssnType") or "") for x in ([j.find("ISSN")] if j is not None else []) if x is not None],
+        "_artdate": "/".join(x for x in (_xml_text(art.find("ArticleDate/Year")), _xml_text(art.find("ArticleDate/Month")),
+                                         _xml_text(art.find("ArticleDate/Day"))) if x),
+        "_keywords": [_xml_text(k) for k in mc.findall("KeywordList/Keyword") if _xml_text(k)],
+        "_publisher": "",
     }
 
 
@@ -3015,6 +3023,88 @@ async def _export_medline(path, ids):
     return len(got), missing
 
 
+_MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+
+
+def _ris_date(pubdate):
+    """PubDate 文本（'2024 Nov 13' / '2024 Nov-Dec' / '2024'）→ RIS DA 'YYYY/MM/DD/'（缺位留空）。"""
+    m = re.match(r"(\d{4})(?:\s+([A-Za-z]{3}))?(?:\s+(\d{1,2}))?", pubdate or "")
+    if not m:
+        return "", ""
+    mo = _MONTHS.get((m[2] or "").title(), 0)
+    return m[1], f"{m[1]}/{mo:02d}/{int(m[3]):02d}/" if (mo and m[3]) else (f"{m[1]}/{mo:02d}//" if mo else f"{m[1]}///")
+
+
+def _ris_block(r):
+    """一条 XML 记录 → RIS 文本块（含 ER）。只写非空字段；作者为「姓, 名」全名，团体作者原样。"""
+    L = []
+
+    def tag(t, v):
+        v = " ".join(str(v or "").split())
+        if v:
+            L.append(f"{t}  - {v}")
+
+    book = r.get("source") == "book"
+    tag("TY", "CHAP" if book else "JOUR")
+    tag("TI", r["title"])
+    for a in r["authors"]:
+        if "collective" in a:
+            tag("AU", a["collective"])
+        else:
+            tag("AU", a["last"] + (", " + a["fore"] if a["fore"] else (", " + a["initials"] if a["initials"] else "")))
+    j = r["journal"]
+    if book:
+        tag("T2", j.get("book"))
+        tag("PB", r.get("_publisher"))
+    else:
+        tag("T2", j.get("title"))
+        tag("JO", j.get("iso"))
+        tag("VL", j.get("volume"))
+        tag("IS", j.get("issue"))
+        pg = j.get("pages") or ""
+        if pg:
+            sp, _, ep = pg.partition("-")
+            if ep and ep.isdigit() and sp.isdigit() and len(ep) < len(sp):
+                ep = sp[:len(sp) - len(ep)] + ep      # MEDLINE 缩写页码 637-41 → 637-641
+            tag("SP", sp)
+            tag("EP", ep)
+        else:
+            tag("SP", j.get("article_number"))        # 无页码文章用文章号（ELocationID pii）
+        for num, kind in r.get("_issn", []):
+            tag("SN", num)
+    py, da = _ris_date(r["pubdate"])
+    tag("PY", py or (r["pubdate"] or "")[:4])
+    tag("DA", da)
+    for lang in r["lang"]:
+        tag("LA", lang)
+    tag("DO", r["ids"].get("doi"))
+    tag("AN", r["pmid"])
+    tag("C2", r["ids"].get("pmc"))
+    tag("UR", f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/")
+    if r["abstract"]:
+        tag("AB", " ".join((s["label"] + ": " if s["label"] else "") + s["text"] for s in r["abstract"]))
+    for k in r["mesh"]:
+        tag("KW", k)
+    for k in r.get("_keywords", []):
+        tag("KW", k)
+    for t in r["pt"]:
+        tag("M3", t)
+    for c in r["comments"]:
+        if c["type"] in ("RetractionIn", "RetractionOf", "ExpressionOfConcernIn", "ErratumIn", "UpdateIn"):
+            tag("N1", f"{c['type']}: {c['ref']}" + (f" (PMID {c['pmid']})" if c["pmid"] else ""))
+    L.append("ER  - ")
+    return "\n".join(L)
+
+
+async def _export_ris(path, ids):
+    """efetch XML 分批解析后写 RIS。返回 (记录数, 缺记录的号)。"""
+    recs = await _efetch_xml_all(ids)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n\n".join(_ris_block(r) for r in recs) + ("\n" if recs else ""))
+    got = {r["pmid"] for r in recs}
+    return len(recs), [p for p in ids if p not in got]
+
+
 def _publish_no_clobber(tmp, p):
     """原子发布且不覆盖。无可用原语时失败，不退回 exists + replace。"""
     try:
@@ -3029,16 +3119,16 @@ def _publish_no_clobber(tmp, p):
 
 
 @mcp.tool()
-async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"] = "pmids",
+async def export(term: str, path: str, format: Literal["pmids", "csv", "medline", "ris"] = "pmids",
                  as_json: bool | str = False) -> str:
     """取全某查询的 PMID 并写文件；超 9999 窗口自动按发表日期二分切片。
-    format: pmids（纯 PMID 列表）/ csv（核心题录字段，不含摘要）/ medline（.nbib，保留来源中已有的摘要与主题词）。
+    format: pmids / csv（核心题录，不含摘要）/ medline（.nbib）/ ris（全作者、摘要、文章号，供文献管理软件导入）。
     只回摘要（总数/片数/去重/路径/sha256），不回记录本身。path 显式给出且不得已存在（不覆盖）。
     切片计数与总数核对，不一致如实报告；检索期间数据库可能更新，结果以导出时点为准。
     自订安全上限 10 万条。筛选工具导入兼容性以对方文档为准；不保证与 PubMed 网页导出逐字一致。
     """
-    if format not in ("pmids", "csv", "medline"):
-        raise NcbiError("format 只支持 pmids / csv / medline")
+    if format not in ("pmids", "csv", "medline", "ris"):
+        raise NcbiError("format 只支持 pmids / csv / medline / ris")
     json_mode = _as_bool(as_json, "as_json")
     raw_p = os.path.expanduser((path or "").strip())
     if not raw_p:
@@ -3102,6 +3192,11 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
             if problems:
                 coverage = (f"⚠️ CSV 有 {len(problems)} 个号元数据缺失/不可用，已在 note 列标明（不静默丢弃）："
                             + ", ".join(problems[:10]) + ("…" if len(problems) > 10 else ""))
+        elif format == "ris":
+            n_rec, miss = await _export_ris(tmp, ids)
+            if miss:
+                coverage = (f"⚠️ RIS 写入 {n_rec} 条，{len(miss)} 个号没取到记录："
+                            + ", ".join(miss[:10]) + ("…" if len(miss) > 10 else ""))
         else:
             n_rec, miss = await _export_medline(tmp, ids)
             if miss:

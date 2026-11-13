@@ -397,7 +397,7 @@ class Export(TempDir):
         tools = run(m.mcp.list_tools)
         tool = next(t for t in tools if t.name == "export")
         schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema")
-        self.assertEqual(schema["properties"]["format"]["enum"], ["pmids", "csv", "medline"])
+        self.assertEqual(schema["properties"]["format"]["enum"], ["pmids", "csv", "medline", "ris"])
         with self.assertRaises(Exception):
             run(m.mcp.call_tool, "export", {"term": "tooth", "path": "x.txt", "format": "invalid"})
         self.esearch.assert_not_awaited()

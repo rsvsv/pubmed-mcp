@@ -32,7 +32,7 @@ async def smoke(cli, workdir):
                 export = next(t for t in tools if t.name == "export")
                 eschema = getattr(export, "inputSchema", None) or getattr(export, "input_schema")
                 assert eschema["properties"]["format"]["default"] == "pmids"
-                assert eschema["properties"]["format"]["enum"] == ["pmids", "csv", "medline"]
+                assert eschema["properties"]["format"]["enum"] == ["pmids", "csv", "medline", "ris"]
                 # Invalid mode/format must fail before any NCBI request, through the wire protocol.
                 for tool, args, word in (("search", {"term": "tooth", "detail": "invalid"}, "detail"),
                                          ("export", {"term": "tooth", "path": "x.txt", "format": "invalid"}, "format")):

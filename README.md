@@ -3,7 +3,7 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.2`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.3`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.3 给 `export` 加 `format="ris"`（全作者全名、摘要、卷期页/文章号、撤稿注记，见 [docs/ris-export.md](docs/ris-export.md)）；1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
 本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
 
@@ -193,7 +193,7 @@ python pubmed_mcp.py --check-key
 | `check_recall` | 已知文献找回测试：一批已知相关 PMID 哪些被 `term` 检回 | 分批 esearch 交集判定 found/missing（每批 50，避免 URL 超长 414）；缺失项附标题与存在状态（present/unavailable/unknown）；term 被 NCBI 忽略时显著告警；只证明已知集找回，不代表查全率 |
 | `mesh` | 查 MeSH 主题词表 | 描述符、入口词（同义词）、树号、下位词、范围注；无描述符命中不等于主题无文献 |
 | `diff` | 对比两个查询的结果集 | 新增/丢失/共同 PMID；两查询都须在 9999 窗口内；集合差不判断相关性 |
-| `export` | 取全某查询的 PMID 并写文件 | 超 9999 窗口自动按发表日期切片；`pmids`/`csv`/`medline` 三种格式；只回摘要+sha256；不覆盖已有文件 |
+| `export` | 取全某查询的 PMID 并写文件 | 超 9999 窗口自动按发表日期切片；`pmids`/`csv`/`medline`/`ris`（1.4.3）四种格式；只回摘要+sha256；不覆盖已有文件 |
 
 旧说明“判断有没有免费全文可下”已作废，原因：数据库关联不能证明开放许可或此刻下载可用〔修订记录：2026-11-11；依据：links 当前工具说明〕。
 
@@ -341,6 +341,7 @@ python pubmed_mcp.py --concurrent "tooth resorption"
   1.4.0 的 `export` 通过按发表日期切片取全超过此窗口的结果（history 服务器同样受此限制〔实测 2026-11-11〕）；`search`/`diff` 仍受窗口约束。
 - **`retmax` 上限 1000 是本工具自订的**，不是 NCBI 的限制；要一次多拿就改那个常量，
   或按年份/字段把查询切小分批取。夹过都会在输出里说明是**本工具**夹的。
+- **不生成 Vancouver/APA 等引文格式。** 引文格式交给文献管理软件：`export(format="ris")` 或 `medline` 导入 Zotero/EndNote 后由它们排版〔本项目自订分工，见 docs/systematic-review-plan.md §7〕。RIS 已用 rispy 0.10.0 解析校验，**未做 Zotero/EndNote 真机导入**。`csv` 格式保持 1.4.0 的 10 列不变（作者仍只列前 3 位缩写），全作者请用 ris。
 - **PubMed 没有「按期刊影响力排序」这个概念**，`sort` 里不存在这种值。本仓库也不含这类脚本
   ——要那种排序得自己接外部期刊指标数据源。
 - 默认 `datetype="pdat"`（发表日期）。不带 `datetype` 时 NCBI 按入库日期算，两者结果不同〔实测〕。

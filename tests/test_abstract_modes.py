@@ -193,5 +193,78 @@ class Tool(unittest.TestCase):
                          ("", False, ""))
 
 
+def ris_records(text):
+    """最小 RIS 解析：按 ER 分记录，返回 [{tag: [values]}]。"""
+    out, cur = [], {}
+    for line in text.splitlines():
+        m_ = re.match(r"^([A-Z][A-Z0-9])  - ?(.*)$", line)
+        if not m_:
+            continue
+        tag, val = m_[1], m_[2]
+        if tag == "ER":
+            out.append(cur)
+            cur = {}
+        else:
+            cur.setdefault(tag, []).append(val)
+    return out
+
+
+class Ris(unittest.TestCase):
+    def setUp(self):
+        with patch.object(m, "_get_async", xml_fake()):
+            self.recs = {r["pmid"]: r for r in run(m._efetch_xml_all, ALL_IDS)}
+
+    def block(self, pmid):
+        return ris_records(m._ris_block(self.recs[pmid]))[0]
+
+    def test_every_block_starts_ty_and_ends_er(self):
+        for pmid in ALL_IDS:
+            with self.subTest(pmid=pmid):
+                lines = m._ris_block(self.recs[pmid]).splitlines()
+                self.assertTrue(lines[0].startswith("TY  - "))
+                self.assertEqual(lines[-1], "ER  - ")
+                self.assertTrue(all(re.match(r"^[A-Z][A-Z0-9]  - ", x) for x in lines))
+
+    def test_full_author_names_and_collective(self):
+        b = self.block("33301246")
+        self.assertEqual(b["AU"][0], "Polack, Fernando P")
+        self.assertEqual(b["AU"][-1], "C4591001 Clinical Trial Group")
+
+    def test_pages_and_article_number(self):
+        b = self.block("42458410")      # 无页码 BMC：文章号进 SP
+        self.assertEqual((b["SP"], b.get("EP")), (["1960"], None))
+        self.assertEqual(b["VL"], ["26"])
+        self.assertEqual(b["DA"], ["2026/07/15/"])
+
+    def test_retraction_note_and_book(self):
+        n = self.block("40934212")["N1"][0]
+        self.assertTrue(n.startswith("RetractionIn:"))
+        self.assertIn("41126339", n)
+        book = self.block("28722854")
+        self.assertEqual((book["TY"], book["T2"]), (["CHAP"], ["StatPearls"]))
+        self.assertNotIn("AB", self.block("42759866"))   # 无摘要不写空 AB
+
+    def test_abbreviated_end_page_expanded(self):
+        rec = dict(self.recs["41421800"])
+        rec["journal"] = dict(rec["journal"], pages="637-41")
+        b = ris_records(m._ris_block(rec))[0]
+        self.assertEqual((b["SP"], b["EP"]), (["637"], ["641"]))
+
+    def test_export_ris_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "out.ris")
+            ids = ALL_IDS + ["9999999999"]
+
+            async def es(term, retmax=20, **kw):
+                return {"_term": term, "count": str(len(ids)), "idlist": ids[:retmax] if retmax else [],
+                        "retstart": "0", "querytranslation": "x"}
+            with patch.object(m, "_esearch", es), patch.object(m, "_get_async", xml_fake()):
+                text = run(m.export, "x", p, format="ris")
+            recs = ris_records(Path(p).read_text(encoding="utf-8"))
+            self.assertEqual([r["AN"][0] for r in recs], ALL_IDS)
+            self.assertIn("9999999999", text)
+            self.assertIn("RIS 写入 8 条", text)
+
+
 if __name__ == "__main__":
     unittest.main()

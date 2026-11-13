@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pubmed-mcp"
-version = "1.4.2"   # 本项目自订发布版本：fetch_abstracts 精简/结构化/落盘（1.4.1：检索式本地语法检查）
+version = "1.4.3"   # 本项目自订发布版本：export 加 RIS（1.4.2 摘要精简/落盘；1.4.1 检索式本地语法检查）
 description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
 readme = "README.md"
 requires-python = ">=3.10"
