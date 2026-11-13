@@ -3,7 +3,7 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.3`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.3 给 `export` 加 `format="ris"`（全作者全名、摘要、卷期页/文章号、撤稿注记，见 [docs/ris-export.md](docs/ris-export.md)）；1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.4`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.4 修 8 处小 bug（check_recall 空 term/[uid] 误报、mesh 补充概念与 retmax 建议、export 0 条说明与并发请求计数、fetch_abstracts 无效号碎片、links 的 pubmed_pmc_refs 说明，见 [docs/p3-fixes.md](docs/p3-fixes.md)；后续计划见 [docs/roadmap.md](docs/roadmap.md)）。1.4.3 给 `export` 加 `format="ris"`（全作者全名、摘要、卷期页/文章号、撤稿注记，见 [docs/ris-export.md](docs/ris-export.md)）；1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
 本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
 
@@ -237,8 +237,8 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 分工〔本项目自订〕：工具只做机械可复现的事（检索、集合运算、导出、留痕）；拆概念、选同义词、判断相关性、定纳入排除由人与 LLM 按预设标准做。**工具不声称查全率/查准率**，已知集找回只证明这批已知文献被检回。
 
-- `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。任一批仅剩 UID 条件时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
-- `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
+- `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。term 为空直接报错（1.4.4）；任一批仅剩 UID 条件且 term 本身不是纯 `PMID[uid]` 时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
+- `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；补充概念记录（SCR）单独标注、给映射主题词并提示用 `[nm]` 检索（1.4.4）；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
 - `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/丢失/共同。任一超窗拒绝并提示改用 export。
 - `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
 - **检索留痕**：设环境变量 `PUBMED_AUDIT_DIR`，工具在完成路径追加 JSONL 到 `searches.jsonl`。search/count 区分 `input_params` 与实际 `request_params`；记录实际返回数、执行式、警告和运行源码版本，search 元数据失败另记 `error`。fetch_abstracts/links 记录请求 PMID；check_recall 记录各批执行式。留痕默认关闭；写失败报 stderr。参数校验失败、网络中断等并非所有失败路径都有日志，不能当完整请求流水账。
@@ -246,7 +246,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 实测注意〔2026-11-11 live，verify_sr_live.py〕：大题目切片计数和可能**大于**总数——同一记录带多个发表日期时会落进多个年份切片，去重后与总数一致；警告会如实说明，这不是错误。例：`dental implant` 命中 73612，切片计数和 78474，去重后 73612〔实测；重复数 4862 为推算 DV-SR-DEDUP〕。
 
-验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。
+验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。（以上为 1.4.0 验收时的数字。截至 1.4.4：离线 160 项；描述总字符 2563，按 `inspect.cleandoc` 口径，与 Python 版本无关〔实测 2026-11-13 list_tools〕。）
 
 ### 自动回归
 

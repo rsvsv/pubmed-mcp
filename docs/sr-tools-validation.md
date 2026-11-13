@@ -34,7 +34,7 @@
 
 ## 描述体积
 
-- list_tools 描述总字符：1.3.0 为 1325〔实测，delivery_metrics.json〕；1.4.0 为 2328（search 839/count 206/fetch_abstracts 149/links 278/check_recall 233/mesh 183/diff 183/export 257）〔实测 2026-11-11，check_recall 因分批与告警说明由 209 增至 233〕。
+- list_tools 描述总字符：1.3.0 为 1325〔实测，delivery_metrics.json〕；1.4.0 为 2328（search 839/count 206/fetch_abstracts 149/links 278/check_recall 233/mesh 183/diff 183/export 257）〔实测 2026-11-11，check_recall 因分批与告警说明由 209 增至 233〕。（1.4.0 时的数字；1.4.4 为 2563，cleandoc 口径〔实测 2026-11-13〕。）
 - 回归上限由 2000 上调到 2600〔本项目自订〕。字符≠token，未测真实 token 开销。
 
 ## 对抗性探针找坑与修复（2026-11-11）

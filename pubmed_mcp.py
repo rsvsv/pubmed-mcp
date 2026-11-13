@@ -58,6 +58,7 @@ key 读取顺序：环境变量 NCBI_API_KEY → 文件 ~/.ncbi_api_key → 都�
 
 import functools
 import calendar
+import contextvars
 import csv
 import datetime
 import hashlib
@@ -97,7 +98,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
-__version__ = "1.4.3"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
+__version__ = "1.4.4"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -359,6 +360,10 @@ def _retry_after(headers):
 
 
 _NREQ = 0          # 本轮发出去多少次 urlopen（含退避重试的每一次）
+# 单次工具调用自己的请求计数（export 的「本次约 N 次 HTTP 请求」用）。旧版拿全局 _NREQ 前后差值，
+# 同进程并发的其它工具调用会被算进来〔实测 2026-11-13：0 条 export 与 count/fetch 并发时报 6 次，单独跑 3 次〕。
+# 值是可变 list：同一调用内 task group 派生的子任务继承同一对象，各线程 append 在 GIL 下原子。
+_REQ_CTR = contextvars.ContextVar("pubmed_req_ctr", default=None)
 
 
 def _get(path, params, timeout, tries=4, *, before_attempt=None, wait=None):
@@ -434,9 +439,15 @@ def _thread_wait(delay):
 
 async def _get_async(path, params, timeout, tries=4):
     # 线程中的 urllib 正在读 socket 时仍受 socket timeout 约束；取消后不再发新重试。
+    ctr = _REQ_CTR.get()
+    before = _thread_before_attempt
+    if ctr is not None:
+        def before():
+            _thread_before_attempt()
+            ctr.append(1)        # 节流与取消检查之后、urlopen 之前：与 _NREQ 同口径（每次尝试算一次）
     return await anyio.to_thread.run_sync(
         functools.partial(_get, path, params, timeout, tries,
-                          before_attempt=_thread_before_attempt, wait=_thread_wait))
+                          before_attempt=before, wait=_thread_wait))
 
 
 # ---------- eutils ----------
@@ -1684,7 +1695,8 @@ async def _efetch_all(pmids):
             tg.start_soon(one, i, c)
     if errs:
         raise errs[0]
-    text = "\n\n".join(p for p in out if p)
+    # 全是无效号的批只回「1. 」占位〔实测 2026-11-13：9999999998,9999999999 → '1. '〕，旧版把它拼进正文成了碎片。
+    text = "\n\n".join(p for p in out if p and re.search(r"^PMID: \d+", p, re.M))
     got = re.findall(r"^PMID: (\d+)", text, re.M)     # NCBI 排版每条末尾都有这行（实测）
     return text, got
 
@@ -2244,7 +2256,7 @@ async def fetch_abstracts(pmids: str, fields: str = "", as_json: bool | str = Fa
         else:
             body = "\n".join(head) + "\n\n" + "\n\n".join(_fmt_compact(r, flds) for r in recs)
     else:
-        body = "\n".join(head) + "\n\n" + text
+        body = "\n".join(head) + ("\n\n" + text if text else "")
     if outp:
         p, nbytes, sha = _write_new_file(outp, body)
         summary = {"path": p, "bytes": nbytes, "sha256": sha, "format": "json" if json_mode else "text",
@@ -2387,7 +2399,10 @@ async def links(pmids: str, to: str = "pmc") -> str:
                 else:
                     is_direct = not ("_" in name and not name.endswith(db))   # 兜底：pubmed_*_refs 等
                 if not is_direct:
-                    other.append(f"{name}:{len(dests)} 条")
+                    # pubmed_pmc_refs 名字像「参考文献」，实际是「PMC 里引用本文的全文」〔实测 2026-11-13：
+                    # 29771300 的 pubmed_pmc_refs 前 5 个 PMC 号反查回 PubMed，5/5 落在它的 citedin 列表里〕。
+                    gloss = "（PMC 中引用本文的全文，不是参考文献）" if name == "pubmed_pmc_refs" else ""
+                    other.append(f"{name}:{len(dests)} 条{gloss}")
                 else:
                     counts[i] += len(dests)
                     more_hint = ""
@@ -2607,6 +2622,9 @@ async def check_recall(term: str, pmids: str, as_json: bool | str = False) -> st
     逐块诊断用 count("概念块 AND pmid[uid]")。查询警告原样透传；term 被忽略或部分词未生效时显著告警。
     """
     json_mode = _as_bool(as_json, "as_json")
+    if not str(term or "").strip():
+        # 旧版空 term 拼成「() AND (uids)」，NCBI 只执行 uid 部分 → 报「全找回」并误指中文〔实测 2026-11-13〕。
+        raise NcbiError("term 不能为空：空检索式没有可测的找回率。")
     uniq, n_in = _parse_pmids(pmids)
     if len(uniq) > GOLD_MAX:
         raise NcbiError(f"check_recall 一次最多 {GOLD_MAX} 个金标准 PMID（本项目自订上限），"
@@ -2647,11 +2665,16 @@ async def check_recall(term: str, pmids: str, as_json: bool | str = False) -> st
               "present＝记录存在但未被本次实际执行式检回；unavailable/unknown＝存在性未确认，不能断定是 term 漏了它。")
     qt = (first_d.get("querytranslation") or "").strip()
     translations = [(d.get("querytranslation") or "").strip() for d in batch_ds]
-    term_ignored = any(_term_vanished(t) for t in translations)
+    # term 本身就只由 PMID[uid] 构成时，执行式只剩 uid 是正常结果，不是「被忽略」
+    # 〔实测 2026-11-13：term=42988646[uid] → 执行式 42988646[UID] AND 42988646[UID]，旧版误报 term_ignored〕。
+    uid_only = bool(re.fullmatch(r'[\s()]*(?:"?\d+"?\s*\[(?:uid|pmid)\][\s()]*(?:(?:AND|OR|NOT)[\s()]+)?)+',
+                                 term.strip(), re.I))
+    term_ignored = (not uid_only) and any(_term_vanished(t) for t in translations)
     warn, raw_degraded = _recall_warnings_and_degraded(term, batch_ds)
     term_degraded = (not term_ignored) and raw_degraded
     if term_ignored:
-        warn.append("⚠️ term 未参与实际检索：NCBI 忽略了它（常见于中文词，翻译为空），实际执行式只剩金标准 "
+        why = "（常见于中文词，翻译为空）" if _CJK.search(term) else ""
+        warn.append(f"⚠️ term 未参与实际检索：NCBI 忽略了它{why}，实际执行式只剩金标准 "
                     "PMID 本身。上面的 found【不代表】term 匹配了这些文献——请换英文词或核对实际执行式后重跑。")
     elif term_degraded:
         warn.append("⚠️ term 存在部分概念未生效、词项未找到或语法失真（见上方警告）：多概念检索中若某侧概念被吞，"
@@ -2768,6 +2791,14 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
         prev_idx = [str(x).strip() for x in _as_list(rec.get("ds_previousindexing") or []) if str(x).strip()]
         rtype_raw = _as_list(rec.get("ds_recordtype") or [])
         rtype = str(rtype_raw[0]).strip() if rtype_raw and rtype_raw[0] is not None else ""
+        supp = rtype == "supplemental-record"
+        mapped = []
+        if supp:
+            # 补充概念记录（SCR，C 开头 UI）不是描述符：树号是 @ 开头的内部号、上位词是虚根 All MeSH Categories，
+            # 都不能用；它真正指向的是 ds_headingmappedtolist 里的描述符〔实测 2026-11-13：Biodentine →
+            # tricalcium silicate，[nm] 670 条，写成 [mh] 被改写为 "tricalcium" AND "silicates"[MeSH Terms] 907 条〕。
+            pars = []
+            mapped = [str(x).strip() for x in _as_list(rec.get("ds_headingmappedtolist") or []) if str(x).strip()]
         name = terms[0] if terms else "( unnamed )"
         exact = q_norm in {t.lower() for t in ([name] + terms)}
         descs.append({
@@ -2777,15 +2808,17 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
             "record_type": rtype,
             "exact_match": exact,
             "entry_terms": terms,
-            "treenums": [str(x.get("treenum")) for x in idx if isinstance(x, dict) and x.get("treenum")],
+            "treenums": [str(x.get("treenum")) for x in idx
+                         if isinstance(x, dict) and x.get("treenum") and not str(x.get("treenum")).startswith("@")],
             "parents": pars[:MESH_PARENT_SHOW], "parents_total": len(pars),
             "children": kids[:MESH_CHILD_SHOW], "children_total": len(kids),
             "previous_indexing": prev_idx,
             "scope_note": rec.get("ds_scopenote") or "",
             "year_introduced": rec.get("ds_yearintroduced") or "",
+            **({"mapped_to": mapped} if supp else {}),
         })
         child_want.extend(kids[:MESH_CHILD_SHOW])
-        parent_want.extend(pars[:MESH_PARENT_SHOW])
+        parent_want.extend(pars[:MESH_PARENT_SHOW] + mapped)
     rel_names = {de["uid"]: de["name"] for de in descs if de["name"] != "( unnamed )"}
     child_warns = []
     want = [u for u in dict.fromkeys(child_want + parent_want) if u not in rel_names]
@@ -2816,6 +2849,8 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
     for de in descs:
         de["children"] = [{"uid": c, "name": rel_names.get(c, "")} for c in de["children"]]
         de["parents"] = [{"uid": p, "name": rel_names.get(p, "")} for p in de["parents"]]
+        if "mapped_to" in de:
+            de["mapped_to"] = [{"uid": p, "name": rel_names.get(p, "")} for p in de["mapped_to"]]
     exact_i = next((i for i, de in enumerate(descs) if de["exact_match"]), None)
     moved_from = None
     if exact_i is not None and exact_i > 0:
@@ -2823,13 +2858,23 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
         descs.insert(0, picked)
         moved_from = exact_i + 1
     elif exact_i is None and count > len(descs):
-        warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个中无字面精确匹配；"
-                    f"可增大 retmax（上限 {MESH_RETMAX_CAP}）查看后续条目。")
+        if n < MESH_RETMAX_CAP:
+            warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个中无字面精确匹配；"
+                        f"可增大 retmax（上限 {MESH_RETMAX_CAP}）查看后续条目。")
+        else:
+            # 已在上限还叫人「增大 retmax」是做不到的建议〔实测 2026-11-13：resorption retmax=50 → 夹到 20 后仍这么说〕。
+            warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个（已到上限 {MESH_RETMAX_CAP}）中"
+                        f"无字面精确匹配；后续条目本工具取不到，请换更具体的词重查。")
     _audit("mesh", term=term, count=count, descriptors=len(descs), querytranslation=qt, warnings=warn)
     if json_mode:
         return json.dumps({"term": term, "count": count, "descriptors": descs,
                            "querytranslation": qt, "warnings": warn}, ensure_ascii=False)
-    head = [f"查询：{term}", f"MeSH 命中 {count} 个描述符，本次给 {len(descs)} 个"] + warn
+    n_supp = sum(1 for de in descs if "mapped_to" in de)
+    if n_supp:
+        head = [f"查询：{term}", f"MeSH 命中 {count} 条记录（本次给 {len(descs)} 条，其中 {n_supp} 条是补充概念、不是描述符）"]
+    else:
+        head = [f"查询：{term}", f"MeSH 命中 {count} 个描述符，本次给 {len(descs)} 个"]
+    head += warn
     for de in descs:
         head.append("")
         badge = ""
@@ -2839,8 +2884,12 @@ async def mesh(term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str
             badge = " [精确匹配]"
         head.append(f"MeSH {de['ui']}｜{de['name']}"
                     + (f"（{de['year_introduced']} 年引入）" if de["year_introduced"] else "")
-                    + badge)
+                    + badge + ("（补充概念记录，非主题词：检索用「名称[nm]」，写成 [mh] 会被 NCBI 改写）"
+                               if "mapped_to" in de else ""))
         head.append("  入口词：" + "; ".join(de["entry_terms"]))
+        if de.get("mapped_to"):
+            head.append("  映射主题词：" + "; ".join((f"{p['name']} (UID {p['uid']})" if p["name"] else f"UID {p['uid']}")
+                                                for p in de["mapped_to"]))
         if de["treenums"]:
             head.append("  树号：" + "; ".join(de["treenums"]))
         if de["parents"]:
@@ -3139,7 +3188,8 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
     if os.path.exists(p):
         raise NcbiError(f"文件已存在：{p}。本工具不覆盖已有文件，请换个路径或先移走旧文件。")
     t0 = datetime.datetime.now().isoformat(timespec="seconds")
-    nreq0 = _NREQ
+    ctr = []
+    _REQ_CTR.set(ctr)
     d0 = await _esearch(term, retmax=0)
     total = _count_of(d0)
     qt = (d0.get("querytranslation") or "").strip()
@@ -3214,7 +3264,10 @@ async def export(term: str, path: str, format: Literal["pmids", "csv", "medline"
             pass
         except OSError as e:
             print(f"⚠️ 导出临时文件清理失败（{tmp}）：{e}", file=sys.stderr)
-    nreq = _NREQ - nreq0
+    nreq = len(ctr)
+    if total == 0 and not ids:
+        # 旧版 0 条只写「命中 0 条」+ 空文件，没有「0 不证明无文献」〔实测 2026-11-13〕。与 count 同一解释。
+        mismatch.append("⚠️ 命中 0 条，已写出空文件。" + _zero_explanation(d0, 0))
     warn += mismatch + state["drift"] + ([coverage] if coverage else [])
     _audit("export", term=term, path=p, format=format, count_start=total, count_end=total_end,
            slices=n_slices, unique=len(ids), sha256=sha, querytranslation=qt, warnings=warn)

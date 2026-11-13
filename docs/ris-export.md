@@ -36,4 +36,4 @@
 - **CSV 未改**：仍是 10 列、前 3 位缩写作者，以保持 1.4.0 输出逐字不变。要全作者请用 ris。
 - **不生成 Vancouver/APA 引文**：交给文献管理软件（§7「不替代文献管理平台」）。
 - **search 的 JSON 不加语言/全刊名字段**：会改动现有 as_json 输出。需要时用 `fetch_abstracts(fields="journal,lang", as_json=True)`。
-- **工具描述总长**：仍为 2571，export 说明改写后长度不变〔实测 list_tools〕。
+- **工具描述总长**：仍为 2571，export 说明改写后长度不变〔实测 list_tools〕。（2571 是 Python 3.13 下的原始长度；后来测试改按 `inspect.cleandoc` 口径，同一版本为 2563〔实测 2026-11-13〕。）
