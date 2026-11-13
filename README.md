@@ -3,7 +3,7 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.0`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕，新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.1`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕，在 1.4.0 基础上补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
 本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
 
@@ -291,6 +291,13 @@ python -I tests/run_offline.py
 10. **key 一个字符都不外泄。** 错误文本里只报 key 长度不报片段；`_mask` 无条件整串替换成定长掩码
     （旧写法既留前 4 位、又只在长度 > 8 时才掩）。〔已知边界：key 以 URL 百分号编码形态出现在
     报错文本里时仍替换不到——过度设计，记着当边界，别当已修好。〕
+
+11. **term 里写错的语法要说出来。**〔1.4.1，实测 2026-11-13，详见 [docs/query-lint.md](docs/query-lint.md)〕
+    NCBI 对 term 内认不出的半角字段标签（`[tiabb]`、`[ab]`、`[keywords]`、`[Title / Abstract]`）**不报错**，
+    静默按无标签执行、命中数照常给。现在本地对照一张逐个实测过的标签表，表外标签给 ⚠️ 并建议最近似写法；
+    同时检查前导截词 `*screw`、`AND NOT`、`(A OR B)[tiab]`、`2020-2024[dp]` 与反向区间、日期标签配非日期值、
+    无引号邻近检索、同层 AND/OR 混用。纯本地、零请求；会让限定失效的那几类计入 check_recall 的 `term_degraded`，
+    AND/OR 混用只提示不计入。`count` 的 0 条现在也给出与 `search` 同口径的「是哪一种 0」。
 
 ## 自检
 

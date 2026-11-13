@@ -97,7 +97,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
-__version__ = "1.4.0"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
+__version__ = "1.4.1"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -946,6 +946,211 @@ def _syntax_findings(term):
                         f'⚠️ 未加引号的多词片段「{pair}」末尾带截词符 *：* 只作用于最后一个词且会关闭整段短语的 '
                         f'MeSH 自动映射；若需短语截词请加半角双引号（如 "{pair}"）。'))
             break
+    out.extend(_term_lint(term))
+    return out
+
+
+# ---- 半角字段标签与布尔结构检查（1.4.1） ------------------------------------------------
+# 依据：〔实测 2026-11-13，esearch retmax=0，以 miniscrew[<tag>] 的执行式是否与裸词逐字相同判定，
+#   共约 300 次请求；原始数据 pubmcp-audit/review-20261112/tag_probe_20261113.json、tag_probe2_20261113.json〕
+# NCBI 对认不出的 term 内标签【不报错、不进 errorlist】，只是静默按无标签（All Fields/自动映射）执行，
+# 所以只能本地查表。表外标签一律提示——宁可多问一句，也不让限定被吞掉还照常给数。
+_TAG_OK = frozenset("""
+ad affiliation aid au author auid book cois cn crdt dcom rn ed editor edat filter sb subset
+1au fau fir gr grant ir investigator isbn ip issue ta journal jour la lang language lastau lid
+mhda majr sh subheading subh mh mesh lr jid ot keyword pg pagination ps pa pl pmid uid
+dp pdat date pt ptyp pubn publisher si nm tw text ti title tiab tt vi volume doi epdat ppdat so
+""".split()) | frozenset({
+    "all fields", "all",   # 与不写标签等价（实测执行式逐字相同），合法 no-op
+    "corporate author", "create date", "completion date", "ec/rn number", "entry date", "first author",
+    "first author name", "full author name", "full investigator name", "grants and funding", "grant number",
+    "last author", "last author name", "location id", "mesh date", "mesh major topic", "mesh terms",
+    "mesh subheading", "modification date", "other term", "personal name as subject", "pharmacological action",
+    "place of publication", "publication date", "date - publication", "publication type", "secondary source id",
+    "supplementary concept", "substance name", "text word", "transliterated title", "title/abstract",
+    "date - entry", "date - create", "date - completion", "date - modification", "date - mesh",
+    "conflict of interest statements", "author - identifier", "author - full", "author - first",
+    "author - last", "author - corporate", "investigator - full",
+})
+# 实测无效、但很常见的写法：(建议, breaking)。breaking=False 的几项值本身常被自动映射救回，只提示核对。
+_TAG_BAD = {
+    "ab": ("[tiab]（PubMed 没有单独的摘要字段）", True),
+    "abstract": ("[tiab]（PubMed 没有单独的摘要字段）", True),
+    "keywords": ("[ot]（作者关键词＝Other Term）", True),
+    "kw": ("[ot]（作者关键词＝Other Term）", True),
+    "other terms": ("[ot]", True),
+    "text words": ("[tw]", True),
+    "mesh term": ("[mh]", True),
+    "mesh subheadings": ("[sh]", True),
+    "date of publication": ("[dp]", True),
+    "conflict of interest statement": ("[cois]", True),
+    "article identifier": ("[aid]", True),
+    "author identifier": ("[auid]", True),
+    "jt": ("[ta]", True),
+    "source": ("[ta]", True),
+    "nlm unique id": ("[jid]（实测 8610224[nlm unique id] 被执行成 8610224[UID]，变成按 PMID 查）", True),
+    "nlm id": ("[jid]", True),
+    "pmc": ("去掉标签直接写 PMC 号（如 PMC10461258，实测按 All Fields 可命中）", False),
+    "pmcid": ("去掉标签直接写 PMC 号（如 PMC10461258，实测按 All Fields 可命中）", False),
+    "issn": ("去掉标签或改用刊名[ta]（实测 0889-5406[issn] 靠自动映射才落到刊名）", False),
+}
+_NOEXP_BASES = frozenset({"mh", "mesh", "mesh terms", "majr", "mesh major topic", "sh", "subheading", "subh",
+                          "mesh subheading", "pt", "ptyp", "publication type"})
+_PROX_BASES = frozenset({"ti", "title", "tiab", "title/abstract", "ad", "affiliation"})
+_DATE_TAGS = frozenset({"dp", "pdat", "date", "publication date", "date - publication", "edat", "entry date",
+                        "date - entry", "crdt", "create date", "date - create", "dcom", "completion date",
+                        "date - completion", "lr", "modification date", "date - modification", "mhda",
+                        "mesh date", "date - mesh", "epdat", "ppdat"})
+_MESH_TAGS = frozenset({"mh", "mesh", "mesh terms", "majr", "mesh major topic"})
+_TAG_SPAN_RE = re.compile(r"\[([^\[\]\n]{1,40})\](?![A-Za-z0-9])")
+
+
+def _tag_norm(raw):
+    """标签归一：去首尾空格、小写；冒号两侧空格去掉。【不】压内部空格——实测 `MeSH  Terms`（双空格）
+    与 `Title /Abstract` 都被 NCBI 静默忽略，压掉会漏报。"""
+    return re.sub(r"\s*:\s*", ":", raw.strip().lower())
+
+
+def _tag_shape(norm):
+    """像不像字段标签。排除同位素/化学式 [123I]、纯数字等。"""
+    if not re.fullmatch(r"[a-z1][a-z0-9 /\-:~]*", norm) or not re.search(r"[a-z]{2}", norm):
+        return False
+    return not norm[0].isdigit() or norm.startswith("1au")
+
+
+def _date_tuple(y, rest, end):
+    parts = [int(x) for x in rest.split("/") if x]
+    m_ = parts[0] if parts else (12 if end else 1)
+    d_ = parts[1] if len(parts) > 1 else (31 if end else 1)
+    return int(y), m_, d_
+
+
+def _term_lint(term):
+    """半角 [Tag]、子字段、前导截词、AND NOT、组标签、日期写法、同层 AND/OR 混用。纯本地，零请求。
+    返回同 _syntax_findings 的 (code, breaking, text)。"""
+    import difflib
+    term = str(term or "")
+    out = []
+    # 引号短语掩成等长 X（保留长度与位置，标签检查不进引号）；fullmask 再把 [..] 内容也掩掉，供布尔检查。
+    qmask = re.sub(r'"[^"\n]*"', lambda m: "X" * len(m[0]), term)
+    qmask = re.sub(r"\b10\.\d{4,9}/\S+|\bhttps?://\S+", lambda m: "X" * len(m[0]), qmask)
+    fullmask = re.sub(r"\[[^\]\n]*\]", lambda m: " " * len(m[0]), qmask)
+
+    unknown, soft, subs, prox, dates = [], [], [], [], []
+    for m in _TAG_SPAN_RE.finditer(qmask):
+        norm = _tag_norm(m[1])
+        if not _tag_shape(norm):
+            continue
+        base, _, sub = norm.partition(":")
+        if base in _TAG_BAD:
+            hint, brk = _TAG_BAD[base]
+            (unknown if brk else soft).append(f"[{m[1].strip()}] → {hint}")
+            continue
+        if base not in _TAG_OK:
+            near = difflib.get_close_matches(base, sorted(_TAG_OK), n=1, cutoff=0.75)
+            unknown.append(f"[{m[1].strip()}]" + (f" → 可能想写 [{near[0]}]" if near else ""))
+            continue
+        before = qmask[:m.start()].rstrip()
+        if sub:
+            if sub == "noexp" and base not in _NOEXP_BASES:
+                subs.append(f"[{m[1].strip()}]（:noexp 只对 MeSH/文献类型类标签有意义，这里被忽略）")
+            elif re.fullmatch(r"~\s*\d+", sub):
+                if base not in _PROX_BASES:
+                    subs.append(f"[{m[1].strip()}]（邻近检索只支持 ti/tiab/ad，这里 :~N 被忽略）")
+                elif not term[:m.start()].rstrip().endswith('"') and \
+                        len(re.split(r"\s+", re.split(r'[()]|\b(?:AND|OR|NOT)\b', before)[-1].strip())) >= 2:
+                    prox.append(m[1].strip())
+            elif sub not in ("noexp",) and not sub.startswith("~"):
+                subs.append(f"[{m[1].strip()}]（未知子字段 :{sub}，NCBI 会忽略）")
+        if base in _DATE_TAGS and not term[:m.start()].rstrip().endswith('"'):
+            tok = re.search(r"([^\s()]+)$", before)
+            tok = tok[1] if tok else ""
+            if tok and not re.fullmatch(r"[\d/:]+", tok) and not re.search(r"\d[-–—]\d", tok):
+                dates.append(("date_tag_value", f"{tok}[{m[1].strip()}]"))
+    if unknown:
+        out.append(("term_tag_unknown", True,
+                    "⚠️ 这些字段标签 PubMed 不认：" + "；".join(unknown) +
+                    "。NCBI 不报错，会静默按无标签（All Fields/自动映射）执行，命中数照常给出但限定已失效"
+                    "（实测 2026-11-13：miniscrew[tiabb] 2146 条＝裸词，miniscrew[tiab] 1487 条）。请改正后重查。"))
+    if soft:
+        out.append(("term_tag_ignored", False,
+                    "⚠️ 这些标签 PubMed 不认、已被忽略，结果靠自动映射才可能对：" + "；".join(soft) +
+                    "。请核对实际执行式。"))
+    if subs:
+        out.append(("term_tag_subfield", False, "⚠️ 子字段写法无效：" + "；".join(subs) + "。"))
+    if prox:
+        out.append(("proximity_unquoted", True,
+                    "⚠️ 邻近检索 [tiab:~N] 必须用双引号包住多词短语（如 \"root resorption\"[tiab:~3]）："
+                    "不加引号时 NCBI 按普通词拆开映射（实测 2026-11-13：root resorption[tiab:~3] 7454 条，"
+                    "root 被映射成 plant roots；加引号 5498 条）。涉及：" + "、".join(f"[{p}]" for p in prox) + "。"))
+    for code, txt in dates:
+        out.append((code, True,
+                    f"⚠️ 日期标签前不是日期：{txt}。NCBI 会返回 0 条（实测 2026-11-13：miniscrew[dp] 0 条）。"
+                    "日期写成 2020:2024[dp]；相对日期须加引号，如 \"last 5 years\"[dp]。"))
+
+    dt = r"\[\s*(" + "|".join(sorted((re.escape(t) for t in _DATE_TAGS), key=len, reverse=True)) + r")\s*\]"
+    hy = re.search(r"(?<![\d/])(\d{4}(?:/\d{1,2}){0,2})\s*[-–—]\s*(\d{4}(?:/\d{1,2}){0,2})\s*" + dt, qmask, re.I)
+    if hy:
+        out.append(("date_range_hyphen", True,
+                    f"⚠️ 日期区间 {hy[1]}-{hy[2]} 用了连字符：PubMed 区间只认冒号，连字符写法必返回 0 条"
+                    "（实测 2026-11-13：miniscrew AND 2020-2024[dp] 0 条；2020:2024[dp] 705 条）。"
+                    f"请改成 {hy[1]}:{hy[2]}[{hy[3]}]，这个 0 不是该时段无文献。"))
+    for rv in re.finditer(r"(?<![\d/])(\d{4})((?:/\d{1,2}){0,2})\s*:\s*(\d{4})((?:/\d{1,2}){0,2})\s*" + dt, qmask, re.I):
+        if _date_tuple(rv[1], rv[2], False) > _date_tuple(rv[3], rv[4], True):
+            out.append(("date_range_reverse", True,
+                        f"⚠️ 日期区间 {rv[1]}{rv[2]}:{rv[3]}{rv[4]} 起点晚于终点：PubMed 不会自动对调，返回 0 条"
+                        "（实测 2026-11-13：2024:2020[dp] 0 条）。请把早的日期写在冒号前。"))
+            break
+
+    if re.search(r"(?:^|[\s(])\*(?=[A-Za-z0-9])", fullmask):
+        out.append(("leading_wildcard", True,
+                    "⚠️ 前导截词（*screw）PubMed 不支持：* 被静默删掉，按精确词执行"
+                    "（实测 2026-11-13：*screw[tiab] 与 screw[tiab] 同为 51504 条、执行式相同）。"
+                    "截词只能放词尾（screw*），词头变体请显式列出（miniscrew OR microscrew）。"))
+    if re.search(r"\b(?:AND|OR)\s+NOT\b", fullmask):
+        out.append(("and_not", True,
+                    "⚠️ 「AND NOT / OR NOT」PubMed 不支持：NOT 被丢弃，排除条件反而变成纳入"
+                    "（实测 2026-11-13：tooth resorption AND NOT CBCT 执行成 … AND \"CBCT\"）。"
+                    "排除请直接写 A NOT B。"))
+
+    # 括号组：组后加标签、组内多于一个词/短语时标签不分配；同层 AND 与 OR 混用。括号不配对时跳过（已有 paren 警告）。
+    pairs, stack, level_ops, bad = {}, [], [set()], False
+    for t in re.finditer(r"[()]|\b(?:AND|OR)\b", fullmask):
+        if t[0] == "(":
+            stack.append(t.start())
+            level_ops.append(set())
+        elif t[0] == ")":
+            if not stack:
+                bad = True
+                break
+            pairs[t.start()] = stack.pop()
+            if {"AND", "OR"} <= level_ops.pop():
+                level_ops[-1].add("MIXED")
+        else:
+            level_ops[-1].add(t[0])
+    if not bad and not stack:
+        grp = []
+        for m in re.finditer(r"\)\s*\[([^\[\]\n]{1,40})\]", qmask):
+            norm = _tag_norm(m[1])
+            o = pairs.get(m.start())
+            if o is None or norm in ("all fields", "all") or norm.partition(":")[0] not in _TAG_OK:
+                continue
+            inner = term[o + 1:m.start()]
+            units = re.findall(r'"[^"\n]*"|[^\s()"]+', inner)
+            units = [u for u in units if u not in ("AND", "OR", "NOT")]
+            if len(units) > 1:
+                show = " ".join(inner.split())
+                grp.append(f"({show[:40]}{'…' if len(show) > 40 else ''})[{m[1].strip()}]")
+        if grp:
+            out.append(("group_tag", True,
+                        "⚠️ 字段标签写在多词括号组后面不会分配给组内各词：" + "；".join(grp[:3]) +
+                        "。组内词按无标签执行（实测 2026-11-13：(miniscrew OR \"mini-implant\")[tiab] 全部变 All Fields，"
+                        "2928 条；逐词加 [tiab] 为 2309 条）。请给组内每个词/短语各自加标签。"))
+        if "MIXED" in level_ops[0] or {"AND", "OR"} <= level_ops[0]:
+            out.append(("mixed_boolean", False,
+                        "⚠️ 同一层括号里 AND 与 OR 混用：PubMed 严格从左到右计算，不是 AND 优先"
+                        "（实测 2026-11-13：orthodontics[mh] AND review[pt] OR meta-analysis[pt] 执行成 "
+                        "(orthodontics AND review) OR meta-analysis，250665 条）。请用括号写明分组。"))
     return out
 
 
@@ -1664,7 +1869,9 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
            mindate=mindate or "", maxdate=maxdate or "",
            reldate=d.get("_rel") if "_rel" in d else _int(reldate, "reldate", 0),
            querytranslation=(d.get("querytranslation") or "").strip(), warnings=notes)
-    return "\n".join([f"查询：{term}", f"命中 {n} 条"] + notes)
+    # 0 条与 search 同口径给出「是哪一种 0」（1.4.1 补；旧版 count 只印执行式，0 的语义要靠调用方猜）。
+    zero = ["=> " + _zero_explanation(d, n)] if n == 0 else []
+    return "\n".join([f"查询：{term}", f"命中 {n} 条"] + notes + zero)
 
 
 @mcp.tool()

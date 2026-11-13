@@ -1,0 +1,532 @@
+{
+ "bare": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+ "tags": {
+  "All Fields": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "MeSH Terms": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Terms]",
+   "count": "0"
+  },
+  "MeSH Major Topic": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Major Topic]",
+   "count": "0"
+  },
+  "MeSH Subheading": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Subheading]",
+   "count": "0"
+  },
+  "Title": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title]",
+   "count": "809"
+  },
+  "Title/Abstract": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "Text Word": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Text Word]",
+   "count": "1487"
+  },
+  "Other Term": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Other Term]",
+   "count": "408"
+  },
+  "Publication Type": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Publication Type]",
+   "count": "0"
+  },
+  "Date - Publication": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - Publication]",
+   "count": "0"
+  },
+  "Date - Entry": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - Entry]",
+   "count": "0"
+  },
+  "Date - Create": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - Create]",
+   "count": "0"
+  },
+  "Date - Completion": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - Completion]",
+   "count": "0"
+  },
+  "Date - Modification": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - Modification]",
+   "count": "0"
+  },
+  "Date - MeSH": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Date - MeSH]",
+   "count": "0"
+  },
+  "Language": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Language]",
+   "count": "0"
+  },
+  "Author": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author]",
+   "count": "0"
+  },
+  "Journal": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Journal]",
+   "count": "0"
+  },
+  "Affiliation": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Affiliation]",
+   "count": "0"
+  },
+  "Conflict of Interest Statements": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Conflict of Interest Statements]",
+   "count": "2"
+  },
+  "UID": {
+   "verdict": "recognized",
+   "qt": "miniscrew[UID]",
+   "count": "0"
+  },
+  "PMID": {
+   "verdict": "recognized",
+   "qt": "miniscrew[PMID]",
+   "count": "0"
+  },
+  "Supplementary Concept": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Supplementary Concept]",
+   "count": "0"
+  },
+  "Pharmacological Action": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Pharmacological Action]",
+   "count": "0"
+  },
+  "Filter": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Filter]",
+   "count": "0"
+  },
+  "Subset": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Subset]",
+   "count": "0"
+  },
+  "Grant Number": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Grant Number]",
+   "count": "0"
+  },
+  "Grants and Funding": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Grants and Funding]",
+   "count": "0"
+  },
+  "Investigator": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Investigator]",
+   "count": "0"
+  },
+  "Full Author Name": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Full Author Name]",
+   "count": "0"
+  },
+  "First Author Name": {
+   "verdict": "recognized",
+   "qt": "miniscrew[First Author Name]",
+   "count": "0"
+  },
+  "Last Author Name": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Last Author Name]",
+   "count": "0"
+  },
+  "Corporate Author": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Corporate Author]",
+   "count": "0"
+  },
+  "Author - Identifier": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - Identifier]",
+   "count": "0"
+  },
+  "Author - Full": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - Full]",
+   "count": "0"
+  },
+  "Author - First": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - First]",
+   "count": "0"
+  },
+  "Author - Last": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - Last]",
+   "count": "0"
+  },
+  "Author - Corporate": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - Corporate]",
+   "count": "0"
+  },
+  "Investigator - Full": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Investigator - Full]",
+   "count": "0"
+  },
+  "Secondary Source ID": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Secondary Source ID]",
+   "count": "0"
+  },
+  "EC/RN Number": {
+   "verdict": "recognized",
+   "qt": "miniscrew[EC/RN Number]",
+   "count": "0"
+  },
+  "Location ID": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Location ID]",
+   "count": "0"
+  },
+  "Publisher": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Publisher]",
+   "count": "0"
+  },
+  "Place of Publication": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Place of Publication]",
+   "count": "0"
+  },
+  "Issue": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Issue]",
+   "count": "0"
+  },
+  "Volume": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Volume]",
+   "count": "0"
+  },
+  "Pagination": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Pagination]",
+   "count": "0"
+  },
+  "ISBN": {
+   "verdict": "recognized",
+   "qt": "miniscrew[ISBN]",
+   "count": "0"
+  },
+  "Book": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Book]",
+   "count": "0"
+  },
+  "Editor": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Editor]",
+   "count": "0"
+  },
+  "Transliterated Title": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Transliterated Title]",
+   "count": "0"
+  },
+  "Personal Name as Subject": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Personal Name as Subject]",
+   "count": "0"
+  },
+  "NLM Unique ID": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "jt": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "prop": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "Properties": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "DOI": {
+   "verdict": "recognized",
+   "qt": "miniscrew[DOI]",
+   "count": "0"
+  },
+  "MeSH Terms:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Terms:noexp]",
+   "count": "0"
+  },
+  "MeSH Major Topic:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Major Topic:noexp]",
+   "count": "0"
+  },
+  "MeSH Subheading:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[MeSH Subheading:noexp]",
+   "count": "0"
+  },
+  "Publication Type:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Publication Type:noexp]",
+   "count": "0"
+  },
+  "nlm id": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "Date - Electronic Publication": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "Date - Print Publication": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "pmcbook": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "so": {
+   "verdict": "recognized",
+   "qt": "miniscrew[so]",
+   "count": "0"
+  },
+  "source": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "dep": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "ppdat": {
+   "verdict": "recognized",
+   "qt": "miniscrew[ppdat]",
+   "count": "0"
+  },
+  "mhda": {
+   "verdict": "recognized",
+   "qt": "miniscrew[mhda]",
+   "count": "0"
+  },
+  " tiab": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "tiab ": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  " tiab ": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "MeSH  Terms": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "Title /Abstract": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "tiab:~ 3": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "Title/Abstract:~3": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "mh: noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[mh: noexp]",
+   "count": "0"
+  },
+  "mh :noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[mh :noexp]",
+   "count": "0"
+  },
+  "Author - First:~3": {
+   "verdict": "recognized",
+   "qt": "miniscrew[Author - First:~3]",
+   "count": "0"
+  },
+  "sub": {
+   "verdict": "fallback",
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]",
+   "count": "2146"
+  },
+  "subh": {
+   "verdict": "recognized",
+   "qt": "miniscrew[subh]",
+   "count": "0"
+  },
+  "mesh:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[mesh:noexp]",
+   "count": "0"
+  },
+  "majr:noexp": {
+   "verdict": "recognized",
+   "qt": "miniscrew[majr:noexp]",
+   "count": "0"
+  },
+  "tw:~3": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Text Word]",
+   "count": "1487"
+  },
+  "tiab:~100": {
+   "verdict": "recognized",
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487"
+  },
+  "Q (free full text)[sb]": {
+   "qt": "\"loattrfree full text\"[Filter]",
+   "count": "14987078",
+   "warn": null
+  },
+  "Q free full text[sb]": {
+   "qt": "\"loattrfree full text\"[Filter]",
+   "count": "14987078",
+   "warn": null
+  },
+  "Q (review)[pt]": {
+   "qt": "\"review\"[Publication Type]",
+   "count": "4102508",
+   "warn": null
+  },
+  "Q review[pt]": {
+   "qt": "\"review\"[Publication Type]",
+   "count": "4102508",
+   "warn": null
+  },
+  "Q (miniscrew)[tiab]": {
+   "qt": "\"miniscrew\"[Title/Abstract]",
+   "count": "1487",
+   "warn": null
+  },
+  "Q (\"root resorption\")[tiab]": {
+   "qt": "\"root resorption\"[Title/Abstract]",
+   "count": "5247",
+   "warn": null
+  },
+  "Q \"root resorption\"[tiab]": {
+   "qt": "\"root resorption\"[Title/Abstract]",
+   "count": "5247",
+   "warn": null
+  },
+  "Q (miniscrew OR aligner)[All Fields]": {
+   "qt": "\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields] OR \"align\"[All Fields] OR \"alignability\"[All Fields] OR \"alignable\"[All Fields] OR \"aligned\"[All Fields] OR \"alignement\"[All Fields] OR \"aligner\"[All Fields] OR \"aligner s\"[All Fields] OR \"aligners\"[All Fields] OR \"aligning\"[All Fields] OR \"alignment\"[All Fields] OR \"alignments\"[All Fields] OR \"aligns\"[All Fields]",
+   "count": "379770",
+   "warn": null
+  },
+  "Q \"root resorption\"[tiab:~3]": {
+   "qt": "\"root resorption\"[Title/Abstract:~3]",
+   "count": "5498",
+   "warn": null
+  },
+  "Q root resorption[tiab:~3]": {
+   "qt": "(\"plant roots\"[MeSH Terms] OR (\"plant\"[All Fields] AND \"roots\"[All Fields]) OR \"plant roots\"[All Fields] OR \"root\"[All Fields]) AND \"resorption\"[Title/Abstract]",
+   "count": "7454",
+   "warn": null
+  },
+  "Q root resorption[tiab]": {
+   "qt": "\"root resorption\"[Title/Abstract]",
+   "count": "5247",
+   "warn": null
+  },
+  "Q miniscrew[tiab] AND (2020:2024[dp])": {
+   "qt": "\"miniscrew\"[Title/Abstract] AND 2020/01/01:2024/12/31[Date - Publication]",
+   "count": "497",
+   "warn": null
+  },
+  "Q Smith J[au]": {
+   "qt": "smith j[Author]",
+   "count": "35176",
+   "warn": null
+  },
+  "Q Smith J[1au]": {
+   "qt": "smith j[Author - First]",
+   "count": "9014",
+   "warn": null
+  },
+  "Q orthodontics[mh] AND review[pt] OR meta-analysis[pt]": {
+   "qt": "(\"orthodontics\"[MeSH Terms] AND \"review\"[Publication Type]) OR \"meta-analysis\"[Publication Type]",
+   "count": "250665",
+   "warn": null
+  },
+  "Q miniscrew AND 2020/01/01:2024/12/31[dp]": {
+   "qt": "(\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]) AND 2020/01/01:2024/12/31[Date - Publication]",
+   "count": "705",
+   "warn": null
+  },
+  "Q miniscrew AND 2020 : 2024[dp]": {
+   "qt": "(\"miniscrew\"[All Fields] OR \"miniscrews\"[All Fields]) AND 2020/01/01:2024/12/31[Date - Publication]",
+   "count": "705",
+   "warn": null
+  },
+  "Q miniscrew AND 2020–2024[dp]": {
+   "qt": "miniscrew AND 2020-2024[dp]",
+   "count": "0",
+   "warn": {
+    "phrasesignored": [],
+    "quotedphrasesnotfound": [],
+    "outputmessages": [
+     "2020-2024",
+     "No items found."
+    ]
+   }
+  }
+ }
+}
