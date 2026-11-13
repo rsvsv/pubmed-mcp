@@ -188,7 +188,7 @@ class OutputRegression(unittest.TestCase):
         tools = run(m.mcp.list_tools)
         for tool in tools:
             self.assertEqual(tool.description.strip(), getattr(m, tool.name).__doc__.strip())
-        self.assertLess(sum(len(t.description) for t in tools), 2600)  # 本项目自订描述体积回归上限（1.4.0 新增 4 工具后由 2000 上调；2026-11-11 实测合计 2304 字符）
+        self.assertLess(sum(len(t.description) for t in tools), 2600)  # 本项目自订描述体积回归上限（1.4.0 新增 4 工具后由 2000 上调）；合计实测 2026-11-11 为 2304、1.4.2 为 2571（mcp.list_tools 口径）
 
 
 if __name__ == "__main__":

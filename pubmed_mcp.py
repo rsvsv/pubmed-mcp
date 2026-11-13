@@ -97,7 +97,7 @@ from pydantic import StrictInt, StrictStr
 # 唯一一处写区间的文本，两处报错都引用它。下界不是随手写的：〔实测 2026-11-11，干净 venv 配
 # pydantic 2.14.3〕mcp 1.2.0 与 1.21.0 都在 import 阶段炸（cannot import name 'eval_type_backport'
 # from 'pydantic._internal._typing_extra'），1.26.0 才 IMPORT_OK。写 >=1.2 等于承诺一个跑不起来的下界。
-__version__ = "1.4.1"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
+__version__ = "1.4.2"         # 本项目自订发布版本（与 pyproject.toml 的 project.version 一致）
 _SDK_RANGE = "mcp>=1.26,<3"
 
 
@@ -1689,6 +1689,320 @@ async def _efetch_all(pmids):
     return text, got
 
 
+# ---------- 结构化摘要（1.4.2）：efetch XML 解析 ----------
+# 〔实测 2026-11-13，efetch rettype=xml 14 条混批：Cochrane、中文刊、团体作者、撤稿/撤稿声明、
+#   StatPearls 与 GeneReviews 书、无摘要 Letter、无页码 BMC〕形状要点：
+#   - 根 PubmedArticleSet，子元素 PubmedArticle / PubmedBookArticle（书的树形完全不同）；
+#   - 无效号不报错，只是少一条（id=9999999999 → 空 <PubmedArticleSet></PubmedArticleSet>）；
+#   - 结构化摘要 = 多个 <AbstractText Label=…>；非结构化 = 一个不带 Label 的 AbstractText；
+#   - 摘要里有 <i>/<b>/<sup>/<sub> 内联标签；NCBI 的文本档把它们直接去标签拼接（Na+/K+ 写成 Na+/K+），
+#     这里同样只取文字、不另加符号，保证与文本档摘要逐字可比；
+#   - 撤稿关联在 CommentsCorrections（RefType=RetractionIn 等），PMID 可能缺（只给 DOI）；
+#   - 中文刊另有 OtherAbstract Language=chi（Publisher 版本）。
+# 解析失败一律报错（fail closed），不退回文本档冒充。
+ABSTRACT_FIELDS = ("title", "abstract", "authors", "journal", "pubdate", "ids", "pt", "lang", "mesh",
+                   "comments", "coi", "other_abstracts")
+ABSTRACT_DEFAULT_FIELDS = ("title", "abstract", "authors", "journal", "pubdate", "ids", "pt", "lang", "comments")
+FETCH_WARN_CHARS = 60000      # 本项目自订：默认文本档超过此字符数时追加「可能超出客户端结果上限」提示；
+#                               客户端真实上限未核实〔审查子代理观察：60 篇约 15.7 万字符被拒，20 篇正常〕
+
+
+def _xml_text(el):
+    """元素内全部文字（含内联 <i>/<sup> 等子元素文字），空白压成单空格。"""
+    if el is None:
+        return ""
+    return " ".join("".join(el.itertext()).split())
+
+
+def _parse_fields(fields):
+    raw = [f.strip().lower() for f in str(fields or "").replace("，", ",").split(",")]
+    raw = [f for f in raw if f]
+    if not raw:
+        return list(ABSTRACT_DEFAULT_FIELDS)
+    if raw == ["all"]:
+        return list(ABSTRACT_FIELDS)
+    bad = [f for f in raw if f not in ABSTRACT_FIELDS]
+    if bad:
+        raise NcbiError(f"fields 不认识：{', '.join(bad)}。可用：{', '.join(ABSTRACT_FIELDS)}，或 all；"
+                        f"不传则为 {','.join(ABSTRACT_DEFAULT_FIELDS)}。")
+    return list(dict.fromkeys(raw))
+
+
+def _xml_sections(abstract_el):
+    if abstract_el is None:
+        return []
+    out = []
+    for t in abstract_el.findall("AbstractText"):
+        label = t.get("Label") or ""
+        text = _xml_text(t)
+        if text or label:
+            out.append({"label": label, "text": text})
+    return out
+
+
+def _xml_authors(author_list):
+    out = []
+    for a in (author_list.findall("Author") if author_list is not None else []):
+        coll = _xml_text(a.find("CollectiveName"))
+        if coll:
+            out.append({"collective": coll})
+            continue
+        rec = {"last": _xml_text(a.find("LastName")), "fore": _xml_text(a.find("ForeName")),
+               "initials": _xml_text(a.find("Initials"))}
+        orcid = [_xml_text(i) for i in a.findall("Identifier") if (i.get("Source") or "").upper() == "ORCID"]
+        if orcid:
+            rec["orcid"] = orcid[0]
+        out.append(rec)
+    return out
+
+
+def _xml_pubdate(pd):
+    if pd is None:
+        return ""
+    md = _xml_text(pd.find("MedlineDate"))
+    if md:
+        return md
+    return " ".join(x for x in (_xml_text(pd.find("Year")), _xml_text(pd.find("Month")),
+                                _xml_text(pd.find("Day"))) if x)
+
+
+def _xml_ids(id_list):
+    ids = {}
+    for i in (id_list.findall("ArticleId") if id_list is not None else []):
+        t = (i.get("IdType") or "").lower()
+        if t in ("doi", "pmc", "pii", "bookaccession") and t not in ids:
+            ids[t] = _xml_text(i)
+    return ids
+
+
+def _xml_record(node):
+    """PubmedArticle / PubmedBookArticle → 记录字典（全部字段；按 fields 投影在外面做）。"""
+    if node.tag == "PubmedBookArticle":
+        bd = node.find("BookDocument")
+        book = bd.find("Book") if bd is not None else None
+        title = _xml_text(bd.find("ArticleTitle")) or _xml_text(book.find("BookTitle") if book is not None else None)
+        authors = _xml_authors(bd.find("AuthorList"))
+        if not authors and book is not None:
+            authors = _xml_authors(book.find("AuthorList"))
+        return {
+            "pmid": _xml_text(bd.find("PMID")), "source": "book", "title": title,
+            "abstract": _xml_sections(bd.find("Abstract")), "authors": authors,
+            "journal": {"book": _xml_text(book.find("BookTitle")) if book is not None else ""},
+            "pubdate": _xml_pubdate(book.find("PubDate")) if book is not None else "",
+            "ids": _xml_ids(bd.find("ArticleIdList")),
+            "pt": [_xml_text(p) for p in bd.findall("PublicationType")],
+            "lang": [_xml_text(x) for x in bd.findall("Language")],
+            "mesh": [], "comments": [], "coi": "", "other_abstracts": [],
+        }
+    mc = node.find("MedlineCitation")
+    art = mc.find("Article")
+    j = art.find("Journal")
+    ji = j.find("JournalIssue") if j is not None else None
+    eloc = {(e.get("EIdType") or "").lower(): _xml_text(e) for e in art.findall("ELocationID")}
+    ids = _xml_ids(node.find("PubmedData/ArticleIdList"))
+    for k in ("doi", "pii"):
+        if k not in ids and eloc.get(k):
+            ids[k] = eloc[k]
+    mesh = []
+    for h in mc.findall("MeshHeadingList/MeshHeading"):
+        dn = h.find("DescriptorName")
+        quals = [_xml_text(q) for q in h.findall("QualifierName")]
+        major = (dn.get("MajorTopicYN") == "Y") or any(q.get("MajorTopicYN") == "Y" for q in h.findall("QualifierName"))
+        mesh.append(_xml_text(dn) + "".join("/" + q for q in quals) + ("*" if major else ""))
+    comments = []
+    for c in mc.findall("CommentsCorrectionsList/CommentsCorrections"):
+        comments.append({"type": c.get("RefType") or "", "ref": _xml_text(c.find("RefSource")),
+                         "pmid": _xml_text(c.find("PMID")) or None})
+    other = []
+    for o in mc.findall("OtherAbstract"):
+        secs = _xml_sections(o)
+        if secs:
+            other.append({"type": o.get("Type") or "", "language": o.get("Language") or "", "sections": secs})
+    return {
+        "pmid": _xml_text(mc.find("PMID")), "source": "article", "title": _xml_text(art.find("ArticleTitle"))
+        or _xml_text(art.find("VernacularTitle")),
+        "abstract": _xml_sections(art.find("Abstract")), "authors": _xml_authors(art.find("AuthorList")),
+        "journal": {"title": _xml_text(j.find("Title")) if j is not None else "",
+                    "iso": _xml_text(j.find("ISOAbbreviation")) if j is not None else "",
+                    "volume": _xml_text(ji.find("Volume")) if ji is not None else "",
+                    "issue": _xml_text(ji.find("Issue")) if ji is not None else "",
+                    "pages": _xml_text(art.find("Pagination/MedlinePgn")),
+                    "article_number": "" if _xml_text(art.find("Pagination/MedlinePgn")) else eloc.get("pii", "")},
+        "pubdate": _xml_pubdate(ji.find("PubDate") if ji is not None else None),
+        "ids": ids,
+        "pt": [_xml_text(p) for p in art.findall("PublicationTypeList/PublicationType")],
+        "lang": [_xml_text(x) for x in art.findall("Language")],
+        "mesh": mesh, "comments": comments, "coi": _xml_text(mc.find("CoiStatement")),
+        "other_abstracts": other,
+    }
+
+
+async def _efetch_xml_chunk(pmids):
+    import xml.etree.ElementTree as ET
+    timeout = min(60, 20 + 0.4 * len(pmids))
+    text = await _get_async("efetch.fcgi", {"db": "pubmed", "id": ",".join(pmids),
+                                            "rettype": "xml", "retmode": "xml"}, timeout)
+    head = text.lstrip()[:200].lower()
+    if head.startswith("<!doctype html") or head.startswith("<html"):
+        raise NcbiError("efetch 回的是 HTML 页面（HTTP 200 也可能是故障页/网关页），不是 XML 记录 —— "
+                        "这【不是】「这些 PMID 没有摘要」。原文开头：" + _mask(text.lstrip()[:200]))
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as e:
+        raise NcbiError(f"efetch XML 无法解析（{e}），不能作为有效摘要；原文开头：" + _mask(text.lstrip()[:200])) from e
+    if root.tag != "PubmedArticleSet":
+        raise NcbiError(f"efetch XML 根元素是 <{root.tag}> 而不是 PubmedArticleSet；原文开头：" +
+                        _mask(text.lstrip()[:200]))
+    recs = []
+    for node in root:
+        if node.tag in ("PubmedArticle", "PubmedBookArticle"):
+            try:
+                recs.append(_xml_record(node))
+            except AttributeError as e:
+                raise NcbiError(f"efetch XML 记录缺少必需结构（{node.tag}），无法解析：{e}") from e
+        elif node.tag != "DeleteCitation":
+            raise NcbiError(f"efetch XML 出现未识别的记录类型 <{node.tag}>，不冒充为已解析")
+    got = [r["pmid"] for r in recs]
+    if len(got) != len(set(got)) or not set(got).issubset(pmids):
+        raise NcbiError("efetch 返回的 PMID 与请求不符或重复，不能作为有效摘要")
+    return recs
+
+
+async def _efetch_xml_all(pmids):
+    chunks = [pmids[i:i + EFETCH_CHUNK] for i in range(0, len(pmids), EFETCH_CHUNK)]
+    out = [None] * len(chunks)
+    errs = []
+
+    async def one(i, c):
+        try:
+            out[i] = await _efetch_xml_chunk(c)
+        except NcbiError as e:
+            errs.append(e)
+
+    async with anyio.create_task_group() as tg:
+        for i, c in enumerate(chunks):
+            tg.start_soon(one, i, c)
+    if errs:
+        raise errs[0]
+    by_id = {r["pmid"]: r for part in out for r in (part or [])}
+    return [by_id[p] for p in pmids if p in by_id]
+
+
+def _project(rec, fields):
+    out = {"pmid": rec["pmid"]}
+    if rec.get("source") == "book":
+        out["source"] = "book"
+    for f in fields:
+        out[f] = rec[f]
+    if "authors" in fields:
+        # JSON 作者压成「姓 首字母」字符串（团体作者原样）；逐字段对象体积约为正文的 1/4〔实测 2026-11-13，60 篇〕。
+        out["authors"] = [a["collective"] if "collective" in a else (a["last"] + " " + a["initials"]).strip() or a["fore"]
+                          for a in rec["authors"]]
+    if "abstract" in fields:
+        out["has_abstract"] = bool(rec["abstract"])
+    return out
+
+
+def _fmt_authors(authors, limit=6):
+    names = []
+    for a in authors:
+        if "collective" in a:
+            names.append(a["collective"])
+        else:
+            names.append((a["last"] + " " + a["initials"]).strip() or a["fore"])
+    s = ", ".join(names[:limit])
+    if len(names) > limit:
+        s += f"，共 {len(names)} 人"
+    return s
+
+
+def _fmt_compact(rec, fields):
+    """紧凑文本：一条记录一块，只含 fields 指定的内容；不含作者单位。"""
+    j = rec["journal"]
+    src = j.get("book") or j.get("iso") or j.get("title") or ""
+    cite = ""
+    if j.get("volume") or j.get("pages") or j.get("article_number"):
+        cite = " " + j.get("volume", "") + (f"({j['issue']})" if j.get("issue") else "") + \
+               (":" + (j.get("pages") or j.get("article_number")) if (j.get("pages") or j.get("article_number")) else "")
+    head = [f"PMID {rec['pmid']}"]
+    if "pubdate" in fields and rec["pubdate"]:
+        head.append(rec["pubdate"])
+    if "journal" in fields and src:
+        head.append(src + cite)
+    if "pt" in fields:
+        types = [p for p in rec["pt"] if p != "Journal Article"]
+        if types:
+            head.append("/".join(types))
+    if "lang" in fields and rec["lang"] and rec["lang"] != ["eng"]:
+        head.append("语言 " + "/".join(rec["lang"]))
+    lines = ["｜".join(head)]
+    if "title" in fields:
+        lines.append("  " + (rec["title"] or "(无标题)"))
+    if "authors" in fields and rec["authors"]:
+        lines.append("  " + _fmt_authors(rec["authors"]))
+    if "ids" in fields and rec["ids"]:
+        lines.append("  " + "｜".join(f"{k}:{v}" for k, v in rec["ids"].items() if k in ("doi", "pmc")))
+    if "comments" in fields:
+        key = [c for c in rec["comments"] if c["type"] in ("RetractionIn", "RetractionOf", "ExpressionOfConcernIn",
+                                                            "ErratumIn", "UpdateIn", "UpdateOf")]
+        for c in key:
+            lines.append(f"  ⚠️ {c['type']}：{c['ref']}" + (f"（PMID {c['pmid']}）" if c["pmid"] else ""))
+    if "abstract" in fields:
+        if rec["abstract"]:
+            for s in rec["abstract"]:
+                lines.append("  " + (f"[{s['label']}] " if s["label"] else "") + s["text"])
+        else:
+            lines.append("  （此记录无摘要；有记录不等于有摘要）")
+    if "other_abstracts" in fields:
+        for o in rec["other_abstracts"]:
+            lines.append(f"  [其它摘要 {o['type']}/{o['language']}] " + " ".join(s["text"] for s in o["sections"]))
+    if "mesh" in fields and rec["mesh"]:
+        lines.append("  MeSH：" + "; ".join(rec["mesh"]))
+    if "coi" in fields and rec["coi"]:
+        lines.append("  利益冲突：" + rec["coi"])
+    return "\n".join(lines)
+
+
+def _write_new_file(path, body):
+    """原子写新文件且不覆盖（同 export）。返回 (绝对路径, 字节数, sha256)。"""
+    import tempfile
+    p = os.path.abspath(os.path.expanduser(path))
+    parent = os.path.dirname(p)
+    try:
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(p) + ".", suffix=".part", dir=parent)
+        os.close(fd)   # Windows：不关 fd 时 rename 报 WinError 32〔审查实测 2026-11-12〕
+    except OSError as e:
+        raise NcbiError(f"无法创建输出文件（{parent}）：{e}") from e
+    data = body.encode("utf-8")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        _publish_no_clobber(tmp, p)
+    except OSError as e:
+        raise NcbiError(f"输出文件写入失败（{p}）：{e}") from e
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"⚠️ 临时文件清理失败（{tmp}）：{e}", file=sys.stderr)
+    return p, len(data), hashlib.sha256(data).hexdigest()
+
+
+def _check_out_path(out_path):
+    s = (out_path or "").strip()
+    if not s:
+        return ""
+    p = os.path.abspath(os.path.expanduser(s))
+    if os.path.isdir(p):
+        raise NcbiError(f"out_path 是已存在的目录而非文件路径：{p}")
+    if os.path.exists(p):
+        raise NcbiError(f"文件已存在：{p}。本工具不覆盖已有文件，请换个路径或先移走旧文件。")
+    return p
+
+
 # ---------- MCP 工具 ----------
 # SDK 兼容层在文件顶部（`import anyio` 之后）——因为 NcbiError 的基类 `_SdkToolError` 要从那里取。
 #
@@ -1875,28 +2189,67 @@ async def count(term: str, field: str = "", mindate: str = "", maxdate: str = ""
 
 
 @mcp.tool()
-async def fetch_abstracts(pmids: str) -> str:
+async def fetch_abstracts(pmids: str, fields: str = "", as_json: bool | str = False,
+                          out_path: str = "") -> str:
     """按逗号/空格分隔的 PMID 取 NCBI 原排版摘要；保留结构化段落、作者信息和声明。
 
     自动去重、归一补零号、分批。建议先筛选题录，再只取需要的摘要以节省输出。
     返回请求数、实际记录数和缺失号；有记录不等于有摘要，社论可能只有引文。
     网络失败报错，不冒充无记录。文献数值引用仍须核对原文位置。
+    fields/as_json 改走 XML 精简（无作者单位）：title,abstract,authors,journal,pubdate,ids,pt,lang,
+    mesh,comments,coi,other_abstracts 或 all。out_path 写新文件，只回路径与 sha256；篇数多时用。
     """
     uniq, n_in = _parse_pmids(pmids)
-    text, got = await _efetch_all(uniq)
+    json_mode = _as_bool(as_json, "as_json")
+    structured = bool(json_mode or str(fields or "").strip())
+    flds = _parse_fields(fields) if structured else []
+    outp = _check_out_path(out_path)
+    batches = (len(uniq) + EFETCH_CHUNK - 1) // EFETCH_CHUNK
+    if structured:
+        recs = await _efetch_xml_all(uniq)
+        got = [r["pmid"] for r in recs]
+    else:
+        text, got = await _efetch_all(uniq)
     missing = [p for p in uniq if p not in set(got)]
-    head = [f"要 {len(uniq)} 条 / 实取 {len(got)} 条（分 {(len(uniq) + EFETCH_CHUNK - 1) // EFETCH_CHUNK} 批）"]
+    head = [f"要 {len(uniq)} 条 / 实取 {len(got)} 条（分 {batches} 批）"]
     if n_in != len(uniq):
         head.append(f"（原始输入 {n_in} 个，去掉重复后 {len(uniq)} 个）")
     if missing:
         # 「或该文本来就没有摘要」这半句是假的，删掉：missing 是按 efetch 正文里有没有 ^PMID: 行算的，
         # 而没摘要的社论照样回记录、照样算实取〔实测 PMID 42759866：要 1 条 / 实取 1 条，无 ⚠️〕。
         # 走到这里只剩一种解释：这些号 NCBI 没给回任何记录（号不存在、已撤销，或 db 里查不到）。
-        head.append("⚠️ NCBI 没返回这些号的记录（efetch 正文里没有对应的 PMID 行）——"
+        where = "efetch XML 里没有对应的记录" if structured else "efetch 正文里没有对应的 PMID 行"
+        head.append(f"⚠️ NCBI 没返回这些号的记录（{where}）——"
                     "注意【不是】「这篇没有摘要」：实测没有摘要的社论照样返回记录、照样算实取。"
                     "这里点名的一律是取不到条目本身：" + ", ".join(missing))
-    _audit("fetch_abstracts", pmids=uniq, requested=len(uniq), returned=len(got), missing=missing)
-    return "\n".join(head) + "\n\n" + text
+    _audit("fetch_abstracts", pmids=uniq, requested=len(uniq), returned=len(got), missing=missing,
+           **({"fields": flds, "as_json": json_mode} if structured else {}),
+           **({"out_path": outp} if outp else {}))
+    if structured:
+        no_ab = [r["pmid"] for r in recs if not r["abstract"]] if "abstract" in flds else []
+        if json_mode:
+            body = json.dumps({"requested": len(uniq), "returned": len(got), "missing": missing,
+                               "batches": batches, "fields": flds, "no_abstract": no_ab,
+                               "records": [_project(r, flds) for r in recs],
+                               "source_note": "efetch XML 解析；内联格式（上下标/斜体）已去标签，数值引用须核对原文"},
+                              ensure_ascii=False)
+        else:
+            body = "\n".join(head) + "\n\n" + "\n\n".join(_fmt_compact(r, flds) for r in recs)
+    else:
+        body = "\n".join(head) + "\n\n" + text
+    if outp:
+        p, nbytes, sha = _write_new_file(outp, body)
+        summary = {"path": p, "bytes": nbytes, "sha256": sha, "format": "json" if json_mode else "text",
+                   "requested": len(uniq), "returned": len(got), "missing": missing}
+        if json_mode:
+            return json.dumps(summary, ensure_ascii=False)
+        return "\n".join(head + [f"已写入：{p}（UTF-8，{summary['format']}）｜{nbytes} 字节｜sha256 {sha}",
+                                 "正文未回传；需要时请读该文件。"])
+    if not json_mode and len(body) > FETCH_WARN_CHARS:
+        # 纯新增提示行（不改正文）：大结果常被客户端整条拒收，模型一条摘要也看不到。
+        body += (f"\n\n⚠️ 本次输出约 {len(body)} 字符，可能超出客户端单次结果上限（上限未核实，本项目自订提示阈值 "
+                 f"{FETCH_WARN_CHARS}）。如被拒收：改用 out_path 写文件，或用 fields=title,abstract 精简，或分批取。")
+    return body
 
 
 DB_WHITELIST = {"pmc", "nucleotide", "gene", "pubmed", "citedin", "refs"}

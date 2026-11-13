@@ -1,0 +1,222 @@
+1. Ann Med. 2025 Dec;57(1):2447408. doi: 10.1080/07853890.2024.2447408. Epub 2024
+ Dec 31.
+
+The effect of weight-bearing training with visual feedback on balance and 
+prosthetic loading in trans-tibial amputees following vascular disease - a pilot 
+randomized control trial.
+
+Cikajlo I(1)(2), Mitić J(1), Burger H(1)(3).
+
+Author information:
+(1)University Rehabilitation Institute Republic of Slovenia Soča, Ljubljana, 
+Slovenia.
+(2)School of Engineering and Management, University of Nova Gorica, Nova Gorica, 
+Slovenia.
+(3)Faculty of Medicine, University of Ljubljana, Ljubljana, Slovenia.
+
+PURPOSE: Asymmetrical weight-bearing on trans-tibial prosthesis at the initial 
+prosthetic fitting results in a modified gait and secondary disorders. The pilot 
+study will examine the feasibility of the weight-bearing training with visual 
+feedback in trans-tibial prosthesis loading and its potential effectiveness.
+METHODS: Weight-bearing of the prosthesis was evaluated by centre of pressure 
+(COP). Twenty participants with unilateral initial trans-tibial prosthesis were 
+randomized into test and control group; the control received conventional 
+rehabilitation training; the test group weight-bearing training with real-time 
+feedback in 10 sessions over 2 weeks. Clinical tests 10 m walk test and L-Test 
+were carried out in both groups at baseline and after 2 weeks.
+RESULTS: Statistical differences were found between the groups in COP postural 
+sway and frontal plane COP sway path (p < 0.05). The maximal movement in the 
+frontal plane in the test group substantially decreased indicating improvement 
+in loading of the prosthesis. The clinical tests demonstrated significant 
+improvement in both groups (p < 0.001).
+CONCLUSIONS: The differences in pre-post changes of the intervention 
+demonstrated changes in medial-lateral weight transfer and thus loading of the 
+prosthesis after the weight-bearing training program with visual feedback. 
+Values were sufficiently large and meaningful to pursue a larger clinical trial 
+for suggested initial fitting of trans-tibial prosthesis.
+
+DOI: 10.1080/07853890.2024.2447408
+PMCID: PMC11703358
+PMID: 41421800 [Indexed for MEDLINE]
+
+Conflict of interest statement: No potential conflict of interest is reported by 
+the authors.
+
+
+2. RETRACTED ARTICLE
+
+Res Vet Sci. 2024 Nov 9:105460. doi: 10.1016/j.rvsc.2024.105460. Online ahead of 
+print.
+
+WITHDRAWN: Impact of Cryptosporidium parvum infection on glucose transport and 
+metabolism in calves: Physiological and molecular insight.
+
+Krasilnikova V(1), Kuzmina E(2), Philippova A(3).
+
+Author information:
+(1)Institute of Linguistics and Intercultural Communication, I.M. Sechenov First 
+Moscow State Medical University (Sechenov University), Moscow, Russian 
+Federation.
+(2)Department of Polyclinic Therapy, I.M. Sechenov First Moscow State Medical 
+University (Sechenov University), Moscow, Russian Federation. Electronic 
+address: ekaterinakuzmina12@gmx.com.
+(3)Department of Biology and General Genetics, I.M. Sechenov First Moscow State 
+Medical University (Sechenov University), Moscow, Russian Federation.
+
+Retraction in
+    10.1016/j.rvsc.2024.105460.
+
+Expression of concern in
+    Res Vet Sci. 2025 Jun;189:105566. doi: 10.1016/j.rvsc.2025.105566.
+
+The present study aimed to assess the impact of Cryptosporidium parvum infection 
+on physiological parameters and glucose metabolism in calves. To achieve this 
+goal, a study was conducted in Moscow, Russia, from 2022 to 2023, involving 20 
+calves, of which 10 were infected with C. parvum and 10 comprised the control 
+group. Comprehensive methods were employed, including body weight measurement, 
+fecal analysis, histopathological examinations, blood analysis, Using chamber 
+experiments, and molecular analyses. The results of the study revealed a 
+statistically significant decrease in body weight in the infected calf group 
+(P < 0.052) and noticeable changes in fecal consistency changes were noticed on 
+the 4th-day post-infection (P < 0.01). Histopathological examination identified 
+acute catarrhal enteritis and villus atrophy in the small intestine of infected 
+calves. Blood analysis demonstrated a statistically significant decrease in 
+glucose levels in infected calves on the 6th and 7th days post-infection 
+(P < 0.05). However, the results of the Ussing chamber experiments and studies 
+of glucose metabolism genes did not reveal statistically significant differences 
+between the groups. The findings suggest the potential applicability of 
+monitoring body weight, fecal consistency, and glucose levels in the diagnosis 
+and control of cryptosporidiosis in cattle, which could lead to a reduction in 
+economic losses in agriculture.
+
+Copyright © 2024. Published by Elsevier Ltd.
+
+DOI: 10.1016/j.rvsc.2024.105460
+PMID: 40272285
+
+Conflict of interest statement: Declaration of competing interest The authors 
+declare that they have no known competing financial interests or personal 
+relationships that could have appeared to influence the work reported in this 
+paper.
+
+
+3. Zhonghua Kou Qiang Yi Xue Za Zhi. 2024 Dec 9;59(12):1279-1286. doi: 
+10.3760/cma.j.cn112144-20240627-00253.
+
+[Progress of the study on factors related to orthodontic treatment and the 
+formation of black triangles].
+
+[Article in Chinese; Abstract available in Chinese from the publisher]
+
+Yu NQ(1), Wang SJ(1), Tian HF(1), Chen XY(1).
+
+Author information:
+(1)Department of Orthodontic, Stomatology Hospital, School of Stomatology, 
+Zhejiang University School of Medicine & Clinical Research Center for Oral 
+Diseases of Zhejiang Province & Key Laboratory of Oral Biomedical Research of 
+Zhejiang Province & Cancer Center of Zhejiang University, Hangzhou310005, China.
+
+Black triangles can be formed due to the defect or absence of the gingival 
+papilla, which increases the risks of food impaction, caries, and periodontal 
+disease, and affects the esthetics of anterior teeth. The incidence of black 
+triangles after orthodontic treatment is from 38% to 58%. The formation of black 
+triangles is influenced by patient-related factors and factors related to 
+orthodontic treatment. This article discusses the factors related to orthodontic 
+treatment and the formation of interdental black triangles and provides 
+reference for preventing the formation of this problem.
+
+Publisher: 
+两相邻牙间龈乳头缺陷或缺失可形成齿间黑三角，其不仅增加食物嵌塞以及罹患龋病、牙周疾病的风险，还影响前牙美学效果。正畸治疗后齿间黑三角的发生率为38%~58%，其形成受患者和正畸治疗等相关因素影响。本文就正畸治疗与齿间黑三角形成的相关因素作一综述，为预防齿间黑三角形成提供参考。.
+
+DOI: 10.3760/cma.j.cn112144-20240627-00253
+PMID: 39606989 [Indexed for MEDLINE]
+
+
+4. BMC Oral Health. 2026 Jul 15;26(1):1960. doi: 10.1186/s12903-026-09294-3.
+
+Risk factors for periodontal ligament area reduction in maxillary central 
+incisors following orthodontic treatment: a retrospective analysis using a deep 
+learning-based CBCT-PDL segmentation network.
+
+Li R(#)(1), Su S(#)(1), Zhan L(1), Fan X(1), Chen X(1), He C(1), Huang X(2).
+
+Author information:
+(1)Department of Stomatology, Beijing Friendship Hospital, Capital Medical 
+University, No.95 Yong'an Road, Xicheng District, Beijing, 100050, China.
+(2)Department of Stomatology, Beijing Friendship Hospital, Capital Medical 
+University, No.95 Yong'an Road, Xicheng District, Beijing, 100050, China. 
+huangxf1998@163.com.
+(#)Contributed equally
+
+OBJECTIVE: To analyze the relevant risk factors causing the reduction of 
+periodontal ligament area (PDLA) of the maxillary central incisor by measuring 
+the PDLA before and after orthodontic treatment using a previously validated 
+cone-beam computed tomography-periodontal ligament (CBCT-PDL) deep learning 
+segmentation network, providing a theoretical basis for orthodontic clinical 
+treatment design.
+METHODS: A retrospective analysis was performed on 63 patients who completed 
+comprehensive orthodontic treatment in the Department of Stomatology, Beijing 
+Friendship Hospital, Capital Medical University, between May 2021 and December 
+2022. Pre- and post-treatment CBCT images and clinical data were extracted from 
+the hospital's dedicated imaging database. Using the CBCT-PDL segmentation 
+network and orthodontic measurement and analysis software, PDLA and root length 
+(RL) of 126 maxillary central incisors, were quantified before and after 
+orthodontic treatment. Absolute and percentage changes in PDLA (ΔPDLA and 
+ΔPDLA%, respectively) and RL (ΔRL and ΔRL%, respectively) were calculated. 
+Statistical analyses were conducted, including Mann-Whitney U tests, Spearman 
+correlation analysis, Generalized Linear Mixed Model and multiple linear 
+regression, to identify the associated predictors of reduced PDLA in maxillary 
+incisors from risk factors including gender, age, U1-NA angle, Angle's 
+classification, sagittal skeletal pattern (ANB angle), vertical skeletal 
+pattern, history of chronic periodontitis, tooth extraction status, and 
+treatment duration.
+RESULTS: At the end of active orthodontic treatment, ΔPDLA and ΔPDLA% were 
+significantly higher in the following subgroups compared with the reference 
+group: patients with ANB angle > 3° [Maxillary right central incisor (T11) 
+ΔPDLA: 9.49(13.37) mm, Maxillary left central incisor (T21) ΔPDLA: 11.02(14.45) 
+mm, P < 0.05; ΔPDLA%: T11 6.73(8.20) %, T21 7.05(8.66) %, P < 0.05], tooth 
+extraction treatment group [T11 ΔPDLA: 11.83(14.14) mm, T21 ΔPDLA: 11.82(16.67) 
+mm, P < 0.05; ΔPDLA%: T11 7.54 (10.13) %, T21 8.23(10.32) %, P = 0.058], and 
+treatment duration > 2 years [T11 ΔPDLA: 9.34(14.83) mm, T21 ΔPDLA: 11.94(15.56) 
+mm, P = 0.059; ΔPDLA%: T11 7.00 (10.87) %, T21 8.37(8.73) %, P < 0.05]. 
+Additionally, the U1-NA angle > 28.5° subgroup showed marginally significantly 
+higher ΔPDLA [11.46(25.13) mm, P = 0.082], and patients with skeletal Class II 
+malocclusion exhibited a marginally significantly higher ΔPDLA% [T11 7.53 
+(12.03) %, T21 6.91(9.24) %, P = 0.059] relative to controls. Significant 
+predictors of root resorption included adult age [T11 ΔRL: 0.63(1.30) mm, T21 
+ΔRL: 0.98(1.33) mm, P < 0.05; T11 ΔRL%: 5.41(11.20) %, T21 ΔRL%: 8.16(10.20) %, 
+P < 0.05], and tooth extraction treatment [T11 ΔRL: 0.73(1.42) mm, T21 ΔRL: 
+1.12(1.41) mm, P < 0.01; T11 ΔRL%: 6.33(12.03) %, T21 ΔRL%: 8.20(11.84) %, 
+P < 0.05]. Multiple linear regression revealed that ΔRL%, as a post-orthodontic 
+outcome variable, was independently positively associated with ΔPDLA% 
+(β = 0.536, P < 0.001). Among patient-related and treatment-related factors, the 
+pre-treatment U1-NA angle significantly positively affected ΔPDLA% (β = 0.257, 
+P < 0.01). Pre-treatment ∠ANB (P = 0.055) and treatment duration (P = 0.082) 
+demonstrated marginal statistical significance, while age and tooth extraction 
+status exerted no significant effects (all P > 0.05).
+CONCLUSION: Subgroup analyses identified adulthood, pre‑treatment ∠ANB > 3°, 
+pre‑treatment U1‑NA angle > 28.5°, tooth extraction, and treatment duration > 2 
+years as associated risk factors for supporting tissue loss around the teeth. 
+Multiple linear regression further confirmed the independent effects of 
+pre‑treatment U1‑NA angle, ∠ANB, and treatment duration on periodontal ligament 
+area reduction. A comprehensive pre‑treatment evaluation of combined 
+skeletal‑dental features is critical for individualized orthodontic risk 
+stratification and clinical decision‑making.
+
+© 2026. The Author(s).
+
+DOI: 10.1186/s12903-026-09294-3
+PMCID: PMC13651139
+PMID: 42458410 [Indexed for MEDLINE]
+
+Conflict of interest statement: Declarations. Ethics approval and consent to 
+participate: This study was approved by the Bioethics committee of Beijing 
+Friendship Hospital, Capital Medical University (No. 2025-P2-607-01) and 
+conducted in strict accordance with the Declaration of Helsinki. Verbal informed 
+consent was obtained from all contactable participants via telephone prior to 
+their inclusion in the study, and an exemption from informed consent was granted 
+by the Bioethics Committee of Beijing Friendship Hospital, Capital Medical 
+University for those who were unreachable. This clinical trial was registered at 
+the Chinese Clinical Trial Registry (ChiCTR, Identifier: ChiCTR2600116097, 
+registered on January 5, 2026). Consent for publication: Not Applicable. 
+Competing interests: The authors declare no competing interests.

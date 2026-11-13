@@ -3,7 +3,7 @@
 单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
-当前版本为 `1.4.1`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕，在 1.4.0 基础上补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前版本为 `1.4.2`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。1.4.2 给 `fetch_abstracts` 加精简/结构化/落盘（见下方「摘要精简与落盘」）；1.4.1 补检索式本地语法检查（见行为契约第 11 条）。1.4.0 新增系统综述检索助手（`check_recall`/`mesh`/`diff`/`export`）与可选检索留痕，并修复 [issue：引号短语开头误报警告](https://github.com/rsvsv/pubmed-mcp/issues/1)。既有基础工具的默认行为保持兼容，验证范围见下方记录。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
 本轮演练修复与验收见 [正畸与深度学习修复记录](docs/exercise-fixes-validation.md)，包含测试结果、首测失败原因与未验证范围。发布前安装包验证另记于 [发布检查](docs/release-1.4.0.md)〔版本来源：pyproject.toml；本项目自订文档命名〕。
 
@@ -188,7 +188,7 @@ python pubmed_mcp.py --check-key
 |---|---|---|
 | `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：字段标签（写法与「引号只包短语、别把 `[Tag]` 包进去」的说明见 `search` 的工具说明）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
 | `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
-| `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」 |
+| `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」；可选 `fields`/`as_json` 精简、`out_path` 落盘（1.4.2） |
 | `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed` |
 | `check_recall` | 已知文献找回测试：一批已知相关 PMID 哪些被 `term` 检回 | 分批 esearch 交集判定 found/missing（每批 50，避免 URL 超长 414）；缺失项附标题与存在状态（present/unavailable/unknown）；term 被 NCBI 忽略时显著告警；只证明已知集找回，不代表查全率 |
 | `mesh` | 查 MeSH 主题词表 | 描述符、入口词（同义词）、树号、下位词、范围注；无描述符命中不等于主题无文献 |
@@ -217,6 +217,19 @@ search('"root resorption"[tiab]', detail="ids", as_json=True)
 ```
 
 精简不保证每次输出更短：少量短题录可能因必要说明而抵消节省。尚未测量实际模型 token 或费用收益。
+
+### 摘要精简与落盘（1.4.2）
+
+不传新参数时 `fetch_abstracts` 输出与 1.4.1 逐字相同（A/B 49 组），只在正文超过 6 万字符时末尾多一行 ⚠️ 提示。详见 [docs/abstract-slim.md](docs/abstract-slim.md)。
+
+| 参数 | 作用 |
+|---|---|
+| `fields` | 改走 efetch XML 解析，只输出所列字段：`title,abstract,authors,journal,pubdate,ids,pt,lang,mesh,comments,coi,other_abstracts` 或 `all`。不含作者单位。只给 `as_json` 时默认 `title,abstract,authors,journal,pubdate,ids,pt,lang,comments` |
+| `as_json` | 结构化 JSON：摘要分段 `{label,text}`、`has_abstract`、撤稿/勘误关联（无 PMID 时为 null）、书记录 `source="book"` |
+| `out_path` | 整份结果写入新文件（不覆盖、原子发布），只回路径、字节数、sha256；篇数多时用它绕开客户端结果上限 |
+
+体积〔实测 2026-11-13，60 篇 `"root resorption"[tiab] AND 2023:2025[dp]`〕：原排版 167,062 字符；`fields=title,abstract` 文本 106,160（64%）；默认字段精简文本 115,131（69%）；`fields=title,abstract,pt` JSON 114,545（69%）。精简只能省三成多，60 篇仍是十万字符量级，**大批量请用 `out_path`**。
+XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，14 条混批 0 处不符〔实测 2026-11-13〕）；上下标、斜体等内联格式与文本档一样被去掉，数值引用仍须核对原文。
 
 ### 系统综述检索助手（1.4.0 新增）
 
