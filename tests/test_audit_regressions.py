@@ -3,6 +3,7 @@ All literals are test inputs/expectations (本项目自订测试口径), not lit
 Run: python -I -m unittest discover -s <repo>/tests -v
 """
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import unittest
@@ -188,7 +189,11 @@ class OutputRegression(unittest.TestCase):
         tools = run(m.mcp.list_tools)
         for tool in tools:
             self.assertEqual(tool.description.strip(), getattr(m, tool.name).__doc__.strip())
-        self.assertLess(sum(len(t.description) for t in tools), 2600)  # 本项目自订描述体积回归上限（1.4.0 新增 4 工具后由 2000 上调）；合计实测 2026-11-11 为 2304、1.4.2 为 2571（mcp.list_tools 口径）
+        # 预算按 inspect.cleandoc 口径算，与 Python 版本无关：Python 3.13 起编译器会自动去掉 docstring
+        # 每行的公共缩进，3.10–3.12 不去，于是同一源码 list_tools 的原始长度在 3.10 上多出每行 4 个空格
+        # 〔实测 2026-11-13：d1fb402 原始长度 3.10 为 2593、3.13 为 2413，cleandoc 后两者都是 2405；
+        #  1.4.3 原始长度 3.10 为 2759（CI 的 3.10 两格因此失败）、3.13 为 2571〕。
+        self.assertLess(sum(len(inspect.cleandoc(t.description)) for t in tools), 2600)  # 本项目自订描述体积回归上限（1.4.0 新增 4 工具后由 2000 上调）
 
 
 if __name__ == "__main__":
