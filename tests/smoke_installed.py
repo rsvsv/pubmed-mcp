@@ -29,7 +29,7 @@ async def smoke(cli, workdir):
                 assert all(t.description for t in tools)
                 search = next(t for t in tools if t.name == "search")
                 schema = getattr(search, "inputSchema", None) or getattr(search, "input_schema")
-                assert schema["properties"]["detail"]["default"] == "full"
+                assert schema["properties"]["detail"]["default"] == "brief"
                 assert schema["properties"]["detail"]["enum"] == ["full", "brief", "ids"]
                 assert schema["properties"]["datetype"]["enum"] == ["pdat", "edat"]
                 link_tool = next(t for t in tools if t.name == "links")

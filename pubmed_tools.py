@@ -658,12 +658,11 @@ class Implementation:
                      mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,
                      retstart: StrictInt | StrictStr = 0,
                      as_json: bool | str = False,
-                     detail: Literal["full", "brief", "ids"] = "full", datetype: Literal["pdat", "edat"] = "pdat") -> str:
-        """检索 PubMed，返回命中数及 PMID、日期、期刊、标题、作者、DOI、PMC、文献类型。
+                     detail: Literal["full", "brief", "ids"] = "brief", datetype: Literal["pdat", "edat"] = "pdat") -> str:
+        """检索 PubMed，默认给简略题录。
 
-        term 使用英文 PubMed 语法：resorption[Title]、"root resorption"[tiab]、AND/OR/NOT、截词 *。
-        布尔算子写大写，引号只包短语，括号须配对。MeSH 请核对实际执行式：写错的带引号词会报
-        quotedphrasesnotfound，不带引号可能改写成别的概念；有命中不证明原短语存在。
+        term 用英文 PubMed 语法："root resorption"[tiab]、大写 AND/OR/NOT、截词 *；括号配对。
+        MeSH 须核对执行式：拼错可报 quotedphrasesnotfound 或改写概念；命中不证明原短语存在。
         sort: pub_date / relevance / author（非期刊质量排序）。
         field 支持 Title、Title/Abstract、Journal、Author、Affiliation、Language、Grant、PMID；其它值报错。
         MeSH/文献类型写入 term 的 [MeSH Terms]/[Publication Type]。
@@ -671,7 +670,7 @@ class Implementation:
         单端日期自动补另一端并提示。reldate=0 不限，正数为最近天数；和显式日期同时给时做 AND。
         retmax 默认 20，上限 1000；retstart 为零起始偏移，上限 9998，最多可翻前 9999 条。
         计数用 count；题录用 search。as_json=True 返回解析和结构化记录。
-        detail: full 默认完整题录；brief 仅 PMID/日期/标题/全部文献类型；ids 仅 PMID，不取元数据或检查撤稿类型。
+        detail: 默认 brief，仅 PMID/日期/标题/全部文献类型；full 补作者/期刊/DOI 等；ids 仅 PMID，不取元数据或检查撤稿类型。
         各档保留查询警告；brief 省略字段不表示缺失，ids 的 returned 计 PMID 数、esummary_missing 为 null。
         先读 ⚠️：改写后的命中数不等于原查询命中数；0 条不证明主题无文献。PMC 号不保证立即可下载。
         """
@@ -1604,13 +1603,15 @@ class Implementation:
 
 
     async def diff(self, term_a: str, term_b: str, max_show: StrictInt | StrictStr = 20,
-                   as_json: bool | str = False) -> str:
+                   as_json: bool | str = False, preview: bool | str = False) -> str:
         """对比两个 PubMed 查询的结果集：b 相对 a 新增、丢失了哪些 PMID。
         检索式迭代前后核对增减；两查询都须在 9999 窗口内，超窗报错（先缩小或改用 export）。
-        max_show 默认 20、上限 200，文本档每侧只展示部分；as_json=True 给完整列表。
-        集合差只描述增减，不判断相关性；命中更多不等于更好。两次查询间数据库可能更新。
+        max_show 默认 20、上限 200，文本档每侧只展示部分；as_json=True 给完整 PMID 列表。
+        preview=True 可额外获取每侧前 max_show 条的标题/日期/全部文献类型，默认关闭；不是随机样本或相关性排名。
+        未再命中（removed）不代表数据库删除；日期窗口变化也会产生差集。新增仍须读摘要判断相关性。
         """
         json_mode = self.dependencies._as_bool(as_json, "as_json")
+        preview_mode = self.dependencies._as_bool(preview, "preview")
         ms_req = self.dependencies._int(max_show, "max_show")
         if ms_req < 0:
             raise self.dependencies.NcbiError(f"max_show={max_show!r} 不能为负；不想看列表给 0。")
@@ -1645,7 +1646,29 @@ class Implementation:
             warn_b.append(b_drift)
         qt_a = (a_first.get("querytranslation") or "").strip()
         qt_b = (b_first.get("querytranslation") or "").strip()
-        caveat = "集合差只描述增减，不判断相关性；命中更多不等于更好。两次查询间数据库可能更新，结果以取回时点为准。"
+        caveat = ("集合差只描述增减，不判断相关性；命中更多不等于更好。未再命中（removed）只是 a 有、b 没有，"
+                  "不代表文献被数据库删除；若 b 仅覆盖补检入库区间，区间外旧文献也会列入 removed。"
+                  "两次查询间数据库可能更新，结果以取回时点为准。")
+        previews = {}
+        if preview_mode:
+            for label, ids, warnings in (("added", added, warn_b), ("removed", removed, warn_a)):
+                selected = ids[:ms]
+                records, error = [], ""
+                if selected:
+                    try:
+                        pairs = await self.dependencies._esummary_dicts(selected)
+                        by_id = {uid: self.dependencies._brief_record(uid, record) for uid, record in pairs}
+                        records = [by_id[uid] for uid in selected if uid in by_id]
+                    except self.dependencies.NcbiError as exc:
+                        error = self.dependencies._mask(str(exc))
+                missing = [uid for uid in selected if uid not in {rec["pmid"] for rec in records}]
+                if error or missing:
+                    warnings.append("⚠️ " + label + " 标题预览不完整；集合差 PMID 保留，请重取缺失题录。"
+                                    + (" 原因：" + error if error else ""))
+                previews[label] = {"requested_pmids": selected, "records": records,
+                                   "missing_pmids": missing, "not_previewed_count": len(ids) - len(selected),
+                                   "error": error}
+            previews["note"] = "仅按结果顺序预览每侧前 max_show 条，不是随机样本或相关性排名；题名不能代替摘要筛选。"
         self.dependencies._audit("diff", term_a=term_a, term_b=term_b, count_a=a_count, count_b=b_count,
                added=len(added), removed=len(removed), common=common,
                querytranslation_a=qt_a, querytranslation_b=qt_b,
@@ -1655,17 +1678,26 @@ class Implementation:
                                "added_count": len(added), "removed_count": len(removed), "common_count": common,
                                "added": added, "removed": removed,
                                "querytranslation_a": qt_a, "querytranslation_b": qt_b,
-                               "warnings_a": warn_a, "warnings_b": warn_b, "caveat": caveat}, ensure_ascii=False)
+                               "warnings_a": warn_a, "warnings_b": warn_b, "caveat": caveat,
+                               **({"preview": previews} if preview_mode else {})}, ensure_ascii=False)
         head = [f"term_a：{term_a}", f"  命中 {a_count}，取回 {len(a_ids)}"]
         head += ["  " + w for w in warn_a]
         head += [f"term_b：{term_b}", f"  命中 {b_count}，取回 {len(b_ids)}"]
         head += ["  " + w for w in warn_b]
-        head.append(f"新增 {len(added)} 条（b 有 a 无）；丢失 {len(removed)} 条（a 有 b 无）；共同 {common} 条")
-        if ms:
+        head.append(f"新增 {len(added)} 条（b 有 a 无）；未再命中 {len(removed)} 条（a 有 b 无）；共同 {common} 条")
+        if preview_mode:
+            head.append(previews["note"])
+            for label, title, ids in (("added", "新增", added), ("removed", "未再命中", removed)):
+                item = previews[label]
+                head.append(f"{title}标题预览（请求 {len(item['requested_pmids'])}/{len(ids)}，其余未预览 {item['not_previewed_count']}）")
+                head.extend(self.dependencies._fmt_brief_record(rec, rec["pmid"]) for rec in item["records"])
+                if item["missing_pmids"]:
+                    head.append("⚠️ 预览元数据未取回，PMID 保留：" + ", ".join(item["missing_pmids"]))
+        elif ms:
             if added:
                 head.append(f"新增（展示 {min(ms, len(added))}/{len(added)}）：" + ", ".join(added[:ms]))
             if removed:
-                head.append(f"丢失（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
+                head.append(f"未再命中（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
         head.append("说明：" + caveat)
         return "\n".join(head)
 

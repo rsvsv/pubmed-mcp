@@ -223,7 +223,7 @@ class Diff(unittest.TestCase):
         self.two_queries(["1", "2", "3"], ["2", "3", "4"])
         text = run(m.diff, "a", "b")
         self.assertIn("新增 1 条", text)
-        self.assertIn("丢失 1 条", text)
+        self.assertIn("未再命中 1 条", text)
         self.assertIn("共同 2 条", text)
         self.assertIn("不判断相关性", text)
         data = json.loads(run(m.diff, "a", "b", as_json=True))

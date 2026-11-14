@@ -40,7 +40,7 @@ esummary 存在性检查失败时，来源状态保留为 `unknown` 并附警告
 python pubmed_mcp.py --diff-files previous.txt current.txt --out differences.json
 ```
 
-输出新增、丢失和共同 PMID，保留两份输入的哈希。新增保持新名单顺序，其余保持旧名单顺序。差集 JSON 的 `candidate_pmids` 只包含新增文献；引用和滚雪球 JSON 也只保存候选。它们均不能作为完整基线，基线请使用完整 PMID 文本清单。
+输出新增、未再出现和共同 PMID，保留两份输入的哈希。`removed_pmids` 只是旧名单有、新名单没有，不代表 PubMed 删除了文献。若新名单只覆盖补检入库区间，区间外的旧文献也会出现在这里；保留原完整基线，不用补检名单替换。文件及 CLI 返回摘要均附带这段解释。新增保持新名单顺序，其余保持旧名单顺序。差集 JSON 的 `candidate_pmids` 只包含新增文献；引用和滚雪球 JSON 也只保存候选。它们均不能作为完整基线，基线请使用完整 PMID 文本清单。
 
 ```bash
 python pubmed_mcp.py --export-pmids differences.json --out additions.ris --format ris

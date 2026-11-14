@@ -274,9 +274,13 @@ class Implementation:
             "inputs": {"baseline": self.dependencies._pmid_binding(b), "current": self.dependencies._pmid_binding(c)},
             "warnings": [],
         }
+        doc["interpretation"] = ("新增是当前名单有、基线没有；未再出现（removed）是基线有、当前名单没有，"
+                                 "不代表文献被数据库删除。若当前名单仅覆盖补检入库区间，区间外旧文献也会列入 removed。"
+                                 "保留完整基线，不能用补检名单或新增名单替换；新增仍需阅读题名摘要判断相关性。")
         doc["evidence"] = "来源：输入清单及其哈希；仅做集合运算，不判断相关性或数据库变化原因"
         path, nbytes, sha = self.dependencies._write_json_new(out_abs, doc)
         self.dependencies._audit("diff_files", path=path, sha256=sha, added=len(added), removed=len(removed), common=len(common), inputs=doc["inputs"])
         return {"schema": self.dependencies._DIFF_SCHEMA, "path": path, "bytes": nbytes, "sha256": sha,
                 "counts": doc["counts"], "candidate_pmids": len(added),
-                "removed_pmids": len(removed), "common_pmids": len(common)}
+                "removed_pmids": len(removed), "common_pmids": len(common),
+                "interpretation": doc["interpretation"]}

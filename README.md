@@ -237,11 +237,13 @@ python pubmed_mcp.py --check-key
 
 ### 按需精简检索结果
 
-`search` 新增可选 `detail`，默认 `full`。已有调用不传此参数时维持完整输出；`as_json` 仍独立控制输出格式。
+`search` 默认 `detail="brief"`，先给标题、日期和全部文献类型，减少初看结果时的输出。需要作者、期刊、DOI 等完整字段的调用方必须显式传 `detail="full"`；`as_json` 仍独立控制输出格式。
+
+旧说明“默认 full，省略参数维持完整输出”已作废：本轮按需输出改动切换了默认档，显式 full 的字段形状保留。〔作废日期：2026-11-14；依据：pubmed_tools.py 的 search 签名〕
 
 | detail | 返回内容 | 保留的功能与限制 |
 |---|---|---|
-| `full` | 原有完整题录字段 | 默认行为及 JSON 字段保持兼容 |
+| `full` | 原有完整题录字段 | 显式选择；原 JSON 字段形状保持兼容 |
 | `brief` | PMID、日期、完整标题、全部文献类型 | 仍读取元数据；不删除撤稿、勘误类型；省略的作者、期刊、DOI/PMC 不表示来源缺失 |
 | `ids` | 按 esearch 返回顺序给 PMID | 跳过 esummary；未获取元数据、未检查撤稿等类型；JSON 的 returned 按 PMID 计，esummary_missing 为 null |
 
@@ -277,7 +279,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 - `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。term 为空直接报错（1.4.4）；任一批仅剩 UID 条件且 term 本身不是纯 `PMID[uid]` 时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
 - `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；补充概念记录（SCR）单独标注、给映射主题词并提示用 `[nm]` 检索（1.4.4）；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
-- `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/丢失/共同。任一超窗拒绝并提示改用 export。
+- `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/未再命中/共同。任一超窗拒绝并提示改用 export。`preview=True` 额外获取每侧前 `max_show` 条的标题、日期和全部文献类型，默认关闭以避免额外请求；JSON 的完整 PMID 列表始终保留。预览按返回顺序，不是随机样本或相关性排名；缺标题或请求失败单独告警，不删除候选。`removed` 只是旧式有、新式没有，不证明数据库删除；补检窗口变化也会产生差集。
 - `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重（这项核对只能发现重复与计数漂移；分页期间数据库更新造成的跳号发现不了）。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
 - **检索留痕（工作区未发布功能）**：设 `PUBMED_AUDIT_DIR` 开启，按进程/会话写 `searches-<pid>-<session>.jsonl`；记录带时区的起止时间、输入与实际请求、执行式、结果及事件标识。JSON 返回 `audit_status`，留痕失败也在返回结果中说明。`--audit-report <日志...> --out <报告.md或.csv>` 离线整理记录表，兼容旧日志。SDK 入参拒绝与进程强制终止不保证留痕；默认关闭。详见 [记账与报告用法](docs/audit-report.md)。旧版仅写 `searches.jsonl`、仅 stderr 报写入失败的说明已作废〔本次实现订正〕。
 - **引文补查**：`links(to="refs")` / `links(to="citedin")` 给参考文献/施引文献；有展示上限并显示截断，只限 PubMed 已录入关系。

@@ -178,6 +178,9 @@ class DiffTests(Base):
         self.assertEqual(len(doc["inputs"]["current"]["sha256"]), 64)
         self.assertEqual(r["candidate_pmids"], 2)
         self.assertEqual(doc["added_count"], 2)
+        self.assertEqual(r["interpretation"], doc["interpretation"])
+        self.assertIn("不代表文献被数据库删除", r["interpretation"])
+        self.assertIn("补检入库区间", r["interpretation"])
 
     def test_diff_empty(self):
         b = write(self.p("b.txt"), "")

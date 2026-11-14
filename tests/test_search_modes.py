@@ -29,15 +29,17 @@ class SearchModes(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_default_matches_explicit_full(self):
+    def test_default_matches_explicit_brief(self):
         for json_mode in (False, True):
-            self.assertEqual(run(m.search, "tooth", as_json=json_mode), run(m.search, "tooth", as_json=json_mode, detail="full"))
-        data = json.loads(run(m.search, "tooth", as_json=True))
+            self.assertEqual(run(m.search, "tooth", as_json=json_mode), run(m.search, "tooth", as_json=json_mode, detail="brief"))
+
+    def test_explicit_full_preserves_original_shape(self):
+        data = json.loads(run(m.search, "tooth", as_json=True, detail="full"))
         self.assertNotIn("detail", data)
         self.assertEqual(data["records"][0], m._record_parts(*self.records[0]))
 
     def test_brief_keeps_titles_and_all_types(self):
-        full = json.loads(run(m.search, "tooth", as_json=True))
+        full = json.loads(run(m.search, "tooth", as_json=True, detail="full"))
         brief = json.loads(run(m.search, "tooth", as_json=True, detail="brief"))
         for a, b in zip(full["records"], brief["records"]):
             self.assertEqual(b, {k: a[k] for k in ("pmid", "pubdate", "title", "pubtype")})
@@ -111,7 +113,7 @@ class SearchModes(unittest.TestCase):
         tool = next(t for t in tools if t.name == "search")
         schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema")
         self.assertEqual(schema["properties"]["detail"]["enum"], ["full", "brief", "ids"])
-        self.assertEqual(schema["properties"]["detail"]["default"], "full")
+        self.assertEqual(schema["properties"]["detail"]["default"], "brief")
         for detail in ("full", "brief", "ids"):
             run(m.mcp.call_tool, "search", {"term": "tooth", "detail": detail})
 
