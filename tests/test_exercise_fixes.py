@@ -183,7 +183,7 @@ class CitationAndAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"PUBMED_AUDIT_DIR": tmp}), patch.object(m, "_esearch", AsyncMock(return_value=esr(["1", "2"]))), patch.object(m, "_esummary_dicts", AsyncMock(return_value=[("1", {"title": "X"})])):
             for json_mode in (True, False):
                 run(m.search, "tooth", field="Title", mindate="2020", maxdate="2021", retmax=2, sort="pub_date", as_json=json_mode)
-            rows = [json.loads(s) for s in Path(tmp, "searches.jsonl").read_text(encoding="utf-8").splitlines()]
+            rows = [json.loads(s) for s in Path(tmp, m._audit_filename()).read_text(encoding="utf-8").splitlines()]
         for r in rows:
             self.assertEqual(r["returned"], 1)
             self.assertEqual(r["field"], "Title")

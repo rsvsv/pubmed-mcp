@@ -4,11 +4,19 @@
 
 | 文档 | 内容 |
 |---|---|
+| [cli-and-modules.md](cli-and-modules.md) | 命令行帮助、MCP 能力边界、模块职责与安装验证 |
+| [review-delivery.md](review-delivery.md) | 从方案生成可追溯交付目录、摘要筛选表、完成状态及恢复核验 |
+| [reliability-repairs.md](reliability-repairs.md) | 检索异常、分页警告与交付恢复修复的验收状态 |
 | [systematic-review-workflow.md](systematic-review-workflow.md) | 系统综述检索的推荐流程，以及每一步该用哪个工具 |
 | [query-lint.md](query-lint.md) | 检索式本地语法检查：会提醒哪些写法，以及字段标签白名单从哪来 |
 | [abstract-slim.md](abstract-slim.md) | `fetch_abstracts` 的精简、结构化输出和写入文件 |
 | [ris-export.md](ris-export.md) | RIS 导出的字段对照表，以及验证情况 |
-| [roadmap.md](roadmap.md) | 还没做的改进和修复方案 |
+| [roadmap.md](roadmap.md) | 开发设计、当前交付状态及尚未验证的实验路径 |
+| [retrieval-files.md](retrieval-files.md) | 未发布功能：文件核验、日期补检、引用候选、名单导出与断点续跑 |
+| [feature-validation.md](feature-validation.md) | 新功能的测试范围、合成基准和未执行的外部验收 |
+| [history/roadmap-superseded.md](history/roadmap-superseded.md) | 已作废的旧路线图原文及作废原因 |
+| [export-integrity.md](export-integrity.md) | 未发布补丁：导出写入数、缺失名单及核对状态 |
+| [audit-report.md](audit-report.md) | 未发布功能：检索记账与离线 Markdown/CSV 记录表 |
 | [derived_values_ledger.md](derived_values_ledger.md) | 推算值登记表（README 和文档中的 DV 编号都指向这里） |
 
 版本变化见仓库根目录的 [CHANGELOG.md](../CHANGELOG.md)。

@@ -415,7 +415,7 @@ class Audit(TempDir):
     def test_off_by_default_and_on_appends_jsonl(self):
         with patch.dict(os.environ, {"PUBMED_AUDIT_DIR": ""}):
             run(m.count, "tooth")
-        log = self.path("searches.jsonl")
+        log = self.path(m._audit_filename())
         self.assertFalse(os.path.exists(log))
         with patch.dict(os.environ, {"PUBMED_AUDIT_DIR": self.dir}):
             run(m.count, "tooth")

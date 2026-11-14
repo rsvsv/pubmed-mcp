@@ -1,0 +1,14 @@
+{
+  "question": "⚠️【待确认】请填写研究问题",
+  "eligibility": "⚠️【待确认】请填写事先确定的纳入排除标准",
+  "term": "⚠️【待确认】请填写经核对的英文 PubMed 检索式",
+  "strategy_status": "draft",
+  "strategy_review_note": "",
+  "datetype": "pdat",
+  "mindate": "",
+  "maxdate": "",
+  "known_relevant": [],
+  "other_databases": "⚠️【待确认】记录其它数据库检索范围、理由与证据指针",
+  "citation_tracking": "⚠️【待确认】记录引文补查范围、理由与证据指针",
+  "purpose": "实际研究；字段及状态为本项目自订交付口径"
+}

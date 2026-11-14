@@ -1,6 +1,6 @@
 # pubmed-mcp
 
-单文件 PubMed MCP 服务（stdio），裸打 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。
+PubMed MCP 服务（stdio），直接调用 NCBI E-utilities，不经过 `pubmed-client` 之类的中间层。`pubmed_mcp.py` 负责 SDK 兼容、注册和依赖连接；网络传输、检索业务、文件操作、导出恢复、诊断、审计及报告分别放在独立模块。`pubmed_review.py` 通过明确的综述服务接口编排任务，`pubmed_cli.py` 负责命令行，`pubmed_runtime.py` 管理相邻加载与完整实现指纹。完整职责表见 [模块结构](docs/cli-and-modules.md)。
 现在也带 `pip install` 入口：装完直接敲 `pubmed-mcp` 就是服务。
 
 当前版本为 `1.4.5`〔本项目自订版本号；来源：pyproject.toml 的 project.version〕。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)，文档目录见 [docs/README.md](docs/README.md)，后续计划见 [docs/roadmap.md](docs/roadmap.md)。
@@ -13,6 +13,31 @@
 | 1.4.2 | `fetch_abstracts` 精简字段、结构化 JSON、写文件（`fields` / `as_json` / `out_path`） |
 | 1.4.1 | 检索式本地语法检查（拼错的字段标签、`AND NOT`、前导截词等）；count 0 条解释 |
 | 1.4.0 | 系统综述检索助手 `check_recall` / `mesh` / `diff` / `export`；可选检索留痕 |
+
+当前源码新增（尚未制作新的版本发布包）：检索记账、导出说明与文件核验、入库日期补检、完整引用关系、名单比较/直接导出、单轮追引用，以及题录阶段断点续跑。入口和限制见 [新功能使用说明](docs/retrieval-files.md)。从仓库安装取得所选分支的源码；既有 Release 附件不会随源码更新。
+
+综述检索交付入口：`pubmed-review --review-plan <方案.json> --out-dir <新目录>` 将完整 PMID 基线、题录摘要、待筛选表、RIS、留痕和待解决事项放在同一目录；支持续跑与交付核验。实际用法与完成边界见 [综述检索交付](docs/review-delivery.md)。
+
+### MCP 与命令行的功能边界
+
+| 能力 | MCP 客户端直接调用 | 命令行入口 |
+|---|---|---|
+| 检索、计数、摘要、词表、已知集核验、查询对比、查询导出 | `search`、`count`、`fetch_abstracts`、`mesh`、`check_recall`、`diff`、`export` | 无对应通用检索命令；自检不替代正式检索 |
+| 参考文献与施引关系 | `links(to="refs" / "citedin")` | `--snowball` 编排单轮追查并扣除基线 |
+| 检索留痕 | 服务进程设置 `PUBMED_AUDIT_DIR` 后生效 | 综述交付自动启用任务独立留痕 |
+| 日志汇总为报告 | 无直接工具入口 | `--audit-report` |
+| 本地名单差集、按名单导出与恢复、导出文件核验 | 无直接工具入口 | `--diff-files`、`--export-pmids`、`--resume-export`、`--verify-export` |
+| 完整综述交付、续跑与交付核验 | 无直接工具入口 | `--review-plan`、`--resume-review`、`--verify-review`；也可用 `pubmed-review` |
+
+仅能调用本服务 MCP 工具的客户端，不能直接运行表中的命令行工作流；有终端执行能力的助手可调用命令行。引用关系查询与留痕本身可在 MCP 中使用，不等于完整追查编排或报告生成。
+
+查看全部命令及参数：
+
+```bash
+pubmed-mcp --help
+```
+
+源码入口同样支持 `python -I pubmed_mcp.py --help`；安装后也可用 `python -I -m pubmed_mcp --help`。帮助不联网、不写任务文件；不带参数仍启动 MCP stdio 服务。参数缩写、未知参数及不属于当前命令的选项明确报错。模块职责与部署说明见 [命令行与模块结构](docs/cli-and-modules.md)。
 
 既有基础工具的默认行为各版保持兼容。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
 
@@ -65,7 +90,9 @@ pubmed-mcp --check-key
 
 零安装路线（下面那节）不受这个影响，因为配置里写的就是绝对路径。
 
-**不想装包也能用**（零安装，直接跑文件）：
+**不想安装本项目的包也能用**（依赖仍需安装，直接跑源码）：
+
+文件部署请保留 `pubmed_runtime.RUNTIME_FILES` 列出的全部运行模块在同一目录；完整清单见 [安装与部署](docs/cli-and-modules.md#安装与部署)，不要只复制核心文件。推荐安装完整 wheel，避免漏文件。现有启动命令与配置路径保持不变。
 
 ```bash
 git clone https://github.com/rsvsv/pubmed-mcp.git
@@ -252,7 +279,7 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 - `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；补充概念记录（SCR）单独标注、给映射主题词并提示用 `[nm]` 检索（1.4.4）；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
 - `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/丢失/共同。任一超窗拒绝并提示改用 export。
 - `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重（这项核对只能发现重复与计数漂移；分页期间数据库更新造成的跳号发现不了）。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
-- **检索留痕**：设环境变量 `PUBMED_AUDIT_DIR`，工具在完成路径追加 JSONL 到 `searches.jsonl`。search/count 区分 `input_params` 与实际 `request_params`；记录实际返回数、执行式、警告和运行源码版本，search 元数据失败另记 `error`。fetch_abstracts/links 记录请求 PMID；check_recall 记录各批执行式。留痕默认关闭；写失败报 stderr。参数校验失败、网络中断等并非所有失败路径都有日志，不能当完整请求流水账。
+- **检索留痕（工作区未发布功能）**：设 `PUBMED_AUDIT_DIR` 开启，按进程/会话写 `searches-<pid>-<session>.jsonl`；记录带时区的起止时间、输入与实际请求、执行式、结果及事件标识。JSON 返回 `audit_status`，留痕失败也在返回结果中说明。`--audit-report <日志...> --out <报告.md或.csv>` 离线整理记录表，兼容旧日志。SDK 入参拒绝与进程强制终止不保证留痕；默认关闭。详见 [记账与报告用法](docs/audit-report.md)。旧版仅写 `searches.jsonl`、仅 stderr 报写入失败的说明已作废〔本次实现订正〕。
 - **引文补查**：`links(to="refs")` / `links(to="citedin")` 给参考文献/施引文献；有展示上限并显示截断，只限 PubMed 已录入关系。
 
 实测注意〔2026-11-11 live，verify_sr_live.py〕：大题目切片计数和可能**大于**总数——同一记录带多个发表日期时会落进多个年份切片，去重后与总数一致；警告会如实说明，这不是错误。例：`dental implant` 命中 73612，切片计数和 78474，去重后 73612〔实测；重复数 4862 为推算 DV-SR-DEDUP〕。

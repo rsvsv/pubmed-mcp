@@ -49,13 +49,19 @@
   - 筛选工具导入兼容性以对方文档为准⚠️【待确认】；不保证与 PubMed 网页导出逐字一致。
 - 记录导出时点；数据库会更新，结果以导出时点为准。
 
-引文补查可用 `links(pmids, to="refs")` 看参考文献、`to="citedin"` 看施引文献；`to="pubmed"` 仍是相关文献。仅覆盖 PubMed 已录入关系；输出会标截断，不能当完整引文名单，缺关联也不证明无引文。
+引文补查可用 `links(pmids, to="refs")` 看参考文献、`to="citedin"` 看施引文献；`to="pubmed"` 仍是相关文献。默认文本会标展示截断，`out_path` 保存本次全量来源关系；仅覆盖 PubMed 已录入关系，缺关联不证明无引文。
+
+更新检索可用 `datetype="edat"` 配显式日期，再以 `--diff-files` 比较新旧完整名单，`--export-pmids` 导出新增题录。`--snowball` 保存单轮引用候选及可复算材料；`--checkpoint-dir` / `--resume-export` 只恢复已持久化名单后的题录阶段。详见 [补检与文件工作流](retrieval-files.md)。
 
 ## 6. 写检索报告（PRISMA-S）
 
-- 读 `PUBMED_AUDIT_DIR/searches.jsonl`，整理：数据库（PubMed）、平台（NCBI E-utilities）、检索日期、完整检索式、实际执行式、命中数、所有限制与警告。
+- 读取 `PUBMED_AUDIT_DIR` 下的实际日志文件，用 `--audit-report <日志...> --out <报告.md或.csv>` 整理数据库、平台、检索时间、原始式、执行式、计数与警告。新日志为 `searches-<pid>-<session>.jsonl`，旧 `searches.jsonl` 仍可输入；旧版固定文件名说明已作废〔本次实现订正〕。缺失字段写待确认，不能把多次试检命中数相加当纳入数。详见 [记账与报告](audit-report.md)。
 - 具体报告条目以 PRISMA-S 原文为准⚠️【待确认，未逐字核对】；本工作流不声称覆盖其全部条目。
 - 多库检索：PubMed 单库不等于系统综述全部检索。是否补 Embase/Cochrane/试验注册/引文追踪由研究问题定；本工具目前只覆盖 PubMed。
+
+## 交付入口与验收
+
+策略及范围确认后，使用 [综述检索交付](review-delivery.md) 的方案模板和命令生成交付目录。完整名单、同源题录摘要、待筛选表、RIS、日志与问题清单一起交付；技术完成与方法学待确认分别报告。不要把“工具能调用”当成“研究检索已完成”。
 
 ## 7. 筛选与写作（工具之外）
 

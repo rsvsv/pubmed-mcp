@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pubmed-mcp"
 version = "1.4.5"   # 本项目自订发布版本：外部审查修复（1.4.4 P3 小 bug；1.4.3 RIS；1.4.2 摘要精简/落盘；1.4.1 检索式语法检查）
-description = "单文件 PubMed MCP 服务：裸打 NCBI E-utilities，把「查不到」和「没有」分开说"
+description = "PubMed MCP 服务与检索文件工作流：直接调用 NCBI E-utilities，把「查不到」和「没有」分开说"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"          # SPDX 字符串写法；表写法 {text=...} 已被 setuptools 判弃用（见文件顶部）
@@ -42,7 +42,8 @@ Repository = "https://github.com/rsvsv/pubmed-mcp"
 [project.scripts]
 # 装完直接敲 `pubmed-mcp` 就是 stdio 服务；带 --selftest/--probe/--check-key/--concurrent 走自检。
 pubmed-mcp = "pubmed_mcp:main"
+pubmed-review = "pubmed_review:main"
 
 [tool.setuptools]
-# 本包只有一个 .py 文件，不用包目录结构。
-py-modules = ["pubmed_mcp"]
+# 服务与独立进程的综述交付入口；不使用包目录结构。
+py-modules = ["pubmed_mcp", "pubmed_cli", "pubmed_review", "pubmed_runtime", "pubmed_query", "pubmed_records", "pubmed_report", "pubmed_audit", "pubmed_transport", "pubmed_files", "pubmed_export", "pubmed_diagnostics", "pubmed_tools", "pubmed_services"]
