@@ -288,6 +288,10 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 验收：离线 84 项（mcp 1.30.0 与 2.3.0 各 84 通过）＋默认行为 A/B 49 组逐字一致＋真实联网验收 PASS＋对抗性探针找坑并修复 3 处＋真实题目端到端演练〔实测 2026-11-11，详见 docs/history/sr-tools-validation.md〕。尚未测量新工具的实际 token 开销；工具描述总字符由 1325 增至 2328〔实测 list_tools〕，描述体积回归上限相应由 2000 上调到 2600〔本项目自订〕。（以上为 1.4.0 验收时的数字。截至 1.4.4：离线 160 项；描述总字符 2563，按 `inspect.cleandoc` 口径，与 Python 版本无关〔实测 2026-11-13 list_tools〕。）
 
+### 文献检索技能
+
+日常了解领域、为实验找资料或查证论断，可使用 [literature-search](.claude/skills/literature-search/SKILL.md)：按用途选择检索与阅读步骤，区分题名、摘要和全文证据，交付重点论文及证据缺口。正式综述或要求穷尽检索时转入 [systematic-review](.claude/skills/systematic-review/SKILL.md)。技能源码位于本仓库的 `.claude/skills`，仅复制 MCP 运行文件不会安装这些技能。需要跨项目或换电脑使用时，按 [便携安装说明](docs/portable-install.md) 将程序、技能和参考文档放到用户全局目录；安装后不依赖原项目。默认回答保持简短，完整记录按需提供；已知论文定位不自动扩展为综述，实验参数作为复现依据前须核对全文。保存记录和确认技能可发现性时，参阅 [运行与记录说明](.claude/skills/literature-search/references/operations.md)。
+
 ### 自动回归
 
 [regression.yml](.github/workflows/regression.yml) 在推送、拉取请求和手动触发时安装项目，检查依赖，执行离线回归，并验证已安装 CLI 与新 stdio 进程。需要把配置推送至 GitHub 才会触发远端运行。

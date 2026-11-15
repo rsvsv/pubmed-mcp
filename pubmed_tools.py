@@ -5,13 +5,18 @@ Historical evidence and policy comments are retained from the source.
 import functools
 import calendar
 import datetime
+import hashlib
 import json
+import os
 import re
 from typing import Literal
 import anyio
 from pydantic import StrictInt, StrictStr
 
 DEPENDENCIES = ('ABSTRACT_DEFAULT_FIELDS', 'ABSTRACT_FIELDS', 'DB_WHITELIST', 'DIFF_SHOW_CAP', 'EFETCH_CHUNK', 'ESUMMARY_CHUNK', 'EXPORT_MAX', 'FETCH_MAX', 'FETCH_WARN_CHARS', 'FIELD_NO_COUNT', 'FIELD_SWALLOWED', 'FIELD_WHITELIST', 'GOLD_CHUNK', 'GOLD_MAX', 'MESH_CHILD_SHOW', 'MESH_PARENT_SHOW', 'MESH_RETMAX_CAP', 'NO_BEGIN', 'NO_END', 'NcbiError', 'RELDATE_MAX', 'RETMAX_CAP', 'RETSTART_MAX', 'SNOW_BATCH_CAP', 'SNOW_SINGLE_CAP', 'SORT_IGNORED', 'SORT_WHITELIST', 'WINDOW', '_AUDIT_UNKNOWN', '_CJK', '_DATE_RE', '_as_bool', '_as_list', '_audit', '_brief_record', '_check_date', '_check_datetype', '_check_db', '_check_field', '_check_out_path', '_check_reldate', '_check_sort', '_count_of', '_efetch_abstracts', '_efetch_all', '_efetch_xml_all', '_efetch_xml_chunk', '_esearch', '_esummary_dicts', '_expand', '_fmt_brief_record', '_fmt_compact', '_fmt_record', '_get_async', '_ids_in_window', '_ids_map', '_int', '_mask', '_note', '_parse_fields', '_parse_pmids', '_pmids_exist', '_project', '_read_pmid_file', '_recall_warnings_and_degraded', '_record_count_change', '_record_parts', '_retrieval_check', '_safe_json', '_sort_note', '_term_vanished', '_utc_now', '_validate_esearch_page', '_warn_bits', '_windows', '_write_json_new', '_write_new_file', '_xml_record', '_zero_explanation', 'links')
+
+
+_SEARCH_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024  # 本项目自订：快照读写共用字节上限，超限不截断
 
 
 class Implementation:
@@ -374,7 +379,19 @@ class Implementation:
         旧版 `p.lstrip('PM').isdigit()` 那类凑数写法会把混进来的非数字静默丢掉 —— 那正是
         「要 3 条实取 2 条」这类谎的源头，别改回去。
         """
-        s = re.sub(r"(?i)\bpmids?\b\s*[:#]?\s*", " ", pmids or "")
+        # 仅识别官方文章 URL；不访问链接，也不从任意 URL 猜编号。
+        def article_id(match):
+            suffix = match.group(2) or ""
+            if any(separator in suffix for separator in ";,，、"):
+                raise self.dependencies.NcbiError(
+                    "PubMed URL 的查询参数或片段含名单分隔符，无法判断是否另有 PMID；"
+                    "请去掉 URL 的 ?/# 后缀，或将参数中的分隔符编码，再用空格／换行分隔链接与编号。")
+            return match.group(1)
+
+        s = re.sub(
+            r"(?<![^\s;,，、])https?://pubmed\.ncbi\.nlm\.nih\.gov/([0-9]+)/?([?#][^\s]*)?(?=$|[\s;,，、])",
+            article_id, pmids or "", flags=re.I)
+        s = re.sub(r"(?i)\bpmids?\b\s*[:#]?\s*", " ", s)
         # 〔实测 2026-11-10 抓到〕旧写法直接按逗号切，'1,234,567' 变成 ['1','234','567'] ——
         #   三个都是【真实存在】的 PMID，于是「从 Excel 复制一列带千位分隔符的号」
         #   会安静地抓到三篇不相干的文献，而且条数看起来完全正常。
@@ -405,7 +422,11 @@ class Implementation:
             if m:
                 digits = m.group(1)
                 try:
-                    ids.append(str(int(digits)))
+                    normalized = str(int(digits))
+                    if normalized == "0":  # 本项目口径：PMID 仅接受正整数
+                        bad.append(t)
+                    else:
+                        ids.append(normalized)
                 except ValueError:
                     # 〔实测 2026-11-11，Python 3.13〕4301 位纯数字在 int() 处抛裸 ValueError
                     # （3.11+ 的 4300 位上限），不是 NcbiError；走 mcp 2.x 时原文会被剥成一句
@@ -470,7 +491,9 @@ class Implementation:
             # 「unhandled errors in a TaskGroup (1 sub-exception)」——NCBI 那句原文被吞，
             # 而文件头承诺「请求失败会把 NCBI 原文带回来」。宁可整条报错，也不返回缺片的表。
             raise errs[0]
-        return [pair for part in out if part for pair in part]
+        # esummary 的返回顺序不保证等于 esearch 排序；按 UID 关联后恢复请求顺序。
+        by_id = {uid: rec for part in out if part for uid, rec in part}
+        return [(uid, by_id[uid]) for uid in ids if uid in by_id]
 
 
     def _ids_map(self, r):
@@ -654,25 +677,118 @@ class Implementation:
         return [by_id[p] for p in pmids if p in by_id]
 
 
+    @staticmethod
+    def _display_fingerprint(record):
+        return hashlib.sha256(json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                         separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def _read_search_snapshot(self, path):
+        """Explicit local comparison input; no hidden session or query exclusion."""
+        p = os.path.abspath(os.path.expanduser(path))
+        try:
+            with open(p, "rb") as stream:
+                raw = stream.read(_SEARCH_SNAPSHOT_MAX_BYTES + 1)  # 本项目自订：多读一个字节检测超限
+            if len(raw) > _SEARCH_SNAPSHOT_MAX_BYTES:
+                raise ValueError("快照过大，请开启新的展示批次")
+            doc = json.loads(raw.decode("utf-8"))
+            if not isinstance(doc, dict) or doc.get("schema") != "pubmed.search.snapshot.v1":  # 本项目自订：快照协议
+                raise ValueError("只接受 search(out_path=...) 生成的快照")
+            history = doc.get("display_history")
+            if not isinstance(history, dict) or len(history) > self.dependencies.EXPORT_MAX:
+                raise ValueError("展示记录无效或过大")
+            for pid, entry in history.items():
+                if (not re.fullmatch(r"[1-9][0-9]*", pid) or not isinstance(entry, dict)
+                        or set(entry) != {"fingerprint", "detail"}
+                        or not isinstance(entry["fingerprint"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", entry["fingerprint"])
+                        or entry["detail"] not in ("brief", "full", "ids")):
+                    raise ValueError("展示记录字段无效")
+            if not isinstance(doc.get("result"), dict) or not isinstance(doc["result"].get("records"), list):
+                raise ValueError("快照缺少当前页题录")
+        except (OSError, ValueError, TypeError, UnicodeError) as exc:
+            raise self.dependencies.NcbiError(f"无法读取检索快照：{p}：{exc}") from exc
+        return history, {"path": p, "sha256": hashlib.sha256(raw).hexdigest()}
+
+    async def _save_search_snapshot(self, data, pairs, detail, outp, previous, max_show):
+        """Keep the entire requested page; limit only repeat presentation, never retrieval."""
+        history, previous_binding = previous
+        records = ([{"pmid": pid} for pid in data["search_pmids"]] if detail == "ids" else
+                   [self.dependencies._record_parts(pid, record) for pid, record in pairs])
+        warnings = list(data["warnings"])
+        if detail != "ids":
+            warnings.extend(self._integrity_warnings([
+                {"pmid": r["pmid"], "pt": r["pubtype"]} for r in records]))
+        data = {**data, "warnings": list(dict.fromkeys(warnings))}
+        eligible, unchanged, fingerprints, refreshed = [], [], {}, set()
+        for record in records:
+            pid = record["pmid"]
+            fingerprint = self._display_fingerprint(record)
+            fingerprints[pid] = fingerprint
+            old = history.get(pid)
+            enough_detail = old and (old["detail"] == detail or (old["detail"] == "full" and detail == "brief"))
+            if old and (detail == "ids" or (enough_detail and old["fingerprint"] == fingerprint)):
+                unchanged.append(pid)
+            else:
+                eligible.append(pid)
+                # A changed citation can differ only in fields omitted by brief.
+                # Present that full version before treating its fingerprint as shown.
+                if old and old["detail"] != "ids" and detail != "ids" and old["fingerprint"] != fingerprint:
+                    refreshed.add(pid)
+        shown = eligible[:max_show]
+        deferred = eligible[max_show:]
+        refreshed_shown = [pid for pid in shown if pid in refreshed]
+        updated = dict(history)
+        for pid in shown:
+            updated[pid] = {"fingerprint": fingerprints[pid], "detail": "full" if pid in refreshed else detail}
+        if len(updated) > self.dependencies.EXPORT_MAX:
+            raise self.dependencies.NcbiError("展示记录达到上限，请不带 previous_path 开启新批次；不自动丢弃历史记录")
+        display = {"displayed_pmids": shown, "unchanged_pmids": unchanged, "deferred_pmids": deferred}
+        snapshot = {
+            "schema": "pubmed.search.snapshot.v1",  # 本项目自订：当前请求页快照，不是全量基线
+            "source_type": "工具输出/当前请求页；计数为工具记录，展示限制与协议为本项目口径",
+            "scope": "requested_page", "saved_at": self.dependencies._utc_now(),
+            "source_note": "保存本页全部标准化题录及查询信息；不是 NCBI 原始响应，不含摘要；保存或展示均不等于已筛选。",
+            "result": {**data, "records": records}, "requested_detail": detail,
+            "stored_detail": "ids" if detail == "ids" else "full",
+            "previous": previous_binding, "display": display, "display_history": updated,
+        }
+        body = json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"  # 本项目自订：缩进便于局部读取
+        if len(body.encode("utf-8")) > _SEARCH_SNAPSHOT_MAX_BYTES:
+            raise self.dependencies.NcbiError(
+                "快照超过读写大小上限，未写入文件；请减小 retmax 分页获取，"
+                "或不带 previous_path 开启新批次。max_show 不会减小保存的完整页；不截断题录或丢弃历史。")
+        p, size, sha = await anyio.to_thread.run_sync(self.dependencies._write_new_file, outp, body)
+        shown_set = set(shown)
+        full_by_id = {r["pmid"]: r for r in records}
+        projected = [full_by_id[r["pmid"]] if r["pmid"] in refreshed else r
+                     for r in data["records"] if r["pmid"] in shown_set]
+        # The full page retains aliases and translationset; the compact reply avoids duplicating them.
+        summary = {k: v for k, v in data.items() if k not in
+                   ("records", "search_pmids", "translationset", "dropped_phrases", "deprecated_fields")}
+        summary.update(path=p, bytes=size, sha256=sha, scope="requested_page",
+                       displayed=len(shown), unchanged_count=len(unchanged), deferred_count=len(deferred),
+                       deferred_pmids=deferred, refreshed_pmids=refreshed_shown, records=projected,
+                       display_note="仅省略此前展示且内容未变的题录；refreshed_pmids 给更新后完整引用，deferred_pmids 尚未展示。保存/展示不等于筛选；本文件仅含当前页。")
+        self.dependencies._audit("search", path=p, bytes=size, sha256=sha, previous=previous_binding,
+                                 displayed=len(shown), unchanged_count=len(unchanged), deferred_count=len(deferred),
+                                 warnings=data["warnings"])
+        return json.dumps(summary, ensure_ascii=False)
+
     async def search(self, term: str, retmax: StrictInt | StrictStr = 20, sort: str = "", field: str = "",
                      mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,
                      retstart: StrictInt | StrictStr = 0,
                      as_json: bool | str = False,
-                     detail: Literal["full", "brief", "ids"] = "brief", datetype: Literal["pdat", "edat"] = "pdat") -> str:
-        """检索 PubMed，默认给简略题录。
+                     detail: Literal["full", "brief", "ids"] = "brief", datetype: Literal["pdat", "edat"] = "pdat",
+                     out_path: str = "", previous_path: str = "", max_show: StrictInt | StrictStr = 20) -> str:
+        """检索 PubMed 题录；仅需数量用 count。
 
-        term 用英文 PubMed 语法："root resorption"[tiab]、大写 AND/OR/NOT、截词 *；括号配对。
-        MeSH 须核对执行式：拼错可报 quotedphrasesnotfound 或改写概念；命中不证明原短语存在。
-        sort: pub_date / relevance / author（非期刊质量排序）。
-        field 支持 Title、Title/Abstract、Journal、Author、Affiliation、Language、Grant、PMID；其它值报错。
-        MeSH/文献类型写入 term 的 [MeSH Terms]/[Publication Type]。
-        datetype：pdat 发表日期（默认），edat 入库日期；mindate/maxdate 接受 YYYY、YYYY-MM、YYYY-MM-DD 或斜杠写法。
-        单端日期自动补另一端并提示。reldate=0 不限，正数为最近天数；和显式日期同时给时做 AND。
-        retmax 默认 20，上限 1000；retstart 为零起始偏移，上限 9998，最多可翻前 9999 条。
-        计数用 count；题录用 search。as_json=True 返回解析和结构化记录。
-        detail: 默认 brief，仅 PMID/日期/标题/全部文献类型；full 补作者/期刊/DOI 等；ids 仅 PMID，不取元数据或检查撤稿类型。
-        各档保留查询警告；brief 省略字段不表示缺失，ids 的 returned 计 PMID 数、esummary_missing 为 null。
-        先读 ⚠️：改写后的命中数不等于原查询命中数；0 条不证明主题无文献。PMC 号不保证立即可下载。
+        英文词、短语[tiab]、大写 AND/OR/NOT；MeSH/类型写 [MeSH Terms]/[Publication Type]。
+        field: Title、Title/Abstract、Journal、Author、Affiliation、Language、Grant、PMID。
+        sort: pub_date/relevance/author，非质量排名；datetype: pdat 发表/edat 入库。日期支持年/月/日，reldate 为最近天数，与日期取交集。
+        retmax≤1000；retstart 为零起始、≤9998，仅前9999条〔工具口径〕。
+        brief 保留题名/日期/全部类型，full 加引用；ids 不取题录或检查撤稿。JSON 给执行式、分页、missing_pmids；下一页为空不证明取全。
+        out_path 保存本页全部标准化题录，回传 JSON 限 max_show（仅展示）；previous_path 比较上次快照，省略已展示且未变者。待看 deferred_pmids 不算已读；两者不改检索范围。
+        先读警告：丢词/改写后计数非原式计数；零条不证明无文献，命中不证明短语存在。省略字段非来源缺失，PMC 非下载保证。
         """
         # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
         #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
@@ -680,6 +796,14 @@ class Implementation:
         if detail not in ("full", "brief", "ids"):
             raise self.dependencies.NcbiError("detail 只支持 full / brief / ids")
         json_mode = self.dependencies._as_bool(as_json, "as_json")    # 非法模式在联网前报错
+        outp = self.dependencies._check_out_path(out_path)
+        show = self.dependencies._int(max_show, "max_show")
+        if not 0 <= show <= self.dependencies.RETMAX_CAP:  # 本项目自订：展示范围与单页上限一致
+            raise self.dependencies.NcbiError("max_show 超出展示范围")
+        if not outp and (previous_path or show != 20):  # 本项目自订：不落盘时维持旧返回契约
+            raise self.dependencies.NcbiError("previous_path / max_show 需要 out_path，避免未展示的结果丢失")
+        previous = await anyio.to_thread.run_sync(self._read_search_snapshot, previous_path) if previous_path else ({}, None)
+        json_mode = json_mode or bool(outp)
         d = await self.dependencies._esearch(term, self.dependencies._int(retmax, "retmax"), sort, field, mindate, maxdate, reldate, retstart, datetype=datetype)
         ids = d.get("idlist") or []
         count = self.dependencies._count_of(d)
@@ -699,6 +823,10 @@ class Implementation:
             "brief": "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。",
             "ids": "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。",
         }[detail]
+        applied_sort = (d.get("_request_params") or {}).get("sort") or "default"
+        page_end = int(d.get("retstart") or 0) + len(ids)
+        has_more = page_end < count
+        next_start = page_end if ids and has_more and page_end <= self.dependencies.RETSTART_MAX else None
         audit_params = {
             "input_params": {"field": field, "sort": sort, "mindate": mindate, "maxdate": maxdate,
                              "reldate": reldate, "retmax": retmax, "retstart": retstart, "as_json": as_json},
@@ -727,23 +855,29 @@ class Implementation:
             warn = self.dependencies._note(d, include_translation=False)
             warn += [win_warn] if win_warn else []
             warn += [mode_note] if mode_note else []
-            if detail != "ids" and len(pairs) != len(ids):
+            returned_ids = {uid for uid, _ in pairs}
+            missing_pmids = [pid for pid in ids if pid not in returned_ids] if detail != "ids" else []
+            if missing_pmids:
                 # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
                 # 以为 2 个 id 就是 2 条记录。
                 warn.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
-                            f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
+                            f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。缺失 PMID："
+                            + ", ".join(missing_pmids))
             self.dependencies._audit("search", term=term, count=count,
                    returned=len(ids) if detail == "ids" else len(pairs), detail=detail,
                    retstart=int(d.get("retstart") or 0), **audit_params,
                    querytranslation=(d.get("querytranslation") or "").strip(), warnings=warn)
-            return json.dumps({
+            result = {
                 "term": term, "querytranslation": (d.get("querytranslation") or "").strip(),
                 "translationset": d.get("translationset") or [],
                 "field": d.get("_field_applied", ""),
                 "count": count, "retstart": int(d.get("retstart") or 0),
+                "sort": applied_sort, "has_more": has_more, "next_retstart": next_start,
+                "search_pmids": ids,
+                "missing_pmids": missing_pmids,
                 "returned": len(ids) if detail == "ids" else len(pairs),
                 "esummary_missing": None if detail == "ids" else max(0, len(ids) - len(pairs)),
-                **({"detail": detail, "metadata_requested": detail != "ids"} if detail != "full" else {}),
+                **({"detail": detail, "metadata_requested": bool(ids) and detail != "ids"} if detail != "full" else {}),
                 "phrases_not_found": self.dependencies._as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
                 # 兼容旧调用方保留别名；原「已丢弃」解释已作废，见 deprecated_fields。
                 "dropped_phrases": self.dependencies._as_list((d.get("errorlist") or {}).get("phrasesnotfound") or []),
@@ -755,8 +889,14 @@ class Implementation:
                 "records": ([{"pmid": uid} for uid in ids] if detail == "ids" else
                             [(self.dependencies._brief_record if detail == "brief" else self.dependencies._record_parts)(uid, r) for uid, r in pairs]),
                 "warnings": warn,
-            }, ensure_ascii=False)
-        head = [f"查询：{term}", f"命中 {count} 条，本次给 {len(ids)} 条（retstart={d.get('retstart')}）"]
+            }
+            if outp:
+                return await self._save_search_snapshot(result, pairs, detail, outp, previous, show)
+            return json.dumps(result, ensure_ascii=False)
+        head = [f"查询：{term}", f"命中 {count} 条，本次给 {len(ids)} 条（retstart={d.get('retstart')}）",
+                f"排序：{applied_sort}" + ("（NCBI 默认顺序，未指定排序）" if applied_sort == "default" else "")]
+        if next_start is not None:
+            head.append(f"下一页 retstart={next_start}；本次仅返回当前页，未筛完全部命中。")
         notes = self.dependencies._note(d)
         head += notes
         if win_warn:
@@ -785,9 +925,12 @@ class Implementation:
                    warnings=base_warn + [f"⚠️ esummary 元数据获取失败：{type(e).__name__}"],
                    error="esummary_failed")
             raise
-        if len(pairs) != len(ids):
+        returned_ids = {uid for uid, _ in pairs}
+        missing_pmids = [pid for pid in ids if pid not in returned_ids]
+        if missing_pmids:
             miss_msg = (f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
-                        f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。")
+                        f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。缺失 PMID："
+                        + ", ".join(missing_pmids))
             head.append(miss_msg)
             base_warn.append(miss_msg)
         self.dependencies._audit("search", term=term, count=count, returned=len(pairs), detail=detail,
@@ -822,15 +965,32 @@ class Implementation:
         return "\n".join([f"查询：{term}", f"命中 {n} 条"] + notes + zero)
 
 
+    @staticmethod
+    def _integrity_warnings(records):
+        """字段裁剪不能隐去来源已报告的撤稿、关注声明或勘误关联。"""
+        notices = {"RetractionIn", "RetractionOf", "ExpressionOfConcernIn", "ExpressionOfConcernFor", "ErratumIn", "ErratumFor"}
+        types = {"Retracted Publication", "Retraction of Publication", "Expression of Concern", "Published Erratum"}
+        warnings = []
+        for rec in records:
+            flags = list(dict.fromkeys(
+                [p for p in rec.get("pt", []) if p in types]
+                + [c["type"] + (" PMID " + c["pmid"] if c.get("pmid") else "")
+                   for c in rec.get("comments", []) if c.get("type") in notices]))
+            if flags:
+                warnings.append(f"⚠️ PMID {rec['pmid']} 来源标记：{'；'.join(flags)}。请核对关联声明；勘误不等于撤稿。")
+        return warnings
+
+
     async def fetch_abstracts(self, pmids: str, fields: str = "", as_json: bool | str = False,
                               out_path: str = "") -> str:
         """按逗号/空格分隔的 PMID 取 NCBI 原排版摘要；保留结构化段落、作者信息和声明。
 
-        自动去重、归一补零号、分批。建议先筛选题录，再只取需要的摘要以节省输出。
+        也接受官方 PubMed 文章 URL（仅提取编号，不访问链接）；自动去重、归一补零号、分批。先筛题录再取所需摘要。
         返回请求数、实际记录数和缺失号；有记录不等于有摘要，社论可能只有引文。
         网络失败报错，不冒充无记录。文献数值引用仍须核对原文位置。
         fields/as_json 改走 XML 精简（无作者单位）：title,abstract,authors,journal,pubdate,ids,pt,lang,
-        mesh,comments,coi,other_abstracts 或 all。out_path 写新文件，只回路径与 sha256；篇数多时用。
+        mesh,comments,coi,other_abstracts 或 all。精简字段仍保留撤稿/关注声明/勘误 warnings；未见标记不证明无问题。
+        abstract_requested 区分未请求摘要；no_abstract 指已返回记录缺摘要。out_path 写新文件，回路径、哈希及上述质量摘要。
         """
         uniq, n_in = self.dependencies._parse_pmids(pmids)
         if len(uniq) > self.dependencies.FETCH_MAX:
@@ -863,26 +1023,30 @@ class Implementation:
         self.dependencies._audit("fetch_abstracts", pmids=uniq, requested=len(uniq), returned=len(got), missing=missing,
                **({"fields": flds, "as_json": json_mode} if structured else {}),
                **({"out_path": outp} if outp else {}))
+        quality = {}
         if structured:
             no_ab = [r["pmid"] for r in recs if not r["abstract"]] if "abstract" in flds else []
+            integrity_warnings = self._integrity_warnings(recs)
+            quality = {"abstract_requested": "abstract" in flds, "no_abstract": no_ab,
+                       "warnings": integrity_warnings}
             if json_mode:
                 body = json.dumps({"requested": len(uniq), "returned": len(got), "missing": missing,
-                                   "batches": batches, "fields": flds, "no_abstract": no_ab,
+                                   "batches": batches, "fields": flds, **quality,
                                    "records": [self.dependencies._project(r, flds) for r in recs],
                                    "source_note": "efetch XML 解析；内联格式（上下标/斜体）已去标签，数值引用须核对原文"},
                                   ensure_ascii=False)
             else:
-                body = "\n".join(head) + "\n\n" + "\n\n".join(self.dependencies._fmt_compact(r, flds) for r in recs)
+                body = "\n".join(head + integrity_warnings) + "\n\n" + "\n\n".join(self.dependencies._fmt_compact(r, flds) for r in recs)
         else:
             body = "\n".join(head) + ("\n\n" + text if text else "")
         if outp:
             p, nbytes, sha = await anyio.to_thread.run_sync(self.dependencies._write_new_file, outp, body)
             self.dependencies._audit("fetch_abstracts", path=p, bytes=nbytes, sha256=sha)
             summary = {"path": p, "bytes": nbytes, "sha256": sha, "format": "json" if json_mode else "text",
-                       "requested": len(uniq), "returned": len(got), "missing": missing}
+                       "requested": len(uniq), "returned": len(got), "missing": missing, **quality}
             if json_mode:
                 return json.dumps(summary, ensure_ascii=False)
-            return "\n".join(head + [f"已写入：{p}（UTF-8，{summary['format']}）｜{nbytes} 字节｜sha256 {sha}",
+            return "\n".join(head + quality.get("warnings", []) + [f"已写入：{p}（UTF-8，{summary['format']}）｜{nbytes} 字节｜sha256 {sha}",
                                      "正文未回传；需要时请读该文件。"])
         if not json_mode and len(body) > self.dependencies.FETCH_WARN_CHARS:
             # 纯新增提示行（不改正文）：大结果常被客户端整条拒收，模型一条摘要也看不到。
