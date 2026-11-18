@@ -69,7 +69,11 @@ class AuditReport(unittest.TestCase):
                 with patch.dict(os.environ, {"PUBMED_AUDIT_DIR": str(blocker)}), contextlib.redirect_stderr(io.StringIO()):
                     text = await m.count("tooth")
                     data = json.loads(await m.search("tooth", retmax=0, as_json=True))  # 本项目自订：计数模式
-                self.assertTrue(text.startswith(original))
+                # 本项目自订：未启用时提示开启留痕；已配置但写入失败时报告故障，不再说未启用。
+                self.assertIn('PUBMED_AUDIT_DIR', original)
+                self.assertNotIn('当前未启用', text)
+                stable = '\n'.join(line for line in original.splitlines() if 'PUBMED_AUDIT_DIR' not in line)
+                self.assertTrue(text.startswith(stable))
                 self.assertIn("留痕写入失败", text)
                 self.assertEqual(data["audit_status"], "failed")
         anyio.run(call)

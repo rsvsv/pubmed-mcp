@@ -39,7 +39,21 @@ pubmed-mcp --help
 
 源码入口同样支持 `python -I pubmed_mcp.py --help`；安装后也可用 `python -I -m pubmed_mcp --help`。帮助不联网、不写任务文件；不带参数仍启动 MCP stdio 服务。参数缩写、未知参数及不属于当前命令的选项明确报错。模块职责与部署说明见 [命令行与模块结构](docs/cli-and-modules.md)。
 
-既有基础工具的默认行为各版保持兼容。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+当前源码的 `search` 在首页低命中时默认尝试受预算限制的逐块诊断；`count` 默认不增加诊断请求，`links` 新参数按需启用。检索原式与原结果不被诊断覆盖。源码发行包附带文档、测试及夹具；wheel 是运行安装包，不附带开发测试材料。
+
+### 搜不到时的辅助检查（源码功能，未发布）
+
+- `search(..., diagnose="auto")`：命中不超过 `low_hit_threshold=10` 时尝试逐块放宽；最多额外计数 `6` 次。〔本项目自订默认值与请求预算；来源：pubmed_tools.py 的 search / _DIAGNOSTIC_BLOCK_CAP〕
+- `diagnose="off"` 不发诊断请求；`"always"` 忽略命中阈值，但仍受预算和语法检查限制。`count` 默认 off，需要时显式开启。子查询不递归触发诊断。
+- 保留原字段、日期与 NOT 排除条件；同层布尔含义不明确时拒绝自动拆分。按原顺序列出结果，不把最大增幅当成“这个条件有错”。网络失败写未知，解析警告写不可可靠比较。
+- `links(pmids="已知PMID", to="pubmed", term="原检索式", with_titles=True)`：显示标题、发表日期与语言，标出是否命中原式。须同时传入原来的 `field/mindate/maxdate/reldate/datetype`；不会自动读取上一次调用参数。
+- `in_term` 为 true / false / null；null 可能是未检查、网络失败或检索式失真，绝不算未命中。标题缺失和命中状态分别报告；源 PMID 自身标为种子。
+- 近邻每次补充检查最多 `200` 篇，文本展示最多 `20` 篇；预算外显式标未检查，用 `offset/limit` 分页继续。JSON 保留原关联顺序，并另给优先阅读的 candidate_details；out_path 保存全量名单，offset/limit 仅移动候选检查窗口，窗口外仍保留并标未检查。〔本项目自订预算；来源：pubmed_tools.py 的 _NEIGHBOR_ENRICH_CAP / _NEIGHBOR_TEXT_CAP〕
+- `search` / `count` 的文本输出只完整回显实际执行式，不再重复打印原输入或截断执行式；原输入仍在调用参数、search 的 JSON 和启用后的审计记录中。解析警告不省略。
+- `check_recall` 和 `diff` 接受与 `search` 相同的 `field`、`mindate`、`maxdate`、`reldate`、`datetype`。调用时把原参数一起传入，找回测试的每一批、差集两侧的每一页都使用这组限制。文本显示复查范围，JSON 的 `scope` 记录参数，执行式保留 PubMed 返回的实际日期。省略参数时仅按检索式自身的条件复查。`reldate` 按复查当天计算；要复现历史窗口，请传原先执行式中的绝对起止日期。
+- 查新流程用配套 literature-search，正式综述用 systematic-review；也可组合 check_recall、links 和 diff 手动复核。相似文献和放宽结果都只是候选，不自动判断研究空白。留痕复用 `PUBMED_AUDIT_DIR`。
+
+范围边界：本轮不新增 gap_check、不改变 CLI 的 `--snowball` 参数，不增加引用量排序，也不把短语零命中自动归因于标点。短语写法可显式放宽后复查，工具不偷偷替换原式。
 
 **它存在的唯一理由**：把「查不到」和「没有」分开。
 文献工具最常见的失败是**静默**——参数被吞掉、词被丢弃、编码不对、请求根本没跑完，

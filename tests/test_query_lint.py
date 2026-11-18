@@ -183,10 +183,10 @@ class CountZero(unittest.TestCase):
         self.assertTrue(out.splitlines()[-1].startswith("=> "))
         self.assertIn("不证明", out)
 
-    def test_count_positive_unchanged(self):
-        d = {"_term": "tooth", "count": "7", "querytranslation": '"tooth"[All Fields]'}
+    def test_count_positive_single_execution_echo(self):
+        d = {"_term": "tooth", "count": "7", "querytranslation": '"tooth"[All Fields]'}  # 本项目自订：正命中夹具
         out = self.call(d)
-        self.assertEqual(out, "查询：tooth\n命中 7 条\nNCBI 实际执行：\"tooth\"[All Fields]")
+        self.assertEqual(out, "NCBI 实际执行：\"tooth\"[All Fields]\n命中 7 条")  # 本项目自订：计数不变，执行式只回显一次
 
 
 if __name__ == "__main__":

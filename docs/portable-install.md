@@ -12,6 +12,12 @@
 
 成功后重新打开 Claude，并在 Code 中新开会话。可直接说“帮我找一些关于某主题的论文”。支持项目/全局技能的 Code 宿主可以加载这些技能；普通 Desktop 聊天的 MCP 配置不意味着它也支持读取本地 Code 技能。
 
+### 在 Cowork 使用
+
+安装器把技能写到 Code 的用户技能目录。使用独立技能库的 Cowork，需要在该客户端另行安装解压后的 `skills/literature-search/` 和 `skills/systematic-review/`。保留各自的 `references/` 子目录以及两个技能之间的同级关系，日常检索和综述流程会互相引用。
+
+若 Cowork 使用单独的 MCP 配置，从本机安装生成的 `.claude/pubmed-mcp/installation.json` 取 `command` 和 `args`，用于该客户端的 `pubmed` 服务。重启客户端后，分别核对能否看到 PubMed 工具和两个技能。
+
 ## 装在哪里
 
 - 程序和独立环境：用户主目录下 `.claude/pubmed-mcp/releases/`。

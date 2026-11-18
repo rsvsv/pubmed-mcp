@@ -4,6 +4,117 @@ Moved rules and numeric literals retain their original source/policy annotations
 import re
 
 
+# 本项目自订：仅解析明确分组的布尔子集；不实现或猜测 PubMed 的自动词映射。
+def _diagnostic_tree(term):
+    text = term.strip()
+    if not text:
+        raise ValueError("空概念块")
+    depth, quoted, bracket = 0, False, False  # 本项目自订：扫描器初态
+    operators, outer_end = [], None
+    i = 0  # 本项目自订：字符偏移初态
+    while i < len(text):
+        ch = text[i]
+        if quoted:
+            if ch == '"':
+                quoted = False
+        elif bracket:
+            if ch == ']':
+                bracket = False
+            elif ch == '[':
+                raise ValueError("嵌套字段标签")
+        elif ch == '"':
+            quoted = True
+        elif ch == '[':
+            bracket = True
+        elif ch == ']':
+            raise ValueError("字段标签未配对")
+        elif ch == '(':
+            depth += 1  # 本项目自订：括号深度
+        elif ch == ')':
+            depth -= 1  # 本项目自订：括号深度
+            if depth < 0:
+                raise ValueError("括号未配对")
+            if depth == 0 and outer_end is None:
+                outer_end = i
+        elif depth == 0 and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == '_')):
+            match = re.match(r"(?:AND|OR|NOT)\b", text[i:], re.I)
+            if match:
+                op = match.group()
+                if op != op.upper():
+                    raise ValueError("布尔算子须为大写")
+                operators.append((i, i + len(op), op))
+                i += len(op)
+                continue
+        i += 1  # 本项目自订：前进一个字符
+    if quoted or bracket or depth:
+        raise ValueError("引号、字段标签或括号未配对")
+    if text.startswith('(') and outer_end == len(text) - 1:
+        return _diagnostic_tree(text[1:-1])
+    if not operators:
+        masked = re.sub(r'"[^"\n]*"|\[[^\]]*\]', '', text)
+        if re.search(r'[()（）［］“”]', masked):
+            raise ValueError("分组与词项/字段相连，无法可靠拆分")
+        return ('leaf', text, [])
+    kinds = [op for _, _, op in operators]
+    if 'OR' in kinds and any(op != 'OR' for op in kinds):
+        raise ValueError("同层混用 OR 与 AND/NOT，请显式分组")
+    if 'NOT' in kinds and 'AND' in kinds[kinds.index('NOT'):]:
+        raise ValueError("NOT 后又有同层 AND，请显式分组")
+    parts, start = [], 0  # 本项目自订：首段字符偏移
+    for begin, end, _ in operators:
+        parts.append(_diagnostic_tree(text[start:begin]))
+        start = end
+    parts.append(_diagnostic_tree(text[start:]))
+    if 'NOT' not in kinds:
+        return (kinds[0], text, parts)
+    first_not = kinds.index('NOT')
+    node = parts[0] if first_not == 0 else ('AND', ' AND '.join(
+        f'({p[1]})' for p in parts[:first_not + 1]), parts[:first_not + 1])
+    for right in parts[first_not + 1:]:
+        node = ('NOT', f'({node[1]}) NOT ({right[1]})', [node, right])
+    return node
+
+
+def _relaxation_plan(term):
+    """返回原序放宽候选；NOT 条件保留，不能拆分时不猜。无联网、无相关性判断。"""
+    try:
+        root = _diagnostic_tree(term)
+    except (ValueError, RecursionError) as exc:
+        return [], "无法可靠拆分顶层块，请用 diff 手动对比：" + str(exc)
+    exclusions = []
+    while root[0] == 'NOT':
+        exclusions.insert(0, root[2][1][1])
+        root = root[2][0]
+    if root[0] != 'AND':
+        return [], "没有可逐块剔除的顶层 AND 组合"
+    blocks = root[2]
+
+    def contains_not(node):
+        return node[0] == 'NOT' or any(contains_not(c) for c in node[2])
+
+    plans = []
+    for index, block in enumerate(blocks):
+        if contains_not(block):
+            continue
+        remaining = ' AND '.join(f'({b[1]})' for j, b in enumerate(blocks) if j != index)
+        for exclusion in exclusions:
+            remaining = f'({remaining}) NOT ({exclusion})'
+        plans.append({'removed_block': block[1], 'term': remaining,
+                      'method_only': _method_only(block)})
+    return plans, "" if plans else "概念块含 NOT，未自动删除排除条件"
+
+
+def _method_only(node):
+    """仅对全由统称组成的块给条件式提示；未触发不代表覆盖充分。"""
+    if node[0] == 'OR':
+        return all(_method_only(child) for child in node[2])
+    if node[0] != 'leaf':
+        return False
+    text = re.sub(r'\[[^\]]*\]', '', node[1]).strip().strip('"').lower()
+    return text in {'artificial intelligence', 'ai', 'machine learning', 'deep learning',
+                    'neural network', 'neural networks', 'computer-aided'}
+
+
 _WIN_RE = re.compile(r"(\d{4})[-/](\d{2})[-/](\d{2})(?::(\d{4})[-/](\d{2})[-/](\d{2}))?\[([^\]\[]*)\]")
 # NCBI 回显里的日期字段名 → 人话
 _WIN_LABEL = {"Date - Publication": "发表日期[pdat]",

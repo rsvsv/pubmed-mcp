@@ -376,6 +376,7 @@ _tools_impl = _tools_module.Implementation(_runtime.Dependencies(
         '_project': lambda: _project,
         '_read_pmid_file': lambda: _read_pmid_file,
         '_recall_warnings_and_degraded': lambda: _recall_warnings_and_degraded,
+        '_relaxation_plan': lambda: _query._relaxation_plan,
         '_record_count_change': lambda: _record_count_change,
         '_record_parts': lambda: _record_parts,
         '_retrieval_check': lambda: _retrieval_check,
@@ -799,7 +800,12 @@ def _audited(fn):
 # 未修的 2.3.0 只拿到 27 字符 —— 打的正是本文件「失败绝不静默」这条主承诺。
 # 原句留着不删：「我不读那个字段，所以那个改动与我无关」这种推理本身会再犯第二次。
 # 修法见顶部兼容层的第二个名字 `_SdkToolError`，以及 NcbiError 的基类。
-mcp = FastMCP("PubMed")
+mcp = FastMCP("PubMed", instructions=(
+    "日常检索与判断选题空白优先使用配套 literature-search skill；正式或穷尽综述使用 systematic-review。"
+    "未安装 skill 时仍可使用本服务：低命中用 search 的 diagnose，已有 PMID 用 check_recall，"
+    "近邻用 links(to='pubmed', term=当前式, with_titles=True)，两式比较用 diff。"
+    "零命中不证明研究不存在，近邻和放宽结果只属候选，须阅读确认相关性。"
+))
 
 
 search = mcp.tool()(_audited(_tools_impl.search))
