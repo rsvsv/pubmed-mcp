@@ -99,6 +99,31 @@ class SearchModes(unittest.TestCase):
                     if json_mode:
                         self.assertEqual(json.loads(text)["returned"], 0)
 
+    def test_quoted_zero_warning_once_per_text_response(self):
+        phrase = '"missing phrase"'
+        self.esearch.return_value = {**self.search, 'count': '0', 'idlist': [],  # 本项目自订：短语零命中夹具
+                                     'warninglist': {'quotedphrasesnotfound': [phrase]}}
+        for tool in (m.search, m.count, m.search):
+            text = run(tool, 'tooth', diagnose='auto')
+            self.assertEqual(text.count('quotedphrasesnotfound'), 1)  # 本项目自订：同次去重，后续调用仍提示
+            self.assertEqual(text.count(phrase), 1)  # 本项目自订：执行式不含该短语
+            for needed in ('主题', '去掉引号', '诊断暂缓'):
+                self.assertIn(needed, text)
+        data = json.loads(run(m.search, 'tooth', as_json=True))
+        self.assertTrue(any(phrase in note for note in data['warnings']))
+        self.assertIn(phrase, data['zero_note'])
+        self.esummary.assert_not_awaited()
+
+    def test_brief_omission_note_requires_returned_metadata(self):
+        for ids in ([], self.search['idlist']):
+            self.esearch.return_value = {**self.search, 'count': str(len(ids)), 'idlist': ids}
+            self.esummary.return_value = []
+            for json_mode in (False, True):
+                text = run(m.search, 'tooth', as_json=json_mode)
+                self.assertNotIn('brief 省略', text)
+                if ids:
+                    self.assertIn('缺失 PMID', text)
+
     def test_invalid_detail_fails_before_network_direct_and_sdk(self):
         for value in ("", "summary", None, True):
             with self.subTest(value=value), self.assertRaisesRegex(m.NcbiError, "detail 只支持"):

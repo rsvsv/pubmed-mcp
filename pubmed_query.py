@@ -572,6 +572,11 @@ def _required_windows(d):
     return [window for window in _windows(qt) if window in required]
 
 
+def _quoted_zero_warning(phrases):
+    return ('整个引号短语未在 PubMed 短语索引中找到（warninglist.quotedphrasesnotfound）：'
+            + '，'.join(phrases) + '。零命中不能说明主题没有文献。可去掉引号按词查，或换用经核实的 MeSH 词。')
+
+
 def _note(d, *, include_translation=True):
     """生成解析提示；JSON 已含完整执行式时可省去其文本行，警告仍保留。"""
     lines = []
@@ -624,9 +629,7 @@ def _note(d, *, include_translation=True):
                          f" —— 已改写（可能按词 AND），这 {_c} 条不是原短语的命中数。"
                          "请核对实际执行式；可去掉引号按词查，或使用经核实的 MeSH 词。")
         else:
-            lines.append(head +
-                         " —— 这条 0 只关于那段字面短语本身，关于它想表达的主题有没有文献"
-                         "什么都没说；去掉引号按词查、或换 MeSH 词再问一次。")
+            lines.append('⚠️ ' + _quoted_zero_warning(qn))
     if others:
         lines.append("⚠️ NCBI 解析警告：" + "；".join(others) +
                      "；检索式可能被忽略或改写，请核对实际执行式。")
@@ -762,11 +765,9 @@ def _zero_explanation(d, count):
     if not (d.get("querytranslation") or "").strip():
         return ("0 条，但这条 0 不能作为「主题没有文献」的依据："
                 "NCBI 未返回实际执行式，无法据此确认检索条件（见上）。")
-    if _warn_bits(d)[1]:
-        return ("0 条的原因是 NCBI 说【整个引号短语在索引里不存在】"
-                f"（warninglist.quotedphrasesnotfound＝{_warn_bits(d)[1]}）。"
-                "这句只关于那段字面短语，关于它想表达的主题有没有文献【什么都没说】——"
-                "去掉引号按词查、或换成 MeSH 词再问一次。")
+    quoted_missing = _warn_bits(d)[1]
+    if quoted_missing:
+        return _quoted_zero_warning(quoted_missing)
     if _phrase_gap(d):
         return ("0 条，但先看清楚：上面 ⚠️ 说引号短语里有词没进实际执行，"
                 "所以这个 0 是「剩下那几个词的组合没有匹配」，不是你写的那个短语的结论。")

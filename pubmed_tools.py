@@ -783,6 +783,11 @@ class Implementation:
         executed = str(d.get('querytranslation') or '').strip()
         return 'NCBI 实际执行：' + executed if executed else '输入查询（执行式未返回）：' + term
 
+    def _append_zero_note(self, lines, d, count):
+        explanation = self.dependencies._zero_explanation(d, count)
+        if '⚠️ ' + explanation not in lines:
+            lines.append('=> ' + explanation)
+
     def _diagnostic_options(self, diagnose, low_hit_threshold):
         if diagnose not in ('auto', 'always', 'off'):
             raise self.dependencies.NcbiError('diagnose 只支持 auto / always / off')
@@ -903,11 +908,9 @@ class Implementation:
                     f"第 9999 条以后的【永远翻不到】。别把「这一页短」读成「已取回全部」"
                     f"——要覆盖全量请按年份或字段把查询切小、分批取。"
                     if count > 9999 and win >= 9999 else "")
-        mode_note = {
-            "full": "",
-            "brief": "说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。",
-            "ids": "⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。",
-        }[detail]
+        brief_note = '说明：brief 省略作者、期刊、卷页、DOI/PMC；省略不表示来源缺失，全部文献类型保留。'
+        mode_note = ('⚠️ ids 仅返回 esearch 的 PMID，未获取元数据、未检查撤稿等文献类型；返回数按 PMID 计。'
+                     if detail == 'ids' else '')
         applied_sort = (d.get("_request_params") or {}).get("sort") or "default"
         page_end = int(d.get("retstart") or 0) + len(ids)
         has_more = page_end < count
@@ -939,7 +942,10 @@ class Implementation:
             # 完整 querytranslation 已是独立字段，不在 warnings 再复制同一长串。
             warn = self.dependencies._note(d, include_translation=False) + guidance
             warn += [win_warn] if win_warn else []
-            warn += [mode_note] if mode_note else []
+            if detail == 'brief' and pairs:
+                warn.append(brief_note)
+            elif mode_note:
+                warn.append(mode_note)
             returned_ids = {uid for uid, _ in pairs}
             missing_pmids = [pid for pid in ids if pid not in returned_ids] if detail != "ids" else []
             if missing_pmids:
@@ -995,7 +1001,7 @@ class Implementation:
             self.dependencies._audit("search", term=term, count=count, returned=0, detail=detail,
                    retstart=int(d.get("retstart") or 0), **audit_params,
                    querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
-            head.append("=> " + self.dependencies._zero_explanation(d, count))
+            self._append_zero_note(head, d, count)
             return "\n".join(head)
         if detail == "ids":
             self.dependencies._audit("search", term=term, count=count, returned=len(ids), detail=detail,
@@ -1012,6 +1018,9 @@ class Implementation:
                    warnings=base_warn + [f"⚠️ esummary 元数据获取失败：{type(e).__name__}"],
                    error="esummary_failed")
             raise
+        if detail == 'brief' and pairs:
+            head.append(brief_note)
+            base_warn.append(brief_note)
         returned_ids = {uid for uid, _ in pairs}
         missing_pmids = [pid for pid in ids if pid not in returned_ids]
         if missing_pmids:
@@ -1052,8 +1061,10 @@ class Implementation:
                reldate=d.get("_rel") if "_rel" in d else self.dependencies._int(reldate, "reldate"),
                querytranslation=(d.get("querytranslation") or "").strip(), warnings=notes)
         # 0 条与 search 同口径给出「是哪一种 0」（1.4.1 补；旧版 count 只印执行式，0 的语义要靠调用方猜）。
-        zero = ["=> " + self.dependencies._zero_explanation(d, n)] if n == 0 else []
-        return "\n".join([self._query_heading(term, d), f"命中 {n} 条"] + notes + zero)
+        lines = [self._query_heading(term, d), f"命中 {n} 条", *notes]
+        if n == 0:
+            self._append_zero_note(lines, d, n)
+        return "\n".join(lines)
 
 
     @staticmethod
