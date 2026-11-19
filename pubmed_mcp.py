@@ -165,6 +165,7 @@ _export_impl = _export_module.Implementation(_runtime.Dependencies(
         '_EXPORT_BATCH_SIZE': lambda: _EXPORT_BATCH_SIZE,
         '_EXPORT_FORMATS': lambda: _EXPORT_FORMATS,
         '_EXPORT_FORMAT_VERSION': lambda: _EXPORT_FORMAT_VERSION,
+        '_EXPORT_RIS_FORMAT_VERSION': lambda: _EXPORT_RIS_FORMAT_VERSION,
         '_EXPORT_JOB_SCHEMA': lambda: _EXPORT_JOB_SCHEMA,
         '_EXPORT_JOB_VERSION': lambda: _EXPORT_JOB_VERSION,
         '_EXPORT_RESULT_SCHEMA': lambda: _EXPORT_RESULT_SCHEMA,
@@ -185,6 +186,7 @@ _export_impl = _export_module.Implementation(_runtime.Dependencies(
         '_batch_state_payload': lambda: _batch_state_payload,
         '_check_date': lambda: _check_date,
         '_check_datetype': lambda: _check_datetype,
+        '_check_field': lambda: _check_field,
         '_check_job_output': lambda: _check_job_output,
         '_check_out_path': lambda: _check_out_path,
         '_check_reldate': lambda: _check_reldate,
@@ -235,6 +237,7 @@ _export_impl = _export_module.Implementation(_runtime.Dependencies(
         '_revalidate_job_input': lambda: _revalidate_job_input,
         '_ris_block': lambda: _ris_block,
         '_save_batch_state': lambda: _save_batch_state,
+        '_scope_evidence': lambda: _query._scope_evidence,
         '_sha256_file': lambda: _sha256_file,
         '_store_batch': lambda: _store_batch,
         '_stream_export': lambda: _stream_export,
@@ -373,8 +376,10 @@ _tools_impl = _tools_module.Implementation(_runtime.Dependencies(
         '_parse_fields': lambda: _parse_fields,
         '_parse_pmids': lambda: _parse_pmids,
         '_pmids_exist': lambda: _pmids_exist,
+        '_abstract_material': lambda: _records._abstract_material,
         '_project': lambda: _project,
         '_read_pmid_file': lambda: _read_pmid_file,
+        '_scope_evidence': lambda: _query._scope_evidence,
         '_recall_warnings_and_degraded': lambda: _recall_warnings_and_degraded,
         '_relaxation_plan': lambda: _query._relaxation_plan,
         '_record_count_change': lambda: _record_count_change,
@@ -491,6 +496,7 @@ FIELD_WHITELIST = {
     "pmid": "PMID", "pmcid": "PMC Number", "mesh terms": "MeSH Terms",
     "mesh": "MeSH Terms", "publication type": "Publication Type",
     "ptyp": "Publication Type", "corporated author": "Corporate Author",
+    "corporate author": "Corporate Author",
     "isbn": "ISBN", "issn": "ISSN", "grant": "Grant",
 }
 
@@ -598,7 +604,7 @@ FIELD_NO_COUNT = {"MeSH Terms", "Publication Type"}
 _check_date = _tools_impl._check_date
 
 
-_expand = _tools_impl._expand
+_expand = _query._expanded_date
 
 
 _today = _tools_impl._today
@@ -804,7 +810,8 @@ mcp = FastMCP("PubMed", instructions=(
     "日常检索与判断选题空白优先使用配套 literature-search skill；正式或穷尽综述使用 systematic-review。"
     "未安装 skill 时仍可使用本服务：低命中用 search 的 diagnose，已有 PMID 用 check_recall，"
     "近邻用 links(to='pubmed', term=当前式, with_titles=True)，两式比较用 diff。"
-    "零命中不证明研究不存在，近邻和放宽结果只属候选，须阅读确认相关性。"
+    "按来源区分：当次仅新式取到、另行检索／追引未比对。名单差异不证明由改式造成。不要混列。"
+    "零命中不证明研究不存在；本次找到的也不等于全领域仅有。相关性须读摘要。"
 ))
 
 
@@ -1007,6 +1014,7 @@ _CANDIDATE_SCHEMAS = frozenset({"pubmed.links.v1", "pubmed.diff.v1", "pubmed.sno
 _EXPORT_JOB_SCHEMA = "pubmed.export.job.v1"
 _EXPORT_JOB_VERSION = 1
 _EXPORT_FORMAT_VERSION = 2  # 本项目自订：CSV 恢复产物统一已发布 CRLF 规则
+_EXPORT_RIS_FORMAT_VERSION = 3  # 本项目自订：RIS 摘要正文改含 OtherAbstract、无正文标签不计，旧 RIS 检查点不能混用
 _EXPORT_RESULT_SCHEMA = "pubmed.export.pmids.v1"
 _EXPORT_FORMATS = ("pmids", "csv", "medline", "ris")
 _EXPORT_BATCH_SIZE = {"pmids": 1000, "csv": ESUMMARY_CHUNK, "ris": EFETCH_CHUNK, "medline": EFETCH_CHUNK}
@@ -1143,6 +1151,7 @@ def review_services():
         'utc_now': lambda: _utc_now,
         'audit': lambda: _audit,
         'ris_record': lambda: _ris_block,
+        'abstract_material': lambda: _records._abstract_material,
         'audit_report': lambda: _audit_report,
         'read_pmid_file': lambda: _read_pmid_file,
         'publish_no_clobber': lambda: _publish_no_clobber,

@@ -97,7 +97,7 @@ class Mesh(unittest.TestCase):
             if ids == ["1", "2"]:
                 return json.dumps({"result": {"uids": ids,
                     "1": {"uid": "1", "ds_meshterms": ["Other"]},
-                    "2": {"uid": "2", "ds_meshterms": ["Target"], "ds_previousindexing": ["Old term"],
+                    "2": {"uid": "2", "ds_recordtype": "descriptor", "ds_meshterms": ["Target"], "ds_previousindexing": ["Old term"],
                           "ds_idxlinks": [{"parent": "3", "children": ["4", "5"]}]}}})
             wanted.extend(ids)
             return json.dumps({"result": {"uids": ids, **{i: {"uid": i, "ds_meshterms": ["Name " + i]} for i in ids}}})
@@ -129,7 +129,7 @@ class Mesh(unittest.TestCase):
     def test_failed_related_batch_does_not_skip_next(self):
         responses = [
             {"esearchresult": {"count": "1", "idlist": ["1"], "querytranslation": "x"}},
-            {"result": {"uids": ["1"], "1": {"uid": "1", "ds_meshterms": ["X"], "ds_idxlinks": [{"children": ["2", "3"]}]}}},
+            {"result": {"uids": ["1"], "1": {"uid": "1", "ds_meshterms": ["X"], "ds_recordtype": "descriptor", "ds_idxlinks": [{"children": ["2", "3"]}]}}},
             {"result": {"uids": ["2"], "2": {"uid": "2", "error": "unavailable"}}},
             {"result": {"uids": ["3"], "3": {"uid": "3", "ds_meshterms": ["Third"]}}},
         ]
@@ -141,7 +141,7 @@ class Mesh(unittest.TestCase):
     def test_bad_related_uid_keeps_unresolved_name(self):
         responses = [
             {"esearchresult": {"count": "1", "idlist": ["1"], "querytranslation": "x"}},
-            {"result": {"uids": ["1"], "1": {"uid": "1", "ds_meshterms": ["X"], "ds_idxlinks": [{"children": ["2"]}]}}},
+            {"result": {"uids": ["1"], "1": {"uid": "1", "ds_meshterms": ["X"], "ds_recordtype": "descriptor", "ds_idxlinks": [{"children": ["2"]}]}}},
             {"result": {"uids": ["2"], "2": {"uid": "99", "ds_meshterms": ["Wrong"]}}},
         ]
         with patch.object(m, "_get_async", AsyncMock(side_effect=[json.dumps(r) for r in responses])):

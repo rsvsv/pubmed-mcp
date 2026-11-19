@@ -19,7 +19,7 @@ def _xml_sections(abstract_el):
     for t in abstract_el.findall("AbstractText"):
         label = t.get("Label") or ""
         text = _xml_text(t)
-        if text or label:
+        if text:
             out.append({"label": label, "text": text})
     return out
 
@@ -130,6 +130,24 @@ def _xml_record(node):
 
 
 
+def _abstract_material(rec):
+    """Return the screening status and readable lines; a heading alone is not a body."""
+    def lines(sections):
+        return [(s['label'] + ': ' if s.get('label') else '') + s['text']
+                for s in sections if (s.get('text') or '').strip()]
+
+    primary = lines(rec['abstract'])
+    if primary:
+        return 'available', primary
+    alternatives = []
+    for other in rec.get('other_abstracts', []):
+        body = lines(other['sections'])
+        if body:
+            source = '/'.join(filter(None, (other.get('type'), other.get('language'))))
+            alternatives.extend(['[OtherAbstract' + (' ' + source if source else '') + ']', *body])
+    return ('other_abstract_only', alternatives) if alternatives else ('not_provided', [])
+
+
 def _project(rec, fields):
     out = {"pmid": rec["pmid"]}
     if rec.get("source") == "book":
@@ -141,7 +159,10 @@ def _project(rec, fields):
         out["authors"] = [a["collective"] if "collective" in a else (a["last"] + " " + a["initials"]).strip() or a["fore"]
                           for a in rec["authors"]]
     if "abstract" in fields:
-        out["has_abstract"] = bool(rec["abstract"])
+        status, _ = _abstract_material(rec)
+        out["has_abstract"] = status != 'not_provided'
+        if status == 'other_abstract_only':
+            out['abstract_status'] = 'other_abstract_only'
     return out
 
 
@@ -193,6 +214,8 @@ def _fmt_compact(rec, fields):
         if rec["abstract"]:
             for s in rec["abstract"]:
                 lines.append("  " + (f"[{s['label']}] " if s["label"] else "") + s["text"])
+        elif rec.get('other_abstracts'):
+            lines.append('  （无主摘要；有其他摘要' + ('，见下文）' if 'other_abstracts' in fields else '，用 fields="title,other_abstracts" 读取）'))
         else:
             lines.append("  （此记录无摘要；有记录不等于有摘要）")
     if "other_abstracts" in fields:
@@ -264,8 +287,9 @@ def _ris_block(r):
     tag("AN", r["pmid"])
     tag("C2", r["ids"].get("pmc"))
     tag("UR", f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/")
-    if r["abstract"]:
-        tag("AB", " ".join((s["label"] + ": " if s["label"] else "") + s["text"] for s in r["abstract"]))
+    _, abstract_lines = _abstract_material(r)
+    if abstract_lines:
+        tag("AB", " ".join(abstract_lines))
     for k in r["mesh"]:
         tag("KW", k)
     for k in r.get("_keywords", []):

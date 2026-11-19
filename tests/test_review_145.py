@@ -135,7 +135,7 @@ class MeshRealFixture(unittest.TestCase):
         with patch.object(m, "_get_async", fake):
             data = json.loads(run(m.mesh, "Biodentine", as_json=True))
             text = run(m.mesh, "Biodentine")
-        d0 = data["descriptors"][0]
+        d0 = data['other_records'][0]  # 本项目自订：精确匹配的 SCR 不属于描述符
         self.assertEqual((d0["ui"], d0["record_type"]), ("C506393", "supplemental-record"))
         self.assertEqual(d0["treenums"], [])
         self.assertEqual(d0["parents"], [])

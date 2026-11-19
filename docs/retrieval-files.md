@@ -4,7 +4,7 @@
 
 ## 导出文件附说明
 
-调用 `export` 时显式传 `metadata=True`，数据旁生成 `<文件名>.meta.json`，记录查询、执行式、计数、缺失号、文件哈希和完成时间。默认不开启。
+调用 `export` 时显式传 `metadata=True`，数据旁生成 `<文件名>.meta.json`，记录查询、执行式、计数、缺失号、文件哈希和完成时间。默认不开启。`export` 没有 `sort` 参数，不要把 `search.sort` 传给它；导出与核对按 PMID 集合，不要求顺序。
 
 数据写成功但说明文件写失败时，数据保留，结果返回 `metadata_status=failed`。两个文件分别发布，不声称同时原子完成。
 
@@ -18,15 +18,19 @@ python pubmed_mcp.py --verify-export results.ris
 
 ## 按入库日期补检
 
-`search`、`count` 和 `export` 支持 `datetype="edat"`，用 `mindate`、`maxdate` 设入库区间；默认 `pdat` 保留发表日期语义。用户检索式内的日期条件保持原样，与参数条件取 AND。仅选日期类型却不给区间或相对天数不会筛日期，返回提示；导出记录用 `datetype_applied` 明示是否应用参数日期条件。
+`search`、`count` 和 `export` 支持 `datetype="edat"`，用 `mindate`、`maxdate` 设入库区间；默认 `pdat` 保留发表日期语义。`pdat` 与 `edat` 的 `mindate`／`maxdate` 都含首尾，以返回执行式回显的实际起止为准。同一字段、同一区间的重复条件只是重复，不会变窄；把 `pdat` 与 `edat` 的同日历窗口叠加（同日历边界也不等价），或叠加不等价日期限制，才会取交集把窗口变窄。不要双加，写明实际字段与窗口。跨年在线出版并列卷期年与 Epub，年份对不上时标未核。用户检索式内的日期条件保持原样，与参数条件取 AND。仅选日期类型却不给区间或相对天数不会筛日期，返回提示；导出记录用 `datetype_applied` 明示是否应用参数日期条件。
 
-`search/count` 的 `reldate` 原样交给 NCBI；`export` 先从 NCBI 的独立日期回显固定绝对区间，拿不到可靠回显时要求使用显式日期。不会用本机日期猜区间。
+`search/count` 的 `reldate` 原样交给 NCBI。请求的窗口和实际回显分开报告；仅在 OR 一支出现的日期不能证明整组记录受限。同时给相对和固定日期时，回显未证实二者都是必需条件就标未核实。低命中逐块对照若跨服务器换日，保留计数，不给差值。`export` 从独立日期回显固定绝对区间，拿不到可靠回显时要求显式日期，不用本机日历猜区间。
 
 显式 edat 的超窗导出在发布前拒绝：入库日期拆片尚未经联网集合验证。请缩小区间分别导出。edat 不能覆盖所有旧题录后续内容变化；必要时完整重跑再比较名单。重叠区间由综述方案自订，本工具不替你设定。
 
 ## 引用结果留全
 
-`links` 新增 `as_json`、`out_path`、`offset` 和 `limit`。默认文本仍按旧上限展示；JSON 可获得来源关系，文件保存本次全量结果。分页按每个源分别进行，计数在分页前计算；不同调用不是同一数据库快照。
+核对已知集或近邻候选时，实取的 PMID 不等于原式可靠命中。比如原式「排除综述」，回显若变成「只要综述」，该批编号仍保留，但标为不能确认，不算找回或漏检。正常同义词展开可以用 PubMed 返回的词项映射表核对；它不能替代原式的字段、排除条件或词间距离限制。
+
+`links` 新增 `as_json`、`out_path`、`offset` 和 `limit`。默认文本仍按旧上限展示；JSON 可获得来源关系，文件保存本次全量结果。分页按每个源分别进行，计数在分页前计算；不同调用不是同一数据库快照。`page_positions` 按该源返回次序从 1 计，不是原文参考文献编号；逐种子记录 offset／limit 与本页范围，不把多种子的页区间混成一个编号。返回顺序不代表最新、高被引或质量排名。大集合先报 `counts.targets`、`targets_returned`、`candidate_pmids` 与未检查／未展示数，再给按源列表或下一页；名单全不等于题名全。
+
+多种子精简结果按目标去重；即使只给一篇论文，补题名或核对是否命中时，候选展示顺序也可能改变。这两种情况下都可按 `source_positions[种子 PMID]` 恢复该来源的顺序；翻页后仍是整份关联列表中的位置，不是原文的参考文献编号。单源只取编号时，目标直接按该源顺序返回。
 
 esummary 存在性检查失败时，来源状态保留为 `unknown` 并附警告，继续尝试独立的 elink 关联请求。
 
@@ -35,6 +39,8 @@ esummary 存在性检查失败时，来源状态保留为 `unknown` 并附警告
 ## 名单比较与直接导出
 
 输入支持纯 PMID 文本和本项目已知格式的候选 JSON。文本支持空白/逗号分隔、首部 BOM、前导零归一和保序去重；疑似千位分隔数字、非法内容、未知 JSON 格式明确拒绝。空名单在集合运算中合法。
+
+但 `--diff-files` 的两侧都必须是完整 PMID 清单（纯文本）；`current` 若为候选 JSON 会被拒绝并提示改用 `--export-pmids`，`baseline` 也不能使用 links／snowball／diff 的候选 JSON。`--export-pmids` 则可以直接接受候选 JSON。不要从候选集合反推完整名单。
 
 ```bash
 python pubmed_mcp.py --diff-files previous.txt current.txt --out differences.json
@@ -46,7 +52,7 @@ python pubmed_mcp.py --diff-files previous.txt current.txt --out differences.jso
 python pubmed_mcp.py --export-pmids differences.json --out additions.ris --format ris
 ```
 
-直接按名单抓题录，不先拼成搜索式。支持 pmids、csv、ris、medline；缺失题录完整列出。CSV 缺元数据仍有占位行；RIS/MEDLINE 只计实际写入的题录。
+直接按名单抓题录，不先拼成搜索式。支持 pmids、csv、ris、medline；缺失题录完整列出。CSV 缺元数据仍有占位行；RIS/MEDLINE 只计实际写入的题录。导出只绑定你给的名单与本次文件哈希；用户原屏原式、字段或窗口未提供时，不要替其猜，只能报告本次名单与范围，不能称与原屏逐号相同。
 
 ## 单轮追引用
 

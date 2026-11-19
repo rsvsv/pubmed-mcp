@@ -326,7 +326,7 @@ class Implementation:
         check("reldate 加一条不该改变结果的宽区间，命中数必须一模一样",
               n_rel_only == n_rel_wide, f"单给 {n_rel_only} vs 配宽区间 {n_rel_wide}（旧版这里差 7 条）")
         c_mix = await attempt("c_mix", self.dependencies.count, T, mindate="2020-01-01", reldate=60, default="")
-        check("两段日期同给时必须写清是 NCBI 做两段 AND", "两段 AND" in c_mix and "reldate" in c_mix, c_mix[:300])
+        check("两段日期同给时必须区分请求与回显证据", "reldate" in c_mix and ("回显核实：两段 AND" in c_mix or "请求日期范围未核实" in c_mix), c_mix[:300])  # 本项目自订：显示探针摘要预算
         # 〔已作废 2026-11-10〕这里原本是 `f"→ {_today()}" not in c_mix`，那条判据本身是错的：
         #   它只在「本机日历 ≠ NCBI 服务器日历」的那几天才有效，两天一旦相同（今天就是），
         #   代码明明是对的（窗口就是从回显读的）它却报 FAIL —— 一个会随日期自己变红/变绿的断言
@@ -839,8 +839,9 @@ class Implementation:
         finally:
             self.dependencies._get_async = _old_get
         check("as_json 在 esummary 少回时给出 ⚠️，returned 记的是实际记录数",
-              any("esummary 只回了" in w for w in _j_miss.get("warnings") or [])
-              and _j_miss.get("returned") == 1,
+              bool(_j_miss.get('warnings')) and _j_miss.get('page_pmid_count') == 2  # 本项目自订：模拟返回两个编号
+              and _j_miss.get('returned') == _j_miss.get('page_citation_count') == 1  # 本项目自订：仅一个可用题录
+              and _j_miss.get('metadata_recovery', {}).get('arguments', {}).get('pmids') == '1002',  # 本项目自订：只补缺题录编号
               str({k: _j_miss.get(k) for k in ("returned", "esummary_missing")}))
         try:
             self.dependencies.main(["--probeX"])

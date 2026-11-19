@@ -1,7 +1,7 @@
 {
   "question": "⚠️【待确认】请填写研究问题",
   "eligibility": "⚠️【待确认】请填写事先确定的纳入排除标准",
-  "term": "⚠️【待确认】请填写经核对的英文 PubMed 检索式",
+  "term": "⚠️【待确认】请填写经核对并实际执行的英文 PubMed 检索式；用户原屏原式不可见时不要代猜",
   "strategy_status": "draft",
   "strategy_review_note": "",
   "datetype": "pdat",

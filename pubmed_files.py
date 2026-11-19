@@ -254,6 +254,8 @@ class Implementation:
         out_abs = self.dependencies._check_out_path(out_abs)
         b = self.dependencies._read_pmid_file(b_abs, baseline=True)
         c = self.dependencies._read_pmid_file(c_abs)
+        if c['schema'] in self.dependencies._CANDIDATE_SCHEMAS:
+            raise self.dependencies.NcbiError('current 是候选集合，不是完整的新检索名单。请换用完整 PMID 清单；只想导出候选时用 --export-pmids。')
         bset, cset = set(b["ids"]), set(c["ids"])
         added = [p for p in c["ids"] if p not in bset]
         removed = [p for p in b["ids"] if p not in cset]

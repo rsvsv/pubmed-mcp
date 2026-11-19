@@ -179,7 +179,8 @@ class OutputRegression(unittest.TestCase):
         with patch.object(m, "_esearch", esearch), patch.object(m, "_esummary_dicts", summary):
             text = run(m.search, "tooth")
             data = json.loads(run(m.search, "tooth", as_json=True))
-        self.assertIn("本次给 1 条", text)
+        self.assertIn("展示 1 条题录", text)  # 本项目自订：题录少于检索返回的编号
+        self.assertIn("本页取得 2 个 PMID", text)  # 本项目自订：分页依编号计算
         self.assertEqual(data["returned"], 1)
         self.assertEqual(data["querytranslation"], qt)
         self.assertTrue(any("esummary" in w for w in data["warnings"]))

@@ -83,7 +83,26 @@ class SearchModes(unittest.TestCase):
         self.assertEqual(data["returned"], 1)
         self.assertEqual(data["esummary_missing"], 1)
         self.assertTrue(any("esummary" in w for w in data["warnings"]))
-        self.assertIn("本次给 1 条", run(m.search, "tooth", detail="brief"))
+        text = run(m.search, "tooth", detail="brief")
+        self.assertIn('本页取得 2 个 PMID', text)  # 本项目自订：两个编号只返回一条题录
+        self.assertIn('展示 1 条题录', text)  # 本项目自订：不是总命中或取号数
+        self.assertEqual(data['metadata_recovery']['arguments']['pmids'], '11')  # 本项目自订：只补缺号
+        self.assertEqual(data['page_pmid_count'], len(self.search['idlist']))
+        self.assertEqual(data['page_citation_count'], len(self.esummary.return_value))
+
+    def test_missing_entire_page_offers_bounded_recovery(self):
+        ids = self.search['idlist']
+        self.esummary.return_value = []
+        with patch.object(m, 'FETCH_MAX', 1):  # 本项目自订：缺题录多于补取预算
+            data = json.loads(run(m.search, 'tooth', as_json=True))
+            text = run(m.search, 'tooth')
+        self.assertEqual(data['missing_pmids'], ids)
+        self.assertEqual(data['metadata_recovery']['arguments']['pmids'], ids[0])  # 本项目自订：仅首批作为可执行调用
+        self.assertIn('展示 0 条题录', text)  # 本项目自订：确有编号但整页缺题录
+        self.assertIn('分批补取', text)
+        ids_only = json.loads(run(m.search, 'tooth', as_json=True, detail='ids'))
+        self.assertIsNone(ids_only['page_citation_count'])
+        self.assertNotIn('metadata_recovery', ids_only)
 
     def test_zero_count_count_only_and_out_of_range_all_modes(self):
         cases = [({"count": "0", "idlist": []}, "未匹配记录"),

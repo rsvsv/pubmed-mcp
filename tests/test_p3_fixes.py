@@ -90,12 +90,27 @@ class Mesh(unittest.TestCase):
         self.assertIn("映射主题词：Calcium Compounds (UID 68017610); Silicates (UID 68017640)", text)
         self.assertNotIn("@152523", text)
         self.assertNotIn("1000048", text)
-        scr = [d for d in data["descriptors"] if d["ui"] == "C506393"][0]
+        scr, = data['other_records']
+        self.assertEqual(scr['ui'], 'C506393')  # 来源：本文件 SCR 夹具
         self.assertEqual((scr["treenums"], scr["parents"]), ([], []))
         self.assertEqual([x["name"] for x in scr["mapped_to"]], ["Calcium Compounds", "Silicates"])
         desc = [d for d in data["descriptors"] if d["ui"] == "D014071"][0]
         self.assertNotIn("mapped_to", desc)
         self.assertEqual(desc["treenums"], ["C07.650.800"])
+
+    def test_same_name_different_types_keep_identity(self):
+        records = {pid: {'uid':pid, 'ds_meshterms':['Bleaching Agents'], 'ds_recordtype':kind,
+                         'ds_idxlinks':[{'treenum':'internal', 'parent':'root'}] if kind != 'descriptor' else []}
+                   for pid, kind in [('1','pharmacological-action'), ('2','qualifier'), ('3','descriptor'), ('4','future-type')]}  # 本项目自订：同名与未知类型夹具
+        with patch.object(m, '_get_async', mesh_fake(records)):
+            data = json.loads(run(m.mesh, 'Bleaching Agents', as_json=True))
+            text = run(m.mesh, 'Bleaching Agents')
+        self.assertEqual(data['record_order'], ['3','1','2','4'])  # 本项目自订：描述符优先，非描述符仍可定位
+        self.assertEqual([r['record_type'] for r in data['descriptors']], ['descriptor'])
+        self.assertTrue(all(r['exact_match'] and not r['treenums'] and not r['parents'] for r in data['other_records']))
+        for label in ('副主题词 [sh]', '药理作用 [pa]', '其他类型：future-type'):
+            self.assertIn(label, text)
+        self.assertNotIn('internal', text)
 
     def test_descriptor_only_header_unchanged(self):
         with patch.object(m, "_get_async", mesh_fake({"68014071": DESC})):

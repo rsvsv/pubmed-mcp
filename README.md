@@ -14,7 +14,7 @@ PubMed MCP 服务（stdio），直接调用 NCBI E-utilities，不经过 `pubmed
 | 1.4.1 | 检索式本地语法检查（拼错的字段标签、`AND NOT`、前导截词等）；count 0 条解释 |
 | 1.4.0 | 系统综述检索助手 `check_recall` / `mesh` / `diff` / `export`；可选检索留痕 |
 
-当前源码新增（尚未制作新的版本发布包）：检索记账、导出说明与文件核验、入库日期补检、完整引用关系、名单比较/直接导出、单轮追引用，以及题录阶段断点续跑。入口和限制见 [新功能使用说明](docs/retrieval-files.md)。从仓库安装取得所选分支的源码；既有 Release 附件不会随源码更新。
+本分支提供 [便携安装包（PubMed MCP 和两套检索技能）](downloads/pubmed-mcp-portable.zip)、[SHA-256 校验文件](downloads/SHA256.txt) 和 [安装说明](docs/portable-install.md)。包与本分支源码一同更新，不替换既有 GitHub Release 附件。已知论文核对、引用追踪、分页导出与综述交付的用法和限制见 [新功能使用说明](docs/retrieval-files.md)。
 
 综述检索交付入口：`pubmed-review --review-plan <方案.json> --out-dir <新目录>` 将完整 PMID 基线、题录摘要、待筛选表、RIS、留痕和待解决事项放在同一目录；支持续跑与交付核验。实际用法与完成边界见 [综述检索交付](docs/review-delivery.md)。
 
@@ -47,10 +47,13 @@ pubmed-mcp --help
 - `diagnose="off"` 不发诊断请求；`"always"` 忽略命中阈值，但仍受预算和语法检查限制。`count` 默认 off，需要时显式开启。子查询不递归触发诊断。
 - 保留原字段、日期与 NOT 排除条件；同层布尔含义不明确时拒绝自动拆分。按原顺序列出结果，不把最大增幅当成“这个条件有错”。网络失败写未知，解析警告写不可可靠比较。
 - `links(pmids="已知PMID", to="pubmed", term="原检索式", with_titles=True)`：显示标题、发表日期与语言，标出是否命中原式。须同时传入原来的 `field/mindate/maxdate/reldate/datetype`；不会自动读取上一次调用参数。
+- 追引时若只需当前页供筛读，用 `links(pmids="已知PMID", to="pubmed", term="原检索式", with_titles=True, compact=True)`。`compact=True` 自动返回 JSON。`targets` 每个目标一行，内含本页来源及请求的标题与命中状态。顶层 `sources` 给出各来源状态和分页前目标数，`match_scope` 保留原式和请求范围，`executions` 列实际交集执行式及批次状态，`warnings` 提示失败或覆盖不足。同时传 `out_path` 会保存含执行式的完整 JSON，并随精简结果返回文件路径和哈希。
+- 带 `term` 时，文本和 JSON 的 `match_summary` 按本次窗口的唯一 PMID 统计。`inside` 为命中，`outside` 为已确认未命中，`unknown` 为检查失败或执行式失真，`unchecked` 为本页未检查。`outside_window` 单列其他已取回的候选。同一次调用的文件和预览共用这份窗口统计。
 - `in_term` 为 true / false / null；null 可能是未检查、网络失败或检索式失真，绝不算未命中。标题缺失和命中状态分别报告；源 PMID 自身标为种子。
 - 近邻每次补充检查最多 `200` 篇，文本展示最多 `20` 篇；预算外显式标未检查，用 `offset/limit` 分页继续。JSON 保留原关联顺序，并另给优先阅读的 candidate_details；out_path 保存全量名单，offset/limit 仅移动候选检查窗口，窗口外仍保留并标未检查。〔本项目自订预算；来源：pubmed_tools.py 的 _NEIGHBOR_ENRICH_CAP / _NEIGHBOR_TEXT_CAP〕
 - `search` / `count` 的文本输出只完整回显实际执行式，不再重复打印原输入或截断执行式；原输入仍在调用参数、search 的 JSON 和启用后的审计记录中。解析警告不省略。
 - `check_recall` 和 `diff` 接受与 `search` 相同的 `field`、`mindate`、`maxdate`、`reldate`、`datetype`。调用时把原参数一起传入，找回测试的每一批、差集两侧的每一页都使用这组限制。文本显示复查范围，JSON 的 `scope` 记录参数，执行式保留 PubMed 返回的实际日期。省略参数时仅按检索式自身的条件复查。`reldate` 按复查当天计算；要复现历史窗口，请传原先执行式中的绝对起止日期。
+- 看「改式多出哪些」时，先看批级 `provenance`：`search`、文献型 `links` 为 `not_compared`；追引未命中原式不证明新式命中。`diff` 的 `compared` 只说明按当次相同限制取回的两份 PMID 已比对，`added` 仅指本次 b 有、a 无，不证明差异由改式造成；历史零命中不能替代当次对照。若执行式缺失、失真或翻页不稳，标 `needs_review`：保留实取名单，不把观察到的差异当成预期改式新增。以上均不证明相关性或全领域仅有这些论文。
 - 查新流程用配套 literature-search，正式综述用 systematic-review；也可组合 check_recall、links 和 diff 手动复核。相似文献和放宽结果都只是候选，不自动判断研究空白。留痕复用 `PUBMED_AUDIT_DIR`。
 
 范围边界：本轮不新增 gap_check、不改变 CLI 的 `--snowball` 参数，不增加引用量排序，也不把短语零命中自动归因于标点。短语写法可显式放宽后复查，工具不偷偷替换原式。
@@ -274,12 +277,12 @@ search('"root resorption"[tiab]', detail="ids", as_json=True)
 
 ### 摘要精简与落盘（1.4.2）
 
-不传新参数时 `fetch_abstracts` 输出与 1.4.1 逐字相同（A/B 49 组），只在正文超过 6 万字符时末尾多一行 ⚠️ 提示。详见 [docs/abstract-slim.md](docs/abstract-slim.md)。
+日常阅读直接用 `fetch_abstracts(pmids=..., fields="title,abstract")`，返回精简文本并逐篇标出无摘要的记录，不必开启 JSON 或写文件。省略 `fields` 且不用 JSON 时保留 NCBI 原排版，开头的实取数仅统计记录，未逐篇核验有无摘要。历史版本的逐字对照与大结果提示见 [docs/abstract-slim.md](docs/abstract-slim.md)。
 
 | 参数 | 作用 |
 |---|---|
 | `fields` | 改走 efetch XML 解析，只输出所列字段：`title,abstract,authors,journal,pubdate,ids,pt,lang,mesh,comments,coi,other_abstracts` 或 `all`。不含作者单位。只给 `as_json` 时默认 `title,abstract,authors,journal,pubdate,ids,pt,lang,comments` |
-| `as_json` | 结构化 JSON：摘要分段 `{label,text}`、`has_abstract`、撤稿/勘误关联（无 PMID 时为 null）、书记录 `source="book"` |
+| `as_json` | 结构化 JSON：摘要分段 `{label,text}`、`has_abstract`（含其他摘要）；仅有其他摘要列在 `other_abstract_only`，用 `fields="title,other_abstracts"` 阅读；撤稿/勘误关联（无 PMID 时为 null）、书记录 `source="book"` |
 | `out_path` | 整份结果写入新文件（不覆盖、原子发布），只回路径、字节数、sha256；篇数多时用它绕开客户端结果上限 |
 
 体积〔实测 2026-11-13，60 篇 `"root resorption"[tiab] AND 2023:2025[dp]`〕：原排版 167,062 字符；`fields=title,abstract` 文本 106,160（64%）；默认字段精简文本 115,131（69%）；`fields=title,abstract,pt` JSON 114,545（69%）。精简只能省三成多，60 篇仍是十万字符量级，**大批量请用 `out_path`**。
@@ -291,8 +294,8 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 
 分工〔本项目自订〕：工具只做机械可复现的事（检索、集合运算、导出、留痕）；拆概念、选同义词、判断相关性、定纳入排除由人与 LLM 按预设标准做。**工具不声称查全率/查准率**，已知集找回只证明这批已知文献被检回。
 
-- `check_recall(term, pmids)`：分批 esearch 交集判定 found/missing；present 表示记录存在但本次实际执行式未检回，unavailable/unknown 表示存在性未确认。term 为空直接报错（1.4.4）；任一批仅剩 UID 条件且 term 本身不是纯 `PMID[uid]` 时置 `term_ignored`；部分概念消失、解析警告或原式语法失真时置 `term_degraded`。空执行式归为信息不足，不能直接断言 term 被忽略。JSON 的 `querytranslations` 保存各批执行式；这些标记是保守诊断，仍须核对原式，不能把全部 found 当真实查全率。
-- `mesh(term)`：esearch/esummary `db=mesh`，给入口词、树号、上下位词、历史前身词（previous indexing）、范围注与引入年份。本次返回候选中的字面精确项自动置顶；补充概念记录（SCR）单独标注、给映射主题词并提示用 `[nm]` 检索（1.4.4）；关联名称缺失时保留 UID 并告警。〔来源：源码 `mesh`；验证见演练修复记录〕
+- `check_recall(term, pmids)`：`retrieved` 保留实取名单，`found` / `missing` 只含执行式和请求范围通过检查的批次。该批失真或无法确认时，不论交回哪些号，整批列 `unknown`；`checks` 保留每批的名单、执行式、状态与警告。`missing` 中的 `state` 另指记录存在性，不与批次的 `unknown` 混用。只有已知集接受了检查，不代表全库查全率。
+- `mesh(term)`：`descriptors` 只含描述符；原先混在这里的补充概念、副主题词、药理作用记录等改从 `other_records` 读取，全体按 `record_order` 的 UID 排序。名称或入口词精确匹配时优先展示同样精确的描述符，不删除同名异类。仅描述符提供主题词树；补充概念保留映射，副主题词和药理作用分别提示 `[sh]`、`[pa]`。
 - `diff(term_a, term_b)`：两查询各取全窗口内 ID，本地集合差给新增/未再命中/共同。任一超窗拒绝并提示改用 export。`preview=True` 额外获取每侧前 `max_show` 条的标题、日期和全部文献类型，默认关闭以避免额外请求；JSON 的完整 PMID 列表始终保留。预览按返回顺序，不是随机样本或相关性排名；缺标题或请求失败单独告警，不删除候选。`removed` 只是旧式有、新式没有，不证明数据库删除；补检窗口变化也会产生差集。
 - `export(term, path, format)`：超检索窗口按发表日期递归二分，切片计数与总数核对、按 PMID 去重（这项核对只能发现重复与计数漂移；分页期间数据库更新造成的跳号发现不了）。每次使用唯一临时文件；Windows 用不覆盖的 rename，其他系统用硬链接原子发布，文件系统不支持则报错。清理失败会警告；path 不得已存在。CSV 不含摘要，MEDLINE 保留来源已有字段。安全上限为十万条〔本项目自订；源码 EXPORT_MAX〕。
 - **检索留痕（工作区未发布功能）**：设 `PUBMED_AUDIT_DIR` 开启，按进程/会话写 `searches-<pid>-<session>.jsonl`；记录带时区的起止时间、输入与实际请求、执行式、结果及事件标识。JSON 返回 `audit_status`，留痕失败也在返回结果中说明。`--audit-report <日志...> --out <报告.md或.csv>` 离线整理记录表，兼容旧日志。SDK 入参拒绝与进程强制终止不保证留痕；默认关闭。详见 [记账与报告用法](docs/audit-report.md)。旧版仅写 `searches.jsonl`、仅 stderr 报写入失败的说明已作废〔本次实现订正〕。

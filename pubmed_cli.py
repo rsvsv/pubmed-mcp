@@ -37,7 +37,7 @@ def build_parser():
     modes.add_argument("--export-pmids", metavar="FILE", help="按已有完整 PMID/候选名单导出；题录格式需联网")
     modes.add_argument("--resume-export", metavar="DIR", help="恢复题录导出作业，复用已核验批次")
     modes.add_argument("--diff-files", nargs=2, metavar=("OLD", "NEW"),  # 本项目自订：差集输入顺序
-                       help="离线比较旧、新 PMID 名单")
+                       help="离线比较两份完整 PMID 文本名单；候选 JSON 只能按名单导出")
     modes.add_argument("--snowball", metavar="SEEDS", help="联网追查参考文献和施引，扣除已有名单")
     modes.add_argument("--review-plan", metavar="JSON", help="按方案联网生成综述检索交付目录")
     modes.add_argument("--resume-review", metavar="DIR", help="续跑交付或补取缺失题录，可能联网")

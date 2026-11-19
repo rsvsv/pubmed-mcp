@@ -3,23 +3,142 @@ Dependencies are an explicit, per-instance, late-bound contract.
 Historical evidence and policy comments are retained from the source.
 """
 import functools
-import calendar
 import datetime
 import hashlib
 import json
 import os
 import re
-from typing import Literal
+from typing import Annotated, Literal
 import anyio
-from pydantic import StrictInt, StrictStr
+from pydantic import Field, StrictInt, StrictStr
 
-DEPENDENCIES = ('ABSTRACT_DEFAULT_FIELDS', 'ABSTRACT_FIELDS', 'DB_WHITELIST', 'DIFF_SHOW_CAP', 'EFETCH_CHUNK', 'ESUMMARY_CHUNK', 'EXPORT_MAX', 'FETCH_MAX', 'FETCH_WARN_CHARS', 'FIELD_NO_COUNT', 'FIELD_SWALLOWED', 'FIELD_WHITELIST', 'GOLD_CHUNK', 'GOLD_MAX', 'MESH_CHILD_SHOW', 'MESH_PARENT_SHOW', 'MESH_RETMAX_CAP', 'NO_BEGIN', 'NO_END', 'NcbiError', 'RELDATE_MAX', 'RETMAX_CAP', 'RETSTART_MAX', 'SNOW_BATCH_CAP', 'SNOW_SINGLE_CAP', 'SORT_IGNORED', 'SORT_WHITELIST', 'WINDOW', '_AUDIT_UNKNOWN', '_CJK', '_DATE_RE', '_as_bool', '_as_list', '_audit', '_brief_record', '_check_date', '_check_datetype', '_check_db', '_check_field', '_check_out_path', '_check_reldate', '_check_sort', '_count_of', '_efetch_abstracts', '_efetch_all', '_efetch_xml_all', '_efetch_xml_chunk', '_esearch', '_esummary_dicts', '_expand', '_fmt_brief_record', '_fmt_compact', '_fmt_record', '_get_async', '_ids_in_window', '_ids_map', '_int', '_mask', '_note', '_parse_fields', '_parse_pmids', '_pmids_exist', '_project', '_read_pmid_file', '_recall_warnings_and_degraded', '_relaxation_plan', '_record_count_change', '_record_parts', '_retrieval_check', '_safe_json', '_sort_note', '_term_vanished', '_utc_now', '_validate_esearch_page', '_warn_bits', '_windows', '_write_json_new', '_write_new_file', '_xml_record', '_zero_explanation', 'links')
+DEPENDENCIES = ('ABSTRACT_DEFAULT_FIELDS', 'ABSTRACT_FIELDS', 'DB_WHITELIST', 'DIFF_SHOW_CAP', 'EFETCH_CHUNK', 'ESUMMARY_CHUNK', 'EXPORT_MAX', 'FETCH_MAX', 'FETCH_WARN_CHARS', 'FIELD_NO_COUNT', 'FIELD_SWALLOWED', 'FIELD_WHITELIST', 'GOLD_CHUNK', 'GOLD_MAX', 'MESH_CHILD_SHOW', 'MESH_PARENT_SHOW', 'MESH_RETMAX_CAP', 'NO_BEGIN', 'NO_END', 'NcbiError', 'RELDATE_MAX', 'RETMAX_CAP', 'RETSTART_MAX', 'SNOW_BATCH_CAP', 'SNOW_SINGLE_CAP', 'SORT_IGNORED', 'SORT_WHITELIST', 'WINDOW', '_AUDIT_UNKNOWN', '_CJK', '_DATE_RE', '_abstract_material', '_as_bool', '_as_list', '_audit', '_brief_record', '_check_date', '_check_datetype', '_check_db', '_check_field', '_check_out_path', '_check_reldate', '_check_sort', '_count_of', '_efetch_abstracts', '_efetch_all', '_efetch_xml_all', '_efetch_xml_chunk', '_esearch', '_esummary_dicts', '_expand', '_fmt_brief_record', '_fmt_compact', '_fmt_record', '_get_async', '_ids_in_window', '_ids_map', '_int', '_mask', '_note', '_parse_fields', '_parse_pmids', '_pmids_exist', '_project', '_read_pmid_file', '_recall_warnings_and_degraded', '_relaxation_plan', '_record_count_change', '_record_parts', '_retrieval_check', '_safe_json', '_scope_evidence', '_sort_note', '_term_vanished', '_utc_now', '_validate_esearch_page', '_warn_bits', '_windows', '_write_json_new', '_write_new_file', '_xml_record', '_zero_explanation', 'links')
 
 
 _SEARCH_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024  # 本项目自订：快照读写共用字节上限，超限不截断
 _DIAGNOSTIC_BLOCK_CAP = 6  # 本项目自订：一次诊断最多额外计数请求，不递归触发
 _NEIGHBOR_ENRICH_CAP = 200  # 本项目自订：每次近邻标题/命中检查预算，其余显式标未检查
 _NEIGHBOR_TEXT_CAP = 20  # 本项目自订：文本候选展示上限，完整状态用 JSON/文件查看
+
+
+# 本项目自订：term 内部写成 [dp]/[edat]/[pt] 的日期或文献类型条件属于检索范围本身；
+# 放宽时删掉整块会连带删掉这些条件，不能提供，也不能在提示里声称「保持日期/类型」。
+_PROTECTED_FILTER_TAGS = frozenset({
+    'dp', 'pdat', 'date', 'publication date', 'date - publication',
+    'edat', 'entry date', 'date - entry',
+    'crdt', 'create date', 'date - create',
+    'dcom', 'completion date', 'date - completion',
+    'lr', 'modification date', 'date - modification',
+    'mhda', 'mesh date', 'date - mesh', 'epdat', 'ppdat',
+    'pt', 'ptyp', 'publication type',
+})
+_PROTECTED_TAG_RE = re.compile(r'\[([^\[\]\n]{1,40})\](?![A-Za-z0-9])')
+
+_MESH_TYPE_LABELS = {'descriptor': '描述符 [mh]', 'qualifier': '副主题词 [sh]',
+                      'pharmacological-action': '药理作用 [pa]', 'supplemental-record': '补充概念 [nm]'}
+
+
+def _protected_filter_tags(text):
+    """返回块内出现的受保护标签（日期/文献类型）；引号内的文字不算标签。"""
+    masked = re.sub(r'"[^"\n]*"', lambda m: 'x' * len(m[0]), str(text or ''))
+    tags = {re.sub(r'\s+', ' ', m[1].partition(':')[0]).strip().lower() for m in _PROTECTED_TAG_RE.finditer(masked)}
+    return tags & _PROTECTED_FILTER_TAGS
+
+
+def _mesh_kind_label(record_type):
+    return _MESH_TYPE_LABELS.get(record_type, '其他类型：' + (record_type or '⚠️【待确认】'))
+
+
+# 本项目自订：一批题录共用来源说明，不逐 PMID 重复，不继承上一调用的检索状态。
+_SEARCH_ORIGIN = {"source": "search", "comparison": "not_compared",
+                  "note": "来源：本次检索；未核对是否为改式新增。要查新增，用同范围 diff。不能据本次命中断言全领域只有这些。"}
+_LINKS_ORIGIN = {"source": "links", "comparison": "not_compared",
+                 "note": "来源：追引／近邻；未比对改式前后。即使未命中原式，也不证明放宽式命中它。各源位置按本次关联返回次序，不是原文引文编号或质量排名。"}
+
+
+def _window_match_counts(window, details, all_pmids):
+    """Count unique candidates before sorting or truncating the text preview."""
+    counts = dict(window_total=len(window), inside=0, outside=0, unknown=0, unchecked=0,
+                  outside_window=len(all_pmids) - len(window))  # 本项目自订：按去重后的窗口分类，从零计数
+    for pid in window:
+        row = details[pid]
+        if row['in_term'] is True:
+            key = 'inside'
+        elif row['in_term'] is False:
+            key = 'outside'
+        elif row['match_status'] == 'not_checked':
+            key = 'unchecked'
+        else:
+            key = 'unknown'
+        counts[key] += 1  # 本项目自订：每个候选只计一次
+    return counts
+
+
+def _neighbor_executions(checks):
+    return [{'status': check['status'], 'querytranslation': check.get('querytranslation', ''),
+             **({'error': check['error']} if 'error' in check else {})} for check in checks]
+
+
+def _compact_links(page):
+    """Project one displayed page. Membership and metadata come only from the full model."""
+    owners = {}
+    positions = {}
+    sources = []
+    counts = page['counts']
+    need_positions = len(page['sources']) > 1 or 'candidate_details' in page  # 本项目口径：多源合并或题名/命中排序后标出原位置
+    for source in page['sources']:
+        pid = source['source']
+        entry = {k: source[k] for k in ('source', 'source_status', 'relation_status')}
+        entry['total'] = counts['per_source'][pid]
+        entry['page_positions'] = source['page_positions']
+        if source['error']:
+            entry['error'] = source['error']
+        sources.append(entry)
+        for rank, target in enumerate(source['target_ids'], start=entry['page_positions']['first'] or 1):  # 本项目口径：按源的绝对位置
+            owners.setdefault(target, []).append(pid)
+            if need_positions:
+                positions.setdefault(target, {})[pid] = rank
+
+    rows = []
+    if 'candidate_details' in page:
+        for candidate in page['candidate_details']:
+            row = {'pmid': candidate['pmid'], 'sources': owners[candidate['pmid']]}
+            if candidate['is_seed']:
+                row['is_seed'] = True
+            if candidate['match_status'] != 'not_requested':
+                row.update(in_term=candidate['in_term'], match_status=candidate['match_status'])
+            if candidate['metadata_status'] != 'not_requested':
+                row['metadata_status'] = candidate['metadata_status']
+                if candidate['metadata_status'] == 'available':
+                    row['languages'] = candidate['languages']
+                if candidate['title']:
+                    row['title'] = candidate['title']
+                if candidate['pubdate']:
+                    row['pubdate'] = candidate['pubdate']
+            rows.append(row)
+    else:
+        id_key = 'pmid' if page['to'] in ('pubmed', 'refs', 'citedin') else 'id'
+        seeds = set(page['pmids']) if id_key == 'pmid' else set()
+        rows = [{id_key: target, 'sources': origins, **({'is_seed': True} if target in seeds else {})}
+                for target, origins in owners.items()]
+
+    if positions:
+        for row in rows:
+            row['source_positions'] = positions[row.get('pmid', row.get('id'))]
+
+    result = {'schema': 'pubmed.links.compact.v1', 'to': page['to'], 'sources': sources,  # 本项目自订：精简响应格式标识
+              'offset': page['pagination']['offset'], 'limit': page['pagination']['limit'],
+              'targets': rows, 'warnings': list(dict.fromkeys(page['warnings']))}
+    for key in ('next_offset', 'safe_per_source_limit', 'enrichment_cap', 'window_total', 'window_checked'):
+        if key in page['pagination']:  # 仅在 term/with_titles 的分页预算生效时出现
+            result[key] = page['pagination'][key]
+    if 'provenance' in page:
+        result['provenance'] = page['provenance']
+    if page.get('match_scope', {}).get('term'):
+        result['executions'] = _neighbor_executions(page['match_checks'])
+        result['match_summary'] = page['match_summary']
+        result['match_scope'] = {k: v for k, v in page['match_scope'].items() if k not in ('offset', 'limit')}
+    return result
 
 
 class Implementation:
@@ -107,18 +226,6 @@ class Implementation:
                             f"不返回 errorlist，整条查询静默变成 0 命中（例如 2023-02-29：2023 年没有 2 月 29 日）。"
                             f"要 2023 年就写 2023-01-01。")
         return "-".join(p)
-
-
-    def _expand(self, v, end=False):
-        """把 2021 / 2021-06 摊成真正的起止日。NCBI 自己就是这么展开的
-        〔实测 2026-11-08：maxdate=2021 的 qt 尾段是 2021-01-01:2021-12-31〕。"""
-        if not v:
-            return ""
-        p = v.split("-")
-        y = int(p[0])
-        mo = int(p[1]) if len(p) > 1 else (12 if end else 1)
-        d = int(p[2]) if len(p) > 2 else (calendar.monthrange(y, mo)[1] if end else 1)
-        return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
     def _today(self):
@@ -288,6 +395,7 @@ class Implementation:
             q.update(mindate=lo, maxdate=hi, datetype=datetype)
         payload = self.dependencies._safe_json(await self.dependencies._get_async("esearch.fcgi", q, 25), "esearch")  # 原文/来源：现有 _esearch 请求超时保持不变
         d = self.dependencies._validate_esearch_page(payload.get("esearchresult"), rs, _rm)
+        d.setdefault('retstart', str(rs))  # 无上游回显时沿用已校验的实际请求偏移，供快照、文本和审计使用。
         d["_term"] = term
         d["_request_params"] = {k: v for k, v in q.items() if k not in ("api_key", "email")}
         # 〔实测 2026-11-11〕留给 _zero_explanation 判断「用户是不是只要计数」；**不能**改读 NCBI
@@ -301,17 +409,18 @@ class Implementation:
         wins = self.dependencies._windows(d.get("querytranslation"))
         d["_windows"] = wins
         segs = "；".join(f"{a} → {b}（{lab}）" for a, b, lab in wins)
-        if rel and (lo or hi):
-            d["_daterange"] = (f"reldate 与你给的区间同时下发，NCBI 按【两段 AND】执行（都按{date_label} {datetype}；"
-                               f"reldate 的窗口由 NCBI 按它自己的服务器日历算，本工具不做日历换算）："
-                               f"{segs or 'NCBI 没回显窗口'}"
-                               + ("；" + "，".join(filled) if filled else ""))
-        elif rel:
-            d["_daterange"] = (f"近 {rel} 天（reldate，按【{date_label}】datetype={datetype}）"
-                               + (f"；NCBI 实际执行窗口 {segs}" if segs else "；NCBI 没回显窗口"))
-        elif lo or hi:
-            d["_daterange"] = (f"{lo} → {hi}（datetype={datetype}＝{date_label}）"
-                               + ("；" + "，".join(filled) if filled else ""))
+        if lo or hi or rel:
+            bounds = (self.dependencies._expand(lo), self.dependencies._expand(hi, True)) if lo else None
+            reasons, _ = self.dependencies._scope_evidence(term, d.get('querytranslation') or '', '', bounds, rel, datetype)
+            requested = ([f'{lo} → {hi}'] if bounds else []) + ([f'近 {rel} 天（reldate）'] if rel else [])
+            parts = ['请求：' + ' 与 '.join(requested) + f'（datetype={datetype}＝{date_label}）', *filled]
+            if reasons:
+                parts.append('请求日期范围未核实：' + '；'.join(reasons))
+            else:
+                parts.append('回显核实：' + ('两段 AND' if bounds and rel else '请求的日期限制是必需条件'))
+            if rel:
+                parts.append('回显中出现的窗口：' + (segs or 'NCBI 没回显窗口'))
+            d['_daterange'] = '；'.join(parts)
         else:
             d["_daterange"] = ("未给日期区间或相对天数：datetype=edat 未用于日期筛选" if datetype == "edat" else "")
         return d
@@ -544,20 +653,50 @@ class Implementation:
 
 
     def _brief_record(self, uid, r):
-        """初筛字段；文献类型完整保留，省略字段不代表来源缺失。"""
+        """初筛字段；文献类型完整保留，省略字段不代表来源缺失。
+
+        字段契约保持四字段；仅当刊期年与 Epub 年都已知且不同时，额外附可选 epubdate。
+        同年或任一未知时仍是四字段，旧快照/调用方不受影响。"""
         p = self.dependencies._record_parts(uid, r)
-        return {k: p[k] for k in ("pmid", "pubdate", "title", "pubtype")}
+        out = {k: p[k] for k in ("pmid", "pubdate", "title", "pubtype")}
+        if self._epub_cross_year(p):
+            out["epubdate"] = p["epubdate"]
+        return out
+
+
+    @staticmethod
+    def _epub_cross_year(p):
+        """刊期年与 Epub 年都已知且不同时为真；任一缺失不推断。"""
+        yp = re.match(r"\s*(\d{4})\b", str(p.get("pubdate") or ""))
+        ye = re.match(r"\s*(\d{4})\b", str(p.get("epubdate") or ""))
+        return bool(yp and ye and yp.group(1) != ye.group(1))
+
+
+    @staticmethod
+    def _record_date_text(p):
+        """题录日期文本：刊期年与 Epub 年不同时并列，其它情况只给刊期。
+
+        只从能解析出四位年份的字符串判断；任一缺失就不并列，也不补造「同年/跨年」。
+        〔工具输出锚点 SRC-MH〕同一 PMID 限 2007–2009[pdat] 却显示 2010 Mar，
+        原排版另有 Epub 2009 Nov 3 —— 只按列表年份手删会删掉真实命中。
+        字段契约不变：这里只改文本头部，不动 pubdate/epubdate 的 JSON 投影。"""
+        pub = str(p.get("pubdate") or "")
+        epub = str(p.get("epubdate") or "")
+        if Implementation._epub_cross_year(p):
+            return f"{pub}｜Epub {epub}"
+        return pub
 
 
     def _fmt_brief_record(self, r, uid):
-        p = self.dependencies._brief_record(uid, r)
+        # 文本 brief 另取 epubdate 判跨年；JSON brief 走 _brief_record（跨年时自带可选 epubdate）。
+        p = self.dependencies._record_parts(uid, r)
         types = "/".join(p["pubtype"])
-        return f"PMID {p['pmid']}｜{p['pubdate']}" + (f"｜{types}" if types else "") + f"\n  {p['title']}"
+        return f"PMID {p['pmid']}｜{self._record_date_text(p)}" + (f"｜{types}" if types else "") + f"\n  {p['title']}"
 
 
     def _fmt_record(self, r, uid):
         p = self.dependencies._record_parts(uid, r)
-        head = f"PMID {p['pmid']}｜{p['pubdate']}｜{p['journal']}{(' ' + p['citation']) if p['citation'] else ''}{('｜' + p['ptag']) if p['ptag'] else ''}"
+        head = f"PMID {p['pmid']}｜{self._record_date_text(p)}｜{p['journal']}{(' ' + p['citation']) if p['citation'] else ''}{('｜' + p['ptag']) if p['ptag'] else ''}"
         tail = []
         if p["doi"]:
             tail.append("doi:" + p["doi"])
@@ -771,11 +910,24 @@ class Implementation:
         summary.update(path=p, bytes=size, sha256=sha, scope="requested_page",
                        displayed=len(shown), unchanged_count=len(unchanged), deferred_count=len(deferred),
                        deferred_pmids=deferred, refreshed_pmids=refreshed_shown, records=projected,
-                       display_note="仅省略此前展示且内容未变的题录；refreshed_pmids 给更新后完整引用，deferred_pmids 尚未展示。保存/展示不等于筛选；本文件仅含当前页。")
+                       display_note=(f"总命中 {data['count']} 条，本页已保存 {len(records)} 条"
+                                     f"{' PMID' if detail == 'ids' else '题录'}，本次展示 {len(shown)} 条，"
+                                     f"另有 {len(deferred)} 条待展示。"
+                                     + (f"此前展示且未变 {len(unchanged)} 条，不重复展示。" if unchanged else "")
+                                     + "保存或展示不等于已筛选。"))
         self.dependencies._audit("search", path=p, bytes=size, sha256=sha, previous=previous_binding,
                                  displayed=len(shown), unchanged_count=len(unchanged), deferred_count=len(deferred),
                                  warnings=data["warnings"])
         return json.dumps(summary, ensure_ascii=False)
+
+    def _missing_citations(self, pmids):
+        """Keep every ID; offer a valid first fetch even when the page exceeds its limit."""
+        batch = pmids[:self.dependencies.FETCH_MAX]
+        args = {'pmids': ' '.join(batch), 'fields': 'title,abstract', 'as_json': True}
+        hint = '补取题名/摘要：fetch_abstracts(' + ', '.join(f'{k}={v!r}' for k, v in args.items()) + ')'
+        if len(pmids) > len(batch):
+            hint += f'；剩余 {len(pmids) - len(batch)} 个按相同方式分批补取'
+        return {'tool': 'fetch_abstracts', 'arguments': args}, hint
 
     @staticmethod
     def _query_heading(term, d):
@@ -797,43 +949,75 @@ class Implementation:
         return threshold
 
     async def _low_hit_help(self, term, d, diagnose, threshold, scope, *, first_page=True):
-        """诊断附属于原始结果；子查询故障不冒充零命中，不改原查询，也不选最大增幅。"""
+        """诊断附属于原始结果；子查询故障不冒充零命中，不改原查询，也不选最大增幅。
+
+        低命中状态要按【实际执行】的字段/日期范围判断：父查询与每个子查询都用
+        _check_execution_scope（_review_scope 同口径归一）核对执行式，范围无法核实或解析失真时
+        不把计数当低命中证据，delta 一律留空。term 内部写成 [dp]/[edat]/[pt] 的日期或文献类型
+        条件属于检索范围，删除会改变范围，不列入可移除块。"""
         total = self.dependencies._count_of(d)
+        scope = self._normalized_scope(scope)
         active = diagnose == 'always' or (diagnose == 'auto' and total <= threshold and first_page)
         report = {'status': 'off' if diagnose == 'off' else 'not_triggered', 'rows': [],
                   'scope': scope, 'warnings': [], 'request_budget': _DIAGNOSTIC_BLOCK_CAP,
                   'evidence': '来源：本次工具计数；不证明相关性、漏检原因或研究空白'}
         lines = []
         plans, reason = self.dependencies._relaxation_plan(term) if active else ([], '')
+        protected = []
+        if active and plans:
+            kept = []
+            for plan in plans:
+                tags = _protected_filter_tags(plan['removed_block'])
+                if tags:
+                    protected.append(plan['removed_block'])
+                else:
+                    kept.append(plan)
+            plans = kept
+            if protected:
+                report['protected_blocks'] = list(dict.fromkeys(protected))
         if active:
             _, degraded = self.dependencies._recall_warnings_and_degraded(term, [d])
-            if degraded:
+            scope_errors, parent_relative = self._check_execution_scope(term, d, scope)
+            if degraded or scope_errors:
                 report['status'] = 'unreliable_query'
-                lines.append('诊断暂缓：原查询存在解析警告，请先修正检索式；不把改写后计数当原式计数。')
+                report['warnings'].extend('⚠️ ' + message for message in scope_errors)
+                lines.append('诊断暂缓：原查询存在解析警告或字段/日期范围无法核实，请先修正检索式；'
+                             '不把无法核实的低命中当成原式计数。')
             elif not plans:
                 report['status'] = 'unsupported'
-                lines.append('诊断未执行：' + reason)
+                if protected:
+                    lines.append('诊断未执行：可拆分的块都含日期或文献类型限制；删除会改变检索范围，不提供该放宽。')
+                else:
+                    lines.append('诊断未执行：' + reason)
             else:
                 report['status'] = 'complete' if len(plans) <= _DIAGNOSTIC_BLOCK_CAP else 'partial'
+                if protected:
+                    lines.append('受保护块（含日期/文献类型限制，删除会改变范围，不列入放宽）：'
+                                 + '；'.join(dict.fromkeys(protected)))
                 if len(plans) > _DIAGNOSTIC_BLOCK_CAP:
                     report['warnings'].append(f'诊断预算仅检查原顺序前 {_DIAGNOSTIC_BLOCK_CAP} 个可移除块；其余未检查。')
-                lines.append('逐块放宽（保持字段、日期和排除条件；按原顺序，不按增幅推荐删词）：')
+                lines.append('逐块放宽（其余字段、日期和排除条件保持不变；按原顺序，不按增幅推荐删词）：')
                 for plan in plans[:_DIAGNOSTIC_BLOCK_CAP]:
                     row = {**plan, 'count': None, 'delta': None, 'status': 'unknown'}
                     try:
                         child = await self.dependencies._esearch(plan['term'], retmax=0, **scope)
                         observed = self.dependencies._count_of(child)
                         warnings, degraded = self.dependencies._recall_warnings_and_degraded(plan['term'], [child])
-                        reliable = not degraded
+                        child_errors, child_relative = self._check_execution_scope(plan['term'], child, scope)
+                        if parent_relative and child_relative and parent_relative != child_relative:
+                            child_errors.append('原查询与放宽查询的实际相对日期窗口不一致')
+                        reliable = not degraded and not child_errors
                         row.update(count=observed, status='ok' if reliable else 'unreliable_query',
                                    delta=observed - total if reliable else None,
                                    querytranslation=child.get('querytranslation') or '',
-                                   request_params=child.get('_request_params') or {}, warnings=warnings)
-                        suffix = '' if reliable else '（解析有警告，不能按原式比较）'
+                                   request_params=child.get('_request_params') or {},
+                                   warnings=warnings + ['⚠️ ' + message for message in child_errors])
+                        suffix = '' if reliable else '（解析或范围警告，不能按原式比较）'
                         lines.append(f"  去掉 {plan['removed_block']} → {observed} 条{suffix}")
                         if not reliable:
                             report['status'] = 'partial'
                             lines.extend(warnings)
+                            lines.extend('⚠️ ' + message for message in child_errors)
                         else:
                             lines.extend(note for note in warnings if note.startswith('⚠️'))
                     except self.dependencies.NcbiError as exc:
@@ -870,7 +1054,7 @@ class Implementation:
         sort: pub_date/relevance/author（非质量）；datetype: pdat发表/edat入库；日期年/月/日，reldate近天数与区间取交集。
         retmax≤1000，retstart零起≤9998，只取前9999条〔工具口径〕。空页不证明取全。
         brief题名/日期/全部类型；full加引用；ids不取元数据/撤稿。JSON含执行式、分页、缺失号。
-        out_path存本页全题录，max_show限展示；previous_path省略已展示且未变者；deferred_pmids未读，不改变检索范围。
+        少看几条用 retmax；out_path 存本页题录，此时 max_show 限展示。previous_path 略过已展示未变者；deferred_pmids 未读。
         先读警告：丢词/改写计数非原式；零条非无文献；命中非短语存在；字段省略非缺失，PMC非可下载。
         diagnose: auto首页低命中逐块计数，always强制尝试，off不加请求；拆不清不猜，增幅非相关性。
         查新见 literature-search；已知集用 check_recall，近邻用 links(term=当前式,with_titles=True,to=pubmed)，两式比较用 diff。
@@ -887,7 +1071,7 @@ class Implementation:
         if not 0 <= show <= self.dependencies.RETMAX_CAP:  # 本项目自订：展示范围与单页上限一致
             raise self.dependencies.NcbiError("max_show 超出展示范围")
         if not outp and (previous_path or show != 20):  # 本项目自订：不落盘时维持旧返回契约
-            raise self.dependencies.NcbiError("previous_path / max_show 需要 out_path，避免未展示的结果丢失")
+            raise self.dependencies.NcbiError("previous_path / max_show 需要 out_path；只想少看几条，请去掉这两个参数，改用 retmax 限制本页条数。")
         previous = await anyio.to_thread.run_sync(self._read_search_snapshot, previous_path) if previous_path else ({}, None)
         json_mode = json_mode or bool(outp)
         d = await self.dependencies._esearch(term, self.dependencies._int(retmax, "retmax"), sort, field, mindate, maxdate, reldate, retstart, datetype=datetype)
@@ -949,11 +1133,8 @@ class Implementation:
             returned_ids = {uid for uid, _ in pairs}
             missing_pmids = [pid for pid in ids if pid not in returned_ids] if detail != "ids" else []
             if missing_pmids:
-                # 〔实测 2026-11-11〕文本路径有这条 ⚠️，as_json 旧版却没有：脚本只看 warnings 会
-                # 以为 2 个 id 就是 2 条记录。
-                warn.append(f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
-                            f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。缺失 PMID："
-                            + ", ".join(missing_pmids))
+                recovery, hint = self._missing_citations(missing_pmids)
+                warn.append('⚠️ esummary 本次未返回可展示题录。题录缺失 PMID：' + ', '.join(missing_pmids) + '。' + hint)
             self.dependencies._audit("search", term=term, count=count,
                    returned=len(ids) if detail == "ids" else len(pairs), detail=detail,
                    retstart=int(d.get("retstart") or 0), **audit_params,
@@ -964,8 +1145,15 @@ class Implementation:
                 "field": d.get("_field_applied", ""),
                 "count": count, "retstart": int(d.get("retstart") or 0),
                 "sort": applied_sort, "has_more": has_more, "next_retstart": next_start,
+                # 末页与「还有命中但检索窗口翻不到」是两件事，文本和 JSON 分开说。
+                "end_page": bool(ids) and not has_more,
+                "window_exceeded": bool(ids) and has_more and next_start is None,
+                "provenance": _SEARCH_ORIGIN,
                 "search_pmids": ids,
+                "page_pmid_count": len(ids),
+                "page_citation_count": None if detail == 'ids' else len(pairs),
                 "missing_pmids": missing_pmids,
+                **({'metadata_recovery': recovery} if missing_pmids else {}),
                 "returned": len(ids) if detail == "ids" else len(pairs),
                 "esummary_missing": None if detail == "ids" else max(0, len(ids) - len(pairs)),
                 **({"detail": detail, "metadata_requested": bool(ids) and detail != "ids"} if detail != "full" else {}),
@@ -986,10 +1174,19 @@ class Implementation:
             if outp:
                 return await self._save_search_snapshot(result, pairs, detail, outp, previous, show)
             return json.dumps(result, ensure_ascii=False)
-        head = [self._query_heading(term, d), f"命中 {count} 条，本次给 {len(ids)} 条（retstart={d.get('retstart')}）",
+        head = [self._query_heading(term, d), f"命中 {count} 条，本页取得 {len(ids)} 个 PMID（retstart={d.get('retstart')}）",
                 f"排序：{applied_sort}" + ("（NCBI 默认顺序，未指定排序）" if applied_sort == "default" else "")]
         if next_start is not None:
             head.append(f"下一页 retstart={next_start}；本次仅返回当前页，未筛完全部命中。")
+        elif ids and has_more:
+            # 还有命中，但没有下一页：只可能是撞上 9999 条检索窗口（retstart 上限 9998）。
+            if not win_warn:
+                head.append("⚠️ 本次不是末页：已到 PubMed 检索窗口末端，剩余命中无法用 retstart 继续翻取；"
+                            "请按年份或字段拆分查询。")
+        elif ids:
+            head.append(f"已到末页：本页末个 PMID 是检索结果的第 {page_end} 个；翻到末页不等于已读完全部题录。")
+        if ids:
+            head.append(_SEARCH_ORIGIN['note'])
         notes = self.dependencies._note(d, include_translation=False) + guidance
         head += notes
         if win_warn:
@@ -1007,7 +1204,6 @@ class Implementation:
             self.dependencies._audit("search", term=term, count=count, returned=len(ids), detail=detail,
                    retstart=int(d.get("retstart") or 0), **audit_params,
                    querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
-            head[1] = f"命中 {count} 条，本次给 {len(ids)} 个 PMID（retstart={d.get('retstart')}）"
             return "\n".join(head) + "\n\n" + "\n".join(ids)
         try:
             pairs = await self.dependencies._esummary_dicts(ids)
@@ -1024,15 +1220,14 @@ class Implementation:
         returned_ids = {uid for uid, _ in pairs}
         missing_pmids = [pid for pid in ids if pid not in returned_ids]
         if missing_pmids:
-            miss_msg = (f"⚠️ esearch 给了 {len(ids)} 个 id，esummary 只回了 {len(pairs)} 个 —— "
-                        f"少的那几条 NCBI 没给元数据，别按 {len(ids)} 条算。缺失 PMID："
-                        + ", ".join(missing_pmids))
+            _, hint = self._missing_citations(missing_pmids)
+            miss_msg = '⚠️ esummary 本次未返回可展示题录。题录缺失 PMID：' + ', '.join(missing_pmids) + '。' + hint
             head.append(miss_msg)
             base_warn.append(miss_msg)
         self.dependencies._audit("search", term=term, count=count, returned=len(pairs), detail=detail,
                retstart=int(d.get("retstart") or 0), **audit_params,
                querytranslation=(d.get("querytranslation") or "").strip(), warnings=base_warn)
-        head[1] = f"命中 {count} 条，本次给 {len(pairs)} 条（retstart={d.get('retstart')}）"
+        head[1] += f"；展示 {len(pairs)} 条题录"
         head.append("")
         formatter = self.dependencies._fmt_brief_record if detail == "brief" else self.dependencies._fmt_record
         return "\n".join(head) + "\n" + "\n".join(formatter(r, uid) for uid, r in pairs)
@@ -1112,6 +1307,8 @@ class Implementation:
             text, got = await self.dependencies._efetch_all(uniq)
         missing = [p for p in uniq if p not in set(got)]
         head = [f"要 {len(uniq)} 条 / 实取 {len(got)} 条（分 {batches} 批）"]
+        if not structured:
+            head.append('实取为记录数，不是摘要数。原排版未逐篇核验有无摘要；要逐篇标明缺摘要，用 fields="title,abstract"。')
         if n_in != len(uniq):
             head.append(f"（原始输入 {n_in} 个，去掉重复后 {len(uniq)} 个）")
         if missing:
@@ -1127,9 +1324,11 @@ class Implementation:
                **({"out_path": outp} if outp else {}))
         quality = {}
         if structured:
-            no_ab = [r["pmid"] for r in recs if not r["abstract"]] if "abstract" in flds else []
+            statuses = [(r['pmid'], self.dependencies._abstract_material(r)[0]) for r in recs] if 'abstract' in flds else []
+            no_ab = [p for p, status in statuses if status == 'not_provided']
+            other_only = [p for p, status in statuses if status == 'other_abstract_only']
             integrity_warnings = self._integrity_warnings(recs)
-            quality = {"abstract_requested": "abstract" in flds, "no_abstract": no_ab,
+            quality = {"abstract_requested": "abstract" in flds, "no_abstract": no_ab, "other_abstract_only": other_only,
                        "warnings": integrity_warnings}
             if json_mode:
                 body = json.dumps({"requested": len(uniq), "returned": len(got), "missing": missing,
@@ -1207,8 +1406,10 @@ class Implementation:
                          'metadata_status': 'not_checked' if with_titles else 'not_requested'}
                    for pid in candidates}
         warnings, checks = [], []
-        if len(candidates) > len(selected):
-            warnings.append(f'仅检查选定窗口内前 {_NEIGHBOR_ENRICH_CAP} 篇候选；其余未检查，不能当成未命中。可用 offset/limit 分页继续。')
+        window = candidates if check_candidates is None else check_candidates
+        if len(window) > len(selected):
+            warnings.append(f'仅检查本次窗口内前 {_NEIGHBOR_ENRICH_CAP} 篇候选；其余未检查，不能当成未命中。'
+                            '若本页没有检查完，不要推进 offset；须用同一 offset、更小的每源 limit 重放（见分页提示）。')
         if term:
             for start in range(0, len(selected), self.dependencies.GOLD_CHUNK):  # 本项目自订：沿用已知集分批预算
                 batch = selected[start:start + self.dependencies.GOLD_CHUNK]
@@ -1220,15 +1421,11 @@ class Implementation:
                     got = d.get('idlist') or []
                     if count != len(got) or len(set(got)) != len(got) or not set(got).issubset(batch):
                         raise self.dependencies.NcbiError('近邻交集返回不完整或包含非本批 PMID')
-                    notes, degraded = self.dependencies._recall_warnings_and_degraded(term, [d])
-                    vanished = self._intersection_term_ignored(term, d.get('querytranslation') or '', scope)
-                    valid = not (degraded or vanished)
-                    status = 'checked' if valid else 'unreliable_query'
+                    check.update(self._intersection_check(term, d, scope, batch), request_params=d.get('_request_params') or {})
+                    valid = check['status'] == 'checked'
                     for pid in batch:
-                        details[pid].update(in_term=(pid in got) if valid else None, match_status=status)
-                    check.update(status=status, querytranslation=d.get('querytranslation') or '',
-                                 request_params=d.get('_request_params') or {}, warnings=notes)
-                    warnings.extend(note for note in notes if note.startswith('⚠️'))
+                        details[pid].update(in_term=(pid in got) if valid else None, match_status=check['status'])
+                    warnings.extend(note for note in check['warnings'] if note.startswith('⚠️'))
                     if not valid:
                         warnings.append('近邻命中判断无法确认：检索式被忽略、改写或执行式缺失；in_term=null，不当成漏检。')
                 except self.dependencies.NcbiError as exc:
@@ -1237,6 +1434,20 @@ class Implementation:
                         details[pid]['match_status'] = 'error'
                     warnings.append('近邻命中检查失败，相关候选为未知：' + check['error'])
                 checks.append(check)
+        # 相对日期窗口由 NCBI 服务器日历计算；同一操作的各批若回显不同窗口，任何一批的
+        # in_term 都不能代表统一范围 —— 在汇总（match_summary）之前把受影响批次记为未知。
+        windows = [tuple(check['relative_window']) for check in checks if check.get('relative_window')]
+        if len(set(windows)) > 1:
+            drift_warning = ('⚠️ 各批实际相对日期窗口不一致，命中判断不能合并为同一范围；'
+                             '受影响批次的 in_term 记为未知（null），不当成命中或漏检。')
+            for check in checks:
+                if check.get('relative_window'):
+                    check['status'] = 'unreliable_query'
+                    check.setdefault('warnings', []).append(drift_warning)
+                    for pid in check.get('pmids', []):
+                        if pid in details:
+                            details[pid].update(in_term=None, match_status='unreliable_query')
+            warnings.append(drift_warning)
         if with_titles and selected:
             try:
                 records = dict(await self.dependencies._esummary_dicts(selected, include_unavailable=True))
@@ -1260,12 +1471,13 @@ class Implementation:
                     limit: StrictInt | StrictStr | None = None,
                     term: str = "", with_titles: bool | str = False, field: str = "",
                     mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,  # 本项目自订：默认不限相对日期
-                    datetype: Literal["pdat", "edat"] = "pdat") -> str:
+                    datetype: Literal["pdat", "edat"] = "pdat",
+                    compact: Annotated[bool | str, Field(description='精简 JSON，每个目标列一次。out_path 仍存完整记录。')] = False) -> str:
         """查关联/追引。pmids逗号/空格分隔，最多50个〔工具口径〕；to: pmc默认/gene/nucleotide/pubmed/citedin/refs。
         pubmed含自身；PMC非下载保证；关联为空非无引文；元数据缺失/状态未知分开报。方括号为其它关联数。
-        JSON含来源/边/候选；out_path存全量并回路径/sha/字节数。offset/limit切各源JSON（计数在切片前）及候选检查范围，不裁文件。部分失败保留，全失败报错。
+        compact=True给精简JSON；完整JSON含来源/边/候选。out_path存全量并回路径/sha/字节数。offset/limit切各源名单及检查窗口，不裁文件。部分失败保留，全失败报错。
         pubmed/refs/citedin可带term：in_term真/假/null；null为未检查/失败/失真，非漏检。须传原式相同字段/日期限制。
-        with_titles附标题/发表日期/语言；检查前200篇〔自订预算〕，余项标未检查，可分页。相似非相关，须读摘要。
+        with_titles附标题/日期/语言；检查前200篇〔自订预算〕，余项未检查；分页每源limit≤预算/来源数。相似非相关，须读摘要。
         """
         uniq, _ = self.dependencies._parse_pmids(pmids)
         db = self.dependencies._check_db(to)
@@ -1279,7 +1491,8 @@ class Implementation:
         if len(uniq) > 50:
             raise self.dependencies.NcbiError(f"一次最多 50 个 PMID（实测多 id 会被 NCBI 合并、归属丢失，且一个 id 一次请求），"
                             f"收到 {len(uniq)} 个，请分批")
-        json_mode = self.dependencies._as_bool(as_json, "as_json")
+        compact_mode = self.dependencies._as_bool(compact, 'compact')
+        json_mode = self.dependencies._as_bool(as_json, 'as_json') or compact_mode
         off = self.dependencies._int(offset, "offset")
         if off < 0:
             raise self.dependencies.NcbiError(f"offset 不能为负数，收到 {off!r}")
@@ -1314,6 +1527,13 @@ class Implementation:
             "refs": ("pubmed_pubmed_refs",),
         }.get(db, ())
         schema = "pubmed.links.v1"
+
+        def _page(ids):
+            return ids[off:] if lim is None else ids[off:off + lim]
+
+        def _positions(ids):
+            return {'first': off + 1 if ids else None, 'last': off + len(ids) if ids else None,
+                    'returned': len(ids)}  # 本项目口径：按各来源返回次序从一计，不是原文编号
 
         def _link_targets(lsd):
             vals = lsd.get("links")
@@ -1411,7 +1631,7 @@ class Implementation:
                 entry["error"] = "elink 没返回这个号的 linkset，关联未知（不是「没有关联」）"
             sources[i] = entry
 
-            # 以下文本渲染与旧版逐字保持一致；新参数只影响 JSON 返回与文件。
+            # 默认保留按关联名称的概览；显式分页则与 JSON 使用同一份去重来源名单。
             if not sets:
                 out[i] = (f"PMID {pid}  ⚠️ elink 没返回这个号的 linkset —— 请求没给回这个号，"
                           f"这【不是】「没有全文」，先核对 PMID")
@@ -1428,7 +1648,16 @@ class Implementation:
             for item in entry["other_relations"]:
                 other.append(f"{item['relation']}:{item['count']} 条{item['note']}")
             tail = ("  [" + "; ".join(other) + "]") if other else ""
-            if mine:
+            if mine and (off or lim is not None):
+                page_ids = _page(entry['target_ids'])
+                positions = _positions(page_ids)
+                where = f"第 {positions['first']} 至 {positions['last']} 项" if page_ids else '本页无目标'
+                shown = ','.join(('PMC' if db == 'pmc' else '') + v for v in page_ids[:show_cap])
+                remaining = f'；文本仅列前 {show_cap} 个，整页见 compact=True' if len(page_ids) > show_cap else ''
+                out[i] = f"PMID {pid}  来源列表{where}（共 {entry['target_count']} 个）：{shown}{remaining}" + tail
+                if state != 'present':
+                    out[i] += '  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核'
+            elif mine:
                 out[i] = f"PMID {pid}  " + "  ".join(mine) + tail
                 if state != "present":
                     out[i] += "  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核"
@@ -1455,11 +1684,10 @@ class Implementation:
         if (json_mode or outp) and all(entry.get("error") for entry in sources):
             raise self.dependencies.NcbiError("elink 全部来源关联状态无法确认，未生成完整结果文件")
 
-        def _page(ids):
-            # 每个源各自切片；counts 用切片前的 target_count。
-            return list(ids[off:]) if lim is None else list(ids[off:off + lim])
-
         enriched, match_checks = {}, []
+        match_summary = {}
+        more_targets = lim is not None and lim > 0 and any(e['target_count'] > off + lim for e in sources)
+        enrich_page = {'next_offset': off + lim if more_targets else None}
         if term or titles:
             window_candidates = list(dict.fromkeys(target for entry in sources for target in _page(entry['target_ids'])))
             chosen = (list(dict.fromkeys(target for entry in sources for target in entry['target_ids']))
@@ -1467,6 +1695,52 @@ class Implementation:
             enriched, extra_warnings, match_checks = await self._enrich_neighbors(
                 chosen, term, titles, scope, check_candidates=window_candidates)
             metadata_warnings.extend(extra_warnings)
+            # 每源 offset/limit 切片；去重只会让窗口更小。把「每源 limit」限在 预算/来源数，
+            # 才能保证一次调用的去重窗口不超过检查预算，不会留下翻页跳过的未检查候选。
+            n_sources = sum(1 for entry in sources if entry['target_ids']) or 1
+            safe_limit = max(1, _NEIGHBOR_ENRICH_CAP // n_sources)
+            if n_sources > _NEIGHBOR_ENRICH_CAP:
+                # 生产上限下不会发生（pmids 最多 50、预算 200）；仍明确拒绝假装能一次查完。
+                metadata_warnings.append(
+                    f'⚠️ 参与检查的来源数 {n_sources} 超过检查预算 {_NEIGHBOR_ENRICH_CAP}：'
+                    f'即使每源 limit=1 也无法在一次调用内检查全部来源，请把 pmids 再拆成更小批次分别调用。')
+            window_total = len(window_candidates)
+            exceeded = window_total > _NEIGHBOR_ENRICH_CAP
+            more_after = lambda step: any(len(entry['target_ids']) > off + step
+                                          for entry in sources if entry['target_ids'])
+            if exceeded:
+                next_offset, replay_limit = None, safe_limit
+                metadata_warnings.append(
+                    f'⚠️ 本页每源 limit={lim if lim is not None else "全部"}，去重后 {window_total} 个候选超过检查预算 '
+                    f'{_NEIGHBOR_ENRICH_CAP}；仅前 {_NEIGHBOR_ENRICH_CAP} 个已检查，其余为 not_checked。'
+                    f'不要直接用 offset+limit 前进（会跳过本页未检查候选）。'
+                    f'安全重放：offset={off}, limit={safe_limit}（每源上限；{n_sources} 个来源去重后不超过 '
+                    f'{_NEIGHBOR_ENRICH_CAP}）。'
+                    + (f' 该页检查完后再用 offset={off + safe_limit}, limit={safe_limit}。'
+                       if more_after(safe_limit) else ' 该页检查完后就没有更多候选页。'))
+            elif lim == 0:
+                next_offset, replay_limit = None, 0
+                metadata_warnings.append('limit=0 时窗口为空，本页没有检查任何候选、也没有推进位置；'
+                                         '要检查请给正 limit（每源上限不超过 预算/来源数）。')
+            elif lim is None:
+                next_offset, replay_limit = None, None
+            else:
+                replay_limit = lim
+                next_offset = enrich_page['next_offset']
+                if next_offset is not None:
+                    metadata_warnings.append(
+                        f'本页去重窗口 {window_total} 个候选在检查预算 {_NEIGHBOR_ENRICH_CAP} 内（本页已检查）；'
+                        f'下一页 offset={next_offset}, limit={lim}（offset/limit 按每个来源各自切片）。')
+                else:
+                    metadata_warnings.append(
+                        f'已到各来源末页（本页去重窗口 {window_total} 个候选，未超过检查预算 {_NEIGHBOR_ENRICH_CAP}）。')
+            enrich_page = {'enrichment_cap': _NEIGHBOR_ENRICH_CAP, 'window_total': window_total,
+                           'window_checked': min(window_total, _NEIGHBOR_ENRICH_CAP),
+                           'safe_per_source_limit': safe_limit, 'next_offset': next_offset,
+                           'replay_limit': replay_limit, 'exceeded': exceeded}
+            if term:
+                all_pmids = {pid for entry in sources for pid in entry['target_ids']}
+                match_summary = _window_match_counts(window_candidates, enriched, all_pmids)
             for pid, detail in enriched.items():
                 detail.update(source_count=0, is_seed=pid in uniq, best_rank=None)  # 本项目自订：来源统计初态
             for entry in sources:
@@ -1496,6 +1770,7 @@ class Implementation:
                 shown_targets += len(ids)
                 src_out.append({"source": entry["source"], "source_status": entry["source_status"],
                                 "relation": entry["relation"], "target_ids": ids,
+                                **({'page_positions': _positions(ids)} if displayed else {}),
                                 "error": entry["error"], "relation_status": entry["relation_status"],
                                 "fetched_at": entry["fetched_at"]})
                 for target in ids:
@@ -1522,14 +1797,18 @@ class Implementation:
                 warnings.append("⚠️ 这些源的 elink 没有可归属于请求号的 linkset，关联状态未知（不是已确认无关联）："
                                 + ", ".join(no_link[:5]))
             if displayed and (off or lim is not None):
-                warnings.append("offset/limit 按每个源去重后的 target_ids 切片，并限定本次候选检查窗口；"
-                                "counts 为切片前计数；out_path 仍保存全量名单与各项检查状态。")
+                if compact_mode:
+                    warnings.append('按来源分页。各来源 total 是分页前计数，本页仅检查选定窗口内的候选。')
+                else:
+                    warnings.append("offset/limit 按每个源去重后的 target_ids 切片，并限定本次候选检查窗口；"
+                                    "counts 为切片前计数；out_path 仍保存全量名单与各项检查状态。")
             if db == "citedin":
                 warnings.append("citedin 只覆盖 PubMed 已录入的施引记录；0 条不等于无人引用。")
             elif db == "refs":
                 warnings.append("refs 只覆盖 PubMed 已录入的参考文献；0 条不等于原文无引文。")
             if not candidate_db:
-                warnings.append(f"to={db} 的目标不是 PubMed PMID，candidate_pmids 为空。")
+                warnings.append(f'targets 的 id 属于 {db} 库。' if compact_mode and displayed else
+                                f"to={db} 的目标不是 PubMed PMID，candidate_pmids 为空。")
             return {
                 "schema": schema,
                 "to": db,
@@ -1538,6 +1817,8 @@ class Implementation:
                 "sources": src_out,
                 "edges": edges,
                 "candidate_pmids": cands,
+                **({'provenance': _LINKS_ORIGIN} if candidate_db else {}),
+                **({'match_summary': match_summary} if term else {}),
                 **({'candidate_details': _candidate_details(cands),
                     'outside_term_pmids': [r['pmid'] for r in _candidate_details(cands) if r['in_term'] is False],
                     'match_scope': {'term': term, **scope, 'offset': off, 'limit': lim}, 'match_checks': match_checks,
@@ -1558,6 +1839,7 @@ class Implementation:
                     "per_source": True,
                     "applies_to": "returned_json" if displayed else "out_path_full_model",
                     "counts_before_pagination": True,
+                    **enrich_page,
                 },
                 "warnings": warnings,
                 "source_note": ("每个源一次 elink 请求，另加一次 esummary 判号是否存在；"
@@ -1569,27 +1851,44 @@ class Implementation:
         self.dependencies._audit("links", to=db, pmids=uniq, requested=len(uniq), direct_total=sum(counts),
                errors=len(errs), warnings=metadata_warnings, show_cap=show_cap, offset=off, limit=lim,
                as_json=json_mode, term=term, with_titles=titles, match_scope=scope, match_checks=match_checks,
-               **({"out_path": outp} if outp else {}))
+               **({'compact': True} if compact_mode else {}), **({'out_path': outp} if outp else {}))
+        if compact_mode:
+            compact_page = _compact_links(_model(displayed=True))
+            if not outp:
+                return json.dumps(compact_page, ensure_ascii=False, separators=(',', ':'))
         if outp:
             full = await anyio.to_thread.run_sync(_model, False)
             p, nbytes, sha = await anyio.to_thread.run_sync(
                 functools.partial(self.dependencies._write_json_new, outp, full, indent=None))
             self.dependencies._audit("links", path=p, bytes=nbytes, sha256=sha, requested=len(uniq),
                    direct_total=sum(counts), errors=len(errs))
+            if compact_mode:
+                compact_page.update(path=p, bytes=nbytes, sha256=sha, content_schema=schema)
+                return json.dumps(compact_page, ensure_ascii=False, separators=(',', ':'))
             summary = {"schema": "pubmed.links.file.v1", "content_schema": schema, "path": p, "bytes": nbytes, "sha256": sha,
                        "to": db, "requested": len(uniq), "sources": len(uniq),
                        "targets": full["counts"]["targets"], "edges": len(full["edges"]),
                        "candidate_pmids": len(full["candidate_pmids"]),
                        "counts": full["counts"],
+                       **({'provenance': full['provenance']} if candidate_db else {}),
+                       **({'match_summary': match_summary} if term else {}),
                        "pagination": {"offset": off, "limit": lim,
-                                      "note": "out_path 保存全量名单和状态；offset/limit 限定本次候选检查窗口，不裁文件"},
+                                      "note": "out_path 保存全量名单和状态；offset/limit 限定本次候选检查窗口，不裁文件",
+                                      **enrich_page},
                        "warnings": full["warnings"]}
             return json.dumps(summary, ensure_ascii=False)
         if json_mode:
             return json.dumps(_model(displayed=True), ensure_ascii=False)
 
         head = [f"elink pubmed→{db}，{len(uniq)} 个 PMID（每个一次请求，另加一次 esummary 判号是否存在）："]
+        if candidate_db:
+            head.append(_LINKS_ORIGIN['note'])
         head.extend(metadata_warnings)
+        if not (term or titles) and lim is not None:
+            if lim == 0:
+                head.append('本页未取编号；请给正 limit 后从同一 offset 重试。')
+            elif more_targets:
+                head.append(f'下一页 offset={off + lim}, limit={lim}（按每个来源各自翻页）。')
         if errs:
             head.append(f"⚠️ {len(errs)} 个请求失败（那是故障，不是「没有链接」）：" + "; ".join(errs[:3]))
         legend = {"pmc": "直接对应记录＝PMC 关联，开放许可/当前可下载性未核实；无关联不代表其它站点无全文",
@@ -1604,6 +1903,10 @@ class Implementation:
             detail_lines.append('候选标题与命中状态（先列确认未命中的候选，源文献自身标为种子）：')
             if term:
                 detail_lines.append('命中判断范围：' + json.dumps({'term': term, **scope}, ensure_ascii=False))
+                detail_lines.extend('交集实际执行：' + (check['querytranslation'] or '未返回') + '；' + check['status']
+                                    for check in _neighbor_executions(match_checks))
+                detail_lines.append(('本页去重候选 {window_total} 篇：命中 {inside}，未命中 {outside}，'
+                                     '无法判断 {unknown}，未检查 {unchecked}。另有窗口外 {outside_window} 篇。').format(**match_summary))
             rows = _candidate_details(list(enriched))
             for row in rows[:_NEIGHBOR_TEXT_CAP]:
                 label = {False: '未命中当前式', True: '命中当前式', None: '无法判断/未检查'}[row['in_term']] if term else '未请求命中判断'
@@ -1614,7 +1917,9 @@ class Implementation:
                 date = ('｜' + (row['pubdate'] or '日期未返回')) if row['metadata_status'] == 'available' else ''
                 detail_lines.append(f"  PMID {row['pmid']}｜{label}{seed}{date}｜{title}")
             if len(rows) > _NEIGHBOR_TEXT_CAP:
-                detail_lines.append(f'仅展示 {_NEIGHBOR_TEXT_CAP}/{len(rows)} 个候选详情；完整状态用 as_json=True 或 out_path，未检查候选可分页继续。')
+                detail_lines.append(f'本页共有 {len(rows)} 个去重候选，文本仅展示前 {_NEIGHBOR_TEXT_CAP} 个候选详情。'
+                                    '要整页可用标题，首次调用即可传 with_titles=True, compact=True；'
+                                    '超出检查预算的候选用 offset、limit 分页。')
         return ("\n".join(head) + "\n" + "\n".join(str(x) for x in out)
                 + ('\n' + '\n'.join(detail_lines) if detail_lines else '')
                 + f"\n说明：{legend}；方括号为其它关联计数。")
@@ -1657,6 +1962,14 @@ class Implementation:
                 raise self.dependencies.NcbiError('日期区间倒挂，请核对 mindate 和 maxdate')
         return scope
 
+    def _normalized_scope(self, scope):
+        """把调用参数归一成 _review_scope 同口径；诊断与交集检查共用，避免 "0" 被当真、空串报错。"""
+        return {'field': self.dependencies._check_field(scope.get('field') or ''),
+                'mindate': self.dependencies._check_date(scope.get('mindate') or '', 'mindate'),
+                'maxdate': self.dependencies._check_date(scope.get('maxdate') or '', 'maxdate'),
+                'reldate': self.dependencies._check_reldate(scope.get('reldate') or 0),
+                'datetype': self.dependencies._check_datetype(scope.get('datetype') or 'pdat')}
+
     @staticmethod
     def _scope_note(scope):
         field = scope['field'] or '未另限'
@@ -1670,14 +1983,31 @@ class Implementation:
         return f'复查范围（term 外）：字段 {field}，{date_note}'
 
     def _intersection_term_ignored(self, term, translation, scope):
-        # 外加日期位于 PMID 交集后面；原 term 自带的日期则属于查询，不能删除。
-        if scope['mindate'] or scope['maxdate'] or scope['reldate']:
-            translation = re.sub(
-                r'(?:\s+AND\s+\d{4}[/-]\d{2}[/-]\d{2}(?::\d{4}[/-]\d{2}[/-]\d{2})?'
-                r'\[Date - (?:Publication|Entry)\])+\s*$', '', translation, flags=re.I)
-        tagged_uid = re.fullmatch(r'[\s()]*(?:"?\d+"?\s*\[(?:uid|pmid)\][\s()]*(?:(?:AND|OR|NOT)[\s()]+)?)+', term.strip(), re.I)
-        numeric_uid = scope['field'] == 'PMID' and re.fullmatch(r'[\s()\d]+(?:(?:AND|OR|NOT)[\s()\d]+)*', term.strip(), re.I)
-        return not (tagged_uid or numeric_uid) and self.dependencies._term_vanished(translation)
+        # 只判断原式主题是否整个消失：工具外加的本批 UID/日期由 _term_vanished 按标签识别，
+        # 不依赖出现位置、括号分组或 [UID]/[PMID] 拼写；原式本身是纯 UID/日期条件时保留。
+        return self.dependencies._term_vanished(translation, term=term,
+                                                field=scope.get('field') or '')
+
+    def _intersection_check(self, term, page, scope, batch):
+        qt = (page.get('querytranslation') or '').strip()
+        warnings, degraded = self.dependencies._recall_warnings_and_degraded(term, [page], include_translation=False)
+        ignored = self._intersection_term_ignored(term, qt, scope)
+        errors, relative = self._check_execution_scope(term, page, scope, batch)
+        warnings.extend('⚠️ ' + message for message in errors)
+        return {'status': 'unreliable_query' if ignored or degraded or errors else 'checked',
+                'querytranslation': qt, 'term_ignored': ignored, 'term_degraded': degraded and not ignored,
+                'warnings': warnings, **({'relative_window': relative} if relative else {})}
+
+    def _check_execution_scope(self, term, page, scope, uid_batch=()):
+        scope = self._normalized_scope(scope)
+        bounds = None
+        if scope['mindate'] or scope['maxdate']:
+            bounds = (self.dependencies._expand(scope['mindate'] or self.dependencies.NO_BEGIN),
+                      self.dependencies._expand(scope['maxdate'] or self.dependencies.NO_END, True))
+        return self.dependencies._scope_evidence(term, page.get('querytranslation') or '', scope['field'],
+                                                 bounds, scope['reldate'], scope['datetype'], uid_batch, check_subject=True,
+                                                 ignored=self.dependencies._warn_bits(page)[0],
+                                                 mappings=page.get('translationset') or ())
 
     async def _ids_in_window(self, term, *, mindate="", maxdate="", context="", field="", reldate=0, datetype="pdat"):  # 本项目自订：缺省不限制相对日期
         """返回 (ids, initial_count, first, drift)，保留现有返回接口。
@@ -1690,7 +2020,19 @@ class Implementation:
         if count > self.dependencies.WINDOW:
             raise self.dependencies.NcbiError(f"{context}命中 {count} 条，超过 PubMed esearch 的 {self.dependencies.WINDOW} 条检索窗口，"
                             f"无法在窗口内取全。请缩小查询，或改用 export（自动按发表日期切片取全）。")
-        checks = [self.dependencies._retrieval_check(first, f"{context}retstart=0")]  # 本项目自订：首页偏移标签
+        def page_check(page, stage):
+            check = self.dependencies._retrieval_check(page, stage)
+            _, degraded = self.dependencies._recall_warnings_and_degraded(term, [page], include_translation=False)
+            reasons, relative = self._check_execution_scope(term, page, params)
+            check['query_needs_review'] = degraded or bool(reasons)
+            if degraded:
+                reasons.append('执行式缺失或解析失真')
+            check['review_reasons'] = reasons
+            if reldate:
+                check['relative_window'] = relative
+            return check
+
+        checks = [page_check(first, f"{context}retstart=0")]  # 本项目自订：首页偏移标签
         first["_retrieval_checks"] = checks
         first["_count_changed"] = False
         ids = list(first.get("idlist") or [])
@@ -1701,7 +2043,7 @@ class Implementation:
         while len(ids) < count:
             offset = len(ids)
             page = await self.dependencies._esearch(term, retstart=offset, **params)
-            checks.append(self.dependencies._retrieval_check(page, f"{context}retstart={offset}"))
+            checks.append(page_check(page, f"{context}retstart={offset}"))
             page_count = self.dependencies._count_of(page)
             if page_count != previous_count:
                 first["_count_changed"] = True
@@ -1727,7 +2069,7 @@ class Implementation:
                            field: str = '', mindate: str = '', maxdate: str = '',
                            reldate: StrictInt | StrictStr = 0, datetype: Literal['pdat', 'edat'] = 'pdat') -> str:  # 本项目自订：默认不限相对日期
         """已知集找回，非整体查全率。pmids逗号/空格分隔，最多200个、每批50个〔自订预算〕。
-        显式传原搜索的字段/日期参数，每批沿用。缺失项附标题/存在状态，term被忽略或失真时告警。
+        显式传原搜索的字段/日期。逐批核对：retrieved 是实取；found/missing 只计可靠批次，unknown 不算漏检。
         逐块用 count；扩展 links，对比 diff；查新见 literature-search。
         """
         json_mode = self.dependencies._as_bool(as_json, "as_json")
@@ -1741,21 +2083,30 @@ class Implementation:
         scope = self._review_scope(field, mindate, maxdate, reldate, datetype)
         # 分批交集：一次塞 200 个 pmid[uid] 会让 GET URL 超长被 NCBI 414〔实测 A1〕。
         batches = [uniq[i:i + self.dependencies.GOLD_CHUNK] for i in range(0, len(uniq), self.dependencies.GOLD_CHUNK)]
-        found_set, batch_ds = set(), []
+        batch_ds, checks = [], []
         for batch in batches:
             gold_q = f"({term}) AND (" + " OR ".join(f"{p}[uid]" for p in batch) + ")"
             d = await self.dependencies._esearch(gold_q, retmax=len(batch), **scope)
             count = self.dependencies._count_of(d)
             got = d.get("idlist") or []
-            bset = set(batch)
-            if count > len(batch) or any(p not in bset for p in got):
+            if count != len(got) or len(set(got)) != len(got) or not set(got).issubset(batch):
                 raise self.dependencies.NcbiError(f"check_recall 交集结果异常：命中 {count}、返回 {len(got)} 个（本批金标准 {len(batch)} 个）。"
                                 f"交集不应超出金标准集，请复核查询。")
-            found_set.update(got)
+            check = self._intersection_check(term, d, scope, batch)
+            checks.append(dict(check, pmids=batch, returned=list(got)))
             batch_ds.append(d)
         first_d = batch_ds[0]
-        found = [p for p in uniq if p in found_set]
-        missing = [p for p in uniq if p not in found_set]
+        windows = {tuple(c['relative_window']) for c in checks if c.get('relative_window')}
+        if len(windows) > 1:
+            for c in checks:
+                c['status'] = 'unreliable_query'
+                c['warnings'].append('⚠️ 各批实际相对日期窗口不一致，不能合并为同一范围。')
+        raw = {p for c in checks for p in c['returned']}
+        uncertain = {p for c in checks if c['status'] != 'checked' for p in c['pmids']}
+        retrieved = [p for p in uniq if p in raw]
+        unknown = [p for p in uniq if p in uncertain]
+        found = [p for p in uniq if p in raw and p not in uncertain]
+        missing = [p for p in uniq if p not in raw and p not in uncertain]
         miss_info, meta_warn = [], ""
         if missing:
             try:
@@ -1777,16 +2128,22 @@ class Implementation:
         translations = [(d.get("querytranslation") or "").strip() for d in batch_ds]
         # term 本身就只由 PMID[uid] 构成时，执行式只剩 uid 是正常结果，不是「被忽略」
         # 〔实测 2026-11-13：term=42988646[uid] → 执行式 42988646[UID] AND 42988646[UID]，旧版误报 term_ignored〕。
-        term_ignored = any(self._intersection_term_ignored(term, t, scope) for t in translations)
-        warn, raw_degraded = self.dependencies._recall_warnings_and_degraded(term, batch_ds)
-        term_degraded = (not term_ignored) and raw_degraded
+        term_ignored = any(c['term_ignored'] for c in checks)
+        term_degraded = any(c['term_degraded'] for c in checks)
+        warn = list(dict.fromkeys(w for c in checks for w in c['warnings']))
         if term_ignored:
-            why = "（常见于中文词，翻译为空）" if self.dependencies._CJK.search(term) else ""
-            warn.append(f"⚠️ term 未参与实际检索：NCBI 忽略了它{why}，实际执行式只剩金标准 "
-                        "PMID 和可能附加的日期限制。上面的 found【不代表】term 匹配了这些文献——请换英文词或核对实际执行式后重跑。")
-        elif term_degraded:
-            warn.append("⚠️ term 存在部分概念未生效、词项未找到或语法失真（见上方警告）：多概念检索中若某侧概念被吞，"
-                        "found 可能包含仅命中剩余概念的假阳性文献——请修正检索式后重跑。")
+            hint = '（常见于中文词，可换英文词重查）' if self.dependencies._CJK.search(term) else ''
+            warn.append(f'⚠️ 至少一批 term 未参与实际检索{hint}；该批实取 PMID 不代表原式命中。')
+        if unknown:
+            warn.append('⚠️ 范围或执行式无法核实的批次列为 unknown，不计入检回或未检回。')
+        controls = []
+        if missing:
+            original = dict(term=term, pmids=' '.join(uniq), as_json=True, **scope)
+            for label, reset in (('外加绝对日期', {'mindate': '', 'maxdate': ''}),
+                                 ('外加相对日期', {'reldate': 0}), ('外加字段', {'field': ''})):  # 本项目口径：每次只改变一个限制
+                if any(scope[key] for key in reset):
+                    controls.append({'omit': label, 'tool': 'check_recall', 'arguments': {**original, **reset}})
+            warn.append('定位未命中原因：每次只去掉一个限制，保留其余条件和同一组 PMID，再比 found/missing/unknown；本次结果不能直接说明是哪项造成的。')
         if meta_warn:
             warn.append(meta_warn)
         if n_in != len(uniq):
@@ -1795,19 +2152,23 @@ class Implementation:
             warn.append(f"（金标准 {len(uniq)} 个分 {len(batches)} 批交集判定，每批最多 {self.dependencies.GOLD_CHUNK} 个，避免 URL 超长）")
         self.dependencies._audit("check_recall", term=term, gold=len(uniq), found=len(found), missing=len(missing),
                term_ignored=term_ignored, term_degraded=term_degraded, querytranslation=qt,
-               querytranslations=translations, scope=scope, pmids=uniq, warnings=warn)
+               querytranslations=translations, scope=scope, pmids=uniq, warnings=warn,
+               retrieved=retrieved, unknown=unknown, checks=checks)
         if json_mode:
             return json.dumps({"term": term, "scope": scope, "gold_count": len(uniq), "found": found, "missing": miss_info,
+                               "retrieved": retrieved, "unknown": unknown, "checks": checks,
+                               **({'suggested_controls': controls} if controls else {}),
                                "term_ignored": term_ignored, "term_degraded": term_degraded,
                                "querytranslation": qt, "querytranslations": translations,
                                "warnings": warn, "caveat": caveat}, ensure_ascii=False)
         head = [f"查询：{term}", self._scope_note(scope),
-                f"金标准 {len(uniq)} 个 PMID，检回 {len(found)} 个，未检回 {len(missing)} 个"]
-        if term_ignored:
-            head.append("⚠️ 本次 found 不可信：term 被 NCBI 忽略，详见下方告警。")
-        elif term_degraded:
-            head.append("⚠️ 本次 found/missing 可能失真：term 存在部分词未生效或语法退化，详见下方告警。")
+                f"金标准 {len(uniq)} 个 PMID，检回 {len(found)} 个，未检回 {len(missing)} 个，无法判定 {len(unknown)} 个"]
+        for number, c in enumerate(checks, 1):  # 本项目自订：批次从首批编号
+            head.append(f"第 {number} 批 NCBI 实际执行：{c['querytranslation'] or '⚠️【待确认】'}")
         head += warn
+        if unknown:
+            head.append('无法判定：' + ', '.join(unknown))
+            head.append('服务器实取（不等于已验证找回）：' + (', '.join(retrieved) or '无'))
         if found:
             head.append("检回：" + ", ".join(found))
         if miss_info:
@@ -1824,7 +2185,7 @@ class Implementation:
 
 
     async def mesh(self, term: str, retmax: StrictInt | StrictStr = 5, as_json: bool | str = False) -> str:
-        """查 MeSH 主题词表：描述符、入口词（同义词）、树号、上下位词、历史前身词（previous indexing）、范围注、引入年份。
+        """查 MeSH 词表。descriptors 仅含描述符（含树号与上下位词）；other_records 给副主题词、药理作用、补充概念等。
         词表以查询时点 NCBI 返回为准；retmax 默认 5、上限 20（本批候选内精确匹配置顶）。
         历史前身词供扩展旧标引词，不保证补齐；下位词（最多展 10 个）供决定是否展开。
         无描述符命中不等于主题无文献；NCBI 报 phrasesnotfound 时告警。
@@ -1862,7 +2223,7 @@ class Implementation:
             note = f"MeSH 库未命中「{term}」的描述符。无描述符不等于主题无文献；请用标题/摘要同义词补充检索。"
             self.dependencies._audit("mesh", term=term, count=count, descriptors=0, querytranslation=qt, warnings=warn)
             if json_mode:
-                return json.dumps({"term": term, "count": count, "descriptors": [],
+                return json.dumps({"term": term, "count": count, "descriptors": [], "other_records": [], "record_order": [],
                                    "querytranslation": qt, "warnings": warn, "note": note}, ensure_ascii=False)
             return "\n".join([f"查询：{term}", note] + warn)
         s = self.dependencies._safe_json(await self.dependencies._get_async("esummary.fcgi",
@@ -1901,6 +2262,8 @@ class Implementation:
             rtype = str(rtype_raw[0]).strip() if rtype_raw and rtype_raw[0] is not None else ""
             supp = rtype == "supplemental-record"
             mapped = []
+            if rtype != 'descriptor':
+                pars, kids, idx = [], [], []
             if supp:
                 # 补充概念记录（SCR，C 开头 UI）不是描述符：树号是 @ 开头的内部号、上位词是虚根 All MeSH Categories，
                 # 都不能用；它真正指向的是 ds_headingmappedtolist 里的描述符〔实测 2026-11-13：Biodentine →
@@ -1959,29 +2322,47 @@ class Implementation:
             de["parents"] = [{"uid": p, "name": rel_names.get(p, "")} for p in de["parents"]]
             if "mapped_to" in de:
                 de["mapped_to"] = [{"uid": p, "name": rel_names.get(p, "")} for p in de["mapped_to"]]
-        exact_i = next((i for i, de in enumerate(descs) if de["exact_match"]), None)
+        exact_desc_i = next((i for i, de in enumerate(descs) if de['exact_match'] and de['record_type'] == 'descriptor'), None)
+        exact_any_i = next((i for i, de in enumerate(descs) if de['exact_match']), None)
+        exact_other_kind = descs[exact_any_i]['record_type'] if exact_any_i is not None else None
+        exact_i = exact_desc_i if exact_desc_i is not None else exact_any_i
         moved_from = None
         if exact_i is not None and exact_i > 0:
             picked = descs.pop(exact_i)
             descs.insert(0, picked)
             moved_from = exact_i + 1
-        elif exact_i is None and count > len(descs):
-            if n < self.dependencies.MESH_RETMAX_CAP:
-                warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个中无字面精确匹配；"
+        if exact_desc_i is None and count > len(descs):
+            if exact_other_kind is not None:
+                # 本页有精确匹配、但类型不是描述符：不能把这条当成 [mh] 可用，也不能把它当成
+                # 「没有精确匹配」；剩余条目里可能还有精确描述符。上限内外要给不同建议。
+                kind = _mesh_kind_label(exact_other_kind)
+                if n < self.dependencies.MESH_RETMAX_CAP:
+                    warn.append(f"提示：本页有字面精确匹配，但类型是「{kind}」而非描述符；"
+                                f"前 {len(descs)} 个中无精确描述符。MeSH 共命中 {count} 条，"
+                                f"可增大 retmax（上限 {self.dependencies.MESH_RETMAX_CAP}）查看后续条目是否含精确描述符。")
+                else:
+                    warn.append(f"提示：本页有字面精确匹配，但类型是「{kind}」而非描述符；"
+                                f"前 {len(descs)} 个（已到上限 {self.dependencies.MESH_RETMAX_CAP}）中无精确描述符；"
+                                f"后续条目本工具取不到，请换更具体的词重查。")
+            elif n < self.dependencies.MESH_RETMAX_CAP:
+                warn.append(f"提示：MeSH 共命中 {count} 条记录，本次前 {len(descs)} 个中无字面精确匹配；"
                             f"可增大 retmax（上限 {self.dependencies.MESH_RETMAX_CAP}）查看后续条目。")
             else:
                 # 已在上限还叫人「增大 retmax」是做不到的建议〔实测 2026-11-13：resorption retmax=50 → 夹到 20 后仍这么说〕。
-                warn.append(f"提示：MeSH 共命中 {count} 个描述符，本次前 {len(descs)} 个（已到上限 {self.dependencies.MESH_RETMAX_CAP}）中"
+                warn.append(f"提示：MeSH 共命中 {count} 条记录，本次前 {len(descs)} 个（已到上限 {self.dependencies.MESH_RETMAX_CAP}）中"
                             f"无字面精确匹配；后续条目本工具取不到，请换更具体的词重查。")
-        self.dependencies._audit("mesh", term=term, count=count, descriptors=len(descs), querytranslation=qt, warnings=warn)
+        descriptors = [de for de in descs if de['record_type'] == 'descriptor']
+        others = [de for de in descs if de['record_type'] != 'descriptor']
+        self.dependencies._audit('mesh', term=term, count=count, descriptors=len(descriptors), other_records=len(others), querytranslation=qt, warnings=warn)
         if json_mode:
-            return json.dumps({"term": term, "count": count, "descriptors": descs,
-                               "querytranslation": qt, "warnings": warn}, ensure_ascii=False)
-        n_supp = sum(1 for de in descs if "mapped_to" in de)
-        if n_supp:
-            head = [f"查询：{term}", f"MeSH 命中 {count} 条记录（本次给 {len(descs)} 条，其中 {n_supp} 条是补充概念、不是描述符）"]
+            return json.dumps({'term': term, 'count': count, 'descriptors': descriptors, 'other_records': others,
+                               'record_order': [de['uid'] for de in descs], 'querytranslation': qt, 'warnings': warn}, ensure_ascii=False)
+        n_supp = sum(1 for de in others if 'mapped_to' in de)
+        if not others and len(descs) == count:
+            head = [f'查询：{term}', f'MeSH 命中 {count} 个描述符，本次给 {len(descs)} 个']
         else:
-            head = [f"查询：{term}", f"MeSH 命中 {count} 个描述符，本次给 {len(descs)} 个"]
+            suffix = f'，其中 {n_supp} 条是补充概念' if n_supp else ''
+            head = [f'查询：{term}', f'MeSH 命中 {count} 条记录，本次给 {len(descs)} 条（描述符 {len(descriptors)} 条{suffix}）']
         head += warn
         for de in descs:
             head.append("")
@@ -1990,7 +2371,8 @@ class Implementation:
                 badge = f" [精确匹配，已由第 {moved_from} 位置顶]"
             elif de["exact_match"] and len(descs) > 1:
                 badge = " [精确匹配]"
-            head.append(f"MeSH {de['ui']}｜{de['name']}"
+            kind = _mesh_kind_label(de['record_type'])
+            head.append(f"MeSH {de['ui']}｜{de['name']}（{kind}）"
                         + (f"（{de['year_introduced']} 年引入）" if de["year_introduced"] else "")
                         + badge + ("（补充概念记录，非主题词：检索用「名称[nm]」，写成 [mh] 会被 NCBI 改写）"
                                    if "mapped_to" in de else ""))
@@ -2027,6 +2409,7 @@ class Implementation:
         """对比 b 相对 a 增减的 PMID。显式传入原搜索的字段和日期限制，两侧每页共用。
         每侧须在9999条窗口内〔工具口径〕，超窗请缩小或用export。JSON给完整名单。
         max_show限文本展示及可选preview题录数（默认20、上限200〔工具口径〕）。预览按结果顺序。
+        看 provenance.comparison：compared 的 added 仅为当次 b 有 a 无；needs_review 保留实取名单，不作改式归因。
         removed非数据库删除，日期变化影响差集。新增须读摘要确认相关性。
         """
         json_mode = self.dependencies._as_bool(as_json, "as_json")
@@ -2056,7 +2439,8 @@ class Implementation:
         added = [p for p in b_ids if p not in sa]
         removed = [p for p in a_ids if p not in sb]
         common = len(sa & sb)
-        warn_a, warn_b = self.dependencies._note(a_first), self.dependencies._note(b_first)
+        warn_a = self.dependencies._note(a_first, include_translation=not json_mode)
+        warn_b = self.dependencies._note(b_first, include_translation=not json_mode)
         for first, warnings in ((a_first, warn_a), (b_first, warn_b)):
             for check in first.get("_retrieval_checks", [])[1:]:  # 本项目自订：首项已有 _note 输出
                 warnings.extend(check["warnings"])
@@ -2069,6 +2453,40 @@ class Implementation:
         caveat = ("集合差只描述增减，不判断相关性；命中更多不等于更好。未再命中（removed）只是 a 有、b 没有，"
                   "不代表文献被数据库删除；若 b 仅覆盖补检入库区间，区间外旧文献也会列入 removed。"
                   "两次查询间数据库可能更新，结果以取回时点为准。")
+        # 先判两份取号名单是否适合归因；标题能否取回不改变 PMID 差集。
+        def side_needs_review(first, drift, ids, count, translation):
+            return (bool(drift) or len(set(ids)) != count or not translation
+                    or not first.get('_retrieval_checks')
+                    or any(check.get('query_needs_review', True) or check['querytranslation'] != translation
+                           for check in first['_retrieval_checks']))
+
+        review_pages = []
+        for first, qt in ((a_first, qt_a), (b_first, qt_b)):
+            for page in first.get('_retrieval_checks', []):
+                reasons = list(page.get('review_reasons', []))
+                if page['querytranslation'] != qt:
+                    reasons.append('执行式与同侧首页不同')
+                if reasons:
+                    review_pages.append({k: page[k] for k in ('stage', 'querytranslation')} | {'reasons': reasons})
+        compare_notes = []
+        if scope['reldate']:
+            def relative_window(first):
+                checks = first.get('_retrieval_checks') or []
+                return checks[0].get('relative_window') if checks else None
+            a_window, b_window = relative_window(a_first), relative_window(b_first)
+            if a_window != b_window:
+                compare_notes.append(f'两侧相对日期窗口不一致：a={a_window}，b={b_window}')
+        if (added or removed) and (term_a.strip() == term_b.strip() or (qt_a and qt_a == qt_b)):
+            compare_notes.append('输入或实际执行式相同，但名单不同；不能归因于改式')
+        uncertain = (bool(compare_notes) or side_needs_review(a_first, a_drift, a_ids, a_count, qt_a)
+                     or side_needs_review(b_first, b_drift, b_ids, b_count, qt_b))
+        origin = {"source": "diff", "comparison": "needs_review" if uncertain else "compared",
+                  "note": ("来源：实取名单差异；执行式、范围或分页需复核，不能归为改式新增。"
+                           if uncertain else "来源：当次两份名单已比对；added 仅表示 b 有、a 无，不证明差异由改式造成。")}
+        if compare_notes:
+            origin['reasons'] = compare_notes
+        if review_pages:
+            origin['review_pages'] = review_pages
         previews = {}
         if preview_mode:
             for label, ids, warnings in (("added", added, warn_b), ("removed", removed, warn_a)):
@@ -2081,21 +2499,24 @@ class Implementation:
                         records = [by_id[uid] for uid in selected if uid in by_id]
                     except self.dependencies.NcbiError as exc:
                         error = self.dependencies._mask(str(exc))
-                missing = [uid for uid in selected if uid not in {rec["pmid"] for rec in records}]
-                if error or missing:
-                    warnings.append("⚠️ " + label + " 标题预览不完整；集合差 PMID 保留，请重取缺失题录。"
-                                    + (" 原因：" + error if error else ""))
+                shown_ids = {rec['pmid'] for rec in records}
+                missing = [uid for uid in selected if uid not in shown_ids]
+                if missing:
+                    recovery, hint = self._missing_citations(missing)
+                    warnings.append('⚠️ ' + label + ' 标题预览不完整；集合差 PMID 保留。' + hint
+                                    + (' 原因：' + error if error else ''))
                 previews[label] = {"requested_pmids": selected, "records": records,
+                                   **({'metadata_recovery': recovery} if missing else {}),
                                    "missing_pmids": missing, "not_previewed_count": len(ids) - len(selected),
                                    "error": error}
             previews["note"] = "仅按结果顺序预览每侧前 max_show 条，不是随机样本或相关性排名；题名不能代替摘要筛选。"
         self.dependencies._audit("diff", term_a=term_a, term_b=term_b, scope=scope, count_a=a_count, count_b=b_count,
                added=len(added), removed=len(removed), common=common,
-               querytranslation_a=qt_a, querytranslation_b=qt_b,
+               querytranslation_a=qt_a, querytranslation_b=qt_b, provenance=origin,
                warnings_a=warn_a, warnings_b=warn_b)
         if json_mode:
             return json.dumps({"term_a": term_a, "term_b": term_b, "scope": scope, "count_a": a_count, "count_b": b_count,
-                               "added_count": len(added), "removed_count": len(removed), "common_count": common,
+                               "provenance": origin, "added_count": len(added), "removed_count": len(removed), "common_count": common,
                                "added": added, "removed": removed,
                                "querytranslation_a": qt_a, "querytranslation_b": qt_b,
                                "warnings_a": warn_a, "warnings_b": warn_b, "caveat": caveat,
@@ -2104,10 +2525,15 @@ class Implementation:
         head += ["  " + w for w in warn_a]
         head += [f"term_b：{term_b}", f"  命中 {b_count}，取回 {len(b_ids)}"]
         head += ["  " + w for w in warn_b]
-        head.append(f"新增 {len(added)} 条（b 有 a 无）；未再命中 {len(removed)} 条（a 有 b 无）；共同 {common} 条")
+        head.append(origin['note'])
+        head.extend('⚠️ ' + reason for reason in compare_notes)
+        head.extend(f"⚠️ {page['stage']}：{'；'.join(page['reasons'])}；实际执行：{page['querytranslation'] or '未返回'}" for page in review_pages)
+        add_label = "实取仅 b 有" if uncertain else "当次仅 b 有"
+        remove_label = "实取仅 a 有" if uncertain else "当次仅 a 有"
+        head.append(f"{add_label} {len(added)} 条（b 有 a 无）；{remove_label} {len(removed)} 条（a 有 b 无）；共同 {common} 条")
         if preview_mode:
             head.append(previews["note"])
-            for label, title, ids in (("added", "新增", added), ("removed", "未再命中", removed)):
+            for label, title, ids in (("added", add_label, added), ("removed", remove_label, removed)):
                 item = previews[label]
                 head.append(f"{title}标题预览（请求 {len(item['requested_pmids'])}/{len(ids)}，其余未预览 {item['not_previewed_count']}）")
                 head.extend(self.dependencies._fmt_brief_record(rec, rec["pmid"]) for rec in item["records"])
@@ -2115,9 +2541,9 @@ class Implementation:
                     head.append("⚠️ 预览元数据未取回，PMID 保留：" + ", ".join(item["missing_pmids"]))
         elif ms:
             if added:
-                head.append(f"新增（展示 {min(ms, len(added))}/{len(added)}）：" + ", ".join(added[:ms]))
+                head.append(f"{add_label}（展示 {min(ms, len(added))}/{len(added)}）：" + ", ".join(added[:ms]))
             if removed:
-                head.append(f"未再命中（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
+                head.append(f"{remove_label}（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
         head.append("说明：" + caveat)
         return "\n".join(head)
 

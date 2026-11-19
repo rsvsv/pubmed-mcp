@@ -27,8 +27,10 @@ def run(fn, *args, **kwargs):
     return anyio.run(call)
 
 
-def esr(count, ids, qt='"tooth"[All Fields]', term="tooth", retstart=0, **extra):
+def esr(count, ids, qt=None, term="tooth", retstart=0, **extra):  # 本项目自订：首页偏移
     """本项目自订：构造 esearch 响应形状（键名与真实 NCBI 一致，见探针记录）。"""
+    if qt is None:
+        qt = term.replace('(tooth)', '"tooth"[All Fields]').replace('[uid]', '[UID]') if '[uid]' in term else '"tooth"[All Fields]'
     return {"_term": term, "count": str(count), "idlist": list(ids), "retstart": str(retstart),
             "querytranslation": qt, **extra}
 
@@ -128,9 +130,11 @@ class CheckRecall(unittest.TestCase):
                                         term="(牙根吸收) AND (1[uid] OR 2[uid] OR 3[uid])")
         data = json.loads(run(m.check_recall, "牙根吸收", "1,2,3", as_json=True))
         self.assertTrue(data["term_ignored"])
-        self.assertEqual(data["found"], ["1", "2", "3"])
-        self.assertTrue(any("未参与实际检索" in w for w in data["warnings"]))
-        self.assertIn("found 不可信", run(m.check_recall, "牙根吸收", "1,2,3"))
+        self.assertEqual(data['retrieved'], data['unknown'])
+        self.assertEqual(data['retrieved'], ['1', '2', '3'])  # 本项目自订：仅实取，不归因于原式
+        self.assertEqual((data['found'], data['missing']), ([], []))
+        self.assertTrue(any('未参与实际检索' in w for w in data['warnings']))
+        self.assertIn('无法判定', run(m.check_recall, '牙根吸收', '1,2,3'))
 
     def test_normal_term_not_flagged_ignored(self):
         data = json.loads(run(m.check_recall, "tooth", "1,2", as_json=True))
@@ -146,7 +150,7 @@ class Mesh(unittest.TestCase):
         self.addCleanup(p.stop)
         self.desc = {"uid": "68014091", "ds_meshui": "D014091",
                      "ds_meshterms": ["Tooth Resorption", "Resorptions, Tooth", "Resorption, Tooth"],
-                     "ds_scopenote": "Resorption of calcified dental tissue.",
+                     "ds_recordtype": "descriptor", "ds_scopenote": "Resorption of calcified dental tissue.",
                      "ds_yearintroduced": "1965",
                      "ds_idxlinks": [{"treenum": "C07.793.901", "children": ["68012391"]}]}
         self.child = {"uid": "68012391", "ds_meshterms": ["Root Resorption"]}
@@ -214,16 +218,15 @@ class Diff(unittest.TestCase):
         a_count = len(a_ids) if a_count is None else a_count
         b_count = len(b_ids) if b_count is None else b_count
         def fake(term, retmax=20, **kw):
-            if term == "a":
-                return esr(a_count, a_ids[:retmax], term="a", retstart=kw.get("retstart", 0))
-            return esr(b_count, b_ids[:retmax], term="b", retstart=kw.get("retstart", 0))
+            count, ids = (a_count, a_ids) if term == 'a' else (b_count, b_ids)
+            return esr(count, ids[:retmax], qt=f'"{term}"[All Fields]', term=term, retstart=kw.get('retstart', 0))  # 本项目自订：两侧执行式与各自请求对应
         self.esearch.side_effect = fake
 
     def test_added_removed_common(self):
         self.two_queries(["1", "2", "3"], ["2", "3", "4"])
         text = run(m.diff, "a", "b")
-        self.assertIn("新增 1 条", text)
-        self.assertIn("未再命中 1 条", text)
+        self.assertIn("当次仅 b 有 1 条", text)  # 本项目自订：确定的名单差，不作因果归因
+        self.assertIn("当次仅 a 有 1 条", text)  # 本项目自订：对称名单差
         self.assertIn("共同 2 条", text)
         self.assertIn("不判断相关性", text)
         data = json.loads(run(m.diff, "a", "b", as_json=True))
@@ -244,7 +247,7 @@ class Diff(unittest.TestCase):
     def test_max_show_zero_and_negative(self):
         self.two_queries(["1", "2", "3"], ["2", "3", "4"])
         text = run(m.diff, "a", "b", max_show=0)
-        self.assertNotIn("新增（展示", text)
+        self.assertNotIn("当次仅 b 有（展示", text)
         with self.assertRaisesRegex(m.NcbiError, "不能为负"):
             run(m.diff, "a", "b", max_show=-1)
 

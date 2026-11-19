@@ -112,7 +112,7 @@ class JsonModel(unittest.TestCase):
         self.assertEqual(data["schema"], "pubmed.links.v1")
         self.assertEqual(data["candidate_pmids"], [])
         self.assertEqual(set(data["sources"][0]),
-                         {"source", "source_status", "relation", "relation_status", "target_ids", "error", "fetched_at"})
+                         {"source", "source_status", "relation", "relation_status", "target_ids", "page_positions", "error", "fetched_at"})
         self.assertEqual(data["sources"][0]["source"], "1")
         self.assertEqual(data["sources"][0]["relation"], "pmc")
         self.assertEqual(data["sources"][0]["target_ids"], ["123", "124"])
@@ -138,6 +138,11 @@ class JsonModel(unittest.TestCase):
         with patch.object(m, "_pmids_exist", AsyncMock(return_value={"1": "present", "2": "present"})), \
                 patch.object(m, "_get_async", fake):
             data = json.loads(run(m.links, "1 2", as_json=True, offset=1, limit=1))
+            text = run(m.links, '1 2', offset=1, limit=1)  # 本项目自订：每源只看第二项
+            compact = json.loads(run(m.links, '1 2', compact=True, offset=2, limit=1))  # 本项目自订：第二个源已耗尽
+        self.assertIn('来源列表第 2 至 2 项（共 3 个）：PMC11', text)  # 本项目自订：第一源第二项
+        self.assertNotIn('PMC10', text)  # 本项目自订：不能重复首页
+        self.assertEqual(compact['sources'][1]['page_positions'], {'first': None, 'last': None, 'returned': 0})  # 本项目自订：空页无名次
         self.assertEqual([s["target_ids"] for s in data["sources"]], [["11"], ["21"]])
         self.assertEqual(data["counts"]["per_source"], {"1": 3, "2": 2})
         self.assertEqual(data["counts"]["targets"], 5)

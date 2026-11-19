@@ -45,6 +45,13 @@ class SearchSnapshots(unittest.TestCase):
     def snapshot(self, result):
         return json.loads(Path(result['path']).read_text(encoding='utf-8'))
 
+    def test_missing_wire_offset_keeps_actual_requested_page(self):
+        wire_page = {'count':'40', 'idlist':['22','33'], 'querytranslation':'fixture'}  # 本项目自订：省略偏移的合法响应
+        with patch.object(m, '_esearch', m._tools_impl._esearch), patch.object(m, '_get_async', AsyncMock(return_value=json.dumps({'esearchresult':wire_page}))):
+            saved = self.call('offset.json', retstart=10, retmax=2, detail='ids', diagnose='off')  # 本项目自订：非首页请求
+            for result in (saved, self.snapshot(saved)['result']):
+                self.assertEqual((result['retstart'], result['next_retstart']), (10, 12))  # 本项目自订：期望页边界
+
     def test_same_page_queries_records_warnings_and_pagination(self):
         baseline = json.loads(run(m.search, 'fixture', as_json=True))
         first_calls = (self.search.call_args, self.summary.call_args)
@@ -57,6 +64,10 @@ class SearchSnapshots(unittest.TestCase):
         for key in baseline.keys() - {'records', 'audit_status'}:
             self.assertEqual(full[key], baseline[key], key)
         self.assertEqual(saved['audit_status'], baseline['audit_status'])
+        self.assertEqual(saved['provenance'], full['provenance'])
+        self.assertEqual(saved['provenance']['comparison'], 'not_compared')
+        for mode in ('ids', 'brief', 'full'):
+            self.assertIn('未核对是否为改式新增', run(m.search, 'fixture', detail=mode))
         self.assertEqual(full['search_pmids'], ['22', '11', '33'])
         self.assertEqual([r['pmid'] for r in full['records']], full['search_pmids'])
         self.assertEqual(full['records'], [m._record_parts(*pair) for pair in self.records])
@@ -82,6 +93,8 @@ class SearchSnapshots(unittest.TestCase):
         self.assertEqual(final['returned'], 3)
         self.assertEqual(final['unchanged_count'], 3)
         self.assertEqual(final['deferred_count'], 0)
+        self.assertIn('总命中 5 条，本页已保存 3 条题录，本次展示 0 条，另有 0 条待展示', final['display_note'])  # 本项目自订：去重后的空展示
+        self.assertIn('此前展示且未变 3 条', final['display_note'])  # 本项目自订：以前已展示
         self.assertTrue(final['has_more'])
         self.assertEqual(len(self.snapshot(final)['result']['records']), 3)
 
@@ -128,6 +141,9 @@ class SearchSnapshots(unittest.TestCase):
 
     def test_saved_is_not_seen_and_detail_upgrade_is_not_suppressed(self):
         first = self.call('first.json', max_show=0)
+        self.assertEqual(first['page_citation_count'], len(self.records))
+        self.assertEqual(first['displayed'], len(first['records']))
+        self.assertIn('总命中 5 条，本页已保存 3 条题录，本次展示 0 条，另有 3 条待展示', first['display_note'])  # 本项目自订：只保存不展示
         self.assertFalse(self.snapshot(first)['display_history'])
         second = self.call('second.json', previous_path=first['path'])
         self.assertEqual(second['displayed'], 3)

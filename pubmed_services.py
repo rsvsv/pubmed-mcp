@@ -11,7 +11,7 @@ import uuid
 OPERATIONS = (
     'write_new_file', 'sha256_file', 'check_datetype', 'check_date', 'expand_date',
     'validate_audit_record', 'audited', 'fetch_records', 'utc_now', 'audit',
-    'ris_record', 'audit_report', 'read_pmid_file', 'publish_no_clobber',
+    'ris_record', 'abstract_material', 'audit_report', 'read_pmid_file', 'publish_no_clobber',
     'write_json_atomic', 'implementation_fingerprint', 'export', 'check_recall', 'mask',
 )
 VALUES = ('recall_limit', 'unknown', 'report_columns', 'source_path', 'error_type')

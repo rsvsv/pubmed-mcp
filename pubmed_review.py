@@ -23,7 +23,16 @@ spec.loader.exec_module(m)
 services = m.review_services()
 
 SCHEMA = "pubmed.review.v1"  # 本项目自订：交付协议版本
+WARNING_CONTRACT = "pubmed.review.warnings.v2"  # 本项目自订：日期/范围说明与待解决警告的分界口径
 BATCH_SIZE = 50  # 本项目自订：单批题录规模，沿用 efetch 分批规模
+RECALL_BINDING = "plan_term_with_requested_window"  # 本项目自订：新回执必须绑定原式与外置日期参数
+EXPORT_SCOPE_FIELDS = ("field", "frozen_bounds", "scope_status")  # 本项目自订：检索回执新增的范围字段
+# 以下是真实 _esearch/_note 写进 warnings 的普通说明行；只有带 ⚠️ 或不在其中的才是待解决警告。
+EXPLANATION_PREFIXES = (
+    "NCBI 实际执行：", "NCBI 实际执行式里出现的日期窗口：", "日期条件：", "日期口径：",
+    "field=", "（金标准 ", "（原始输入 ", "定位未命中原因：")
+# 旧口径只滤掉这三种前缀；保留逐字实现，用于核验升级前完成的交付。
+LEGACY_WARNING_PREFIXES = ("NCBI 实际执行：", "（金标准 ", "（原始输入 ")
 UNKNOWN = "⚠️【待确认】"
 EVIDENCE = "实测/工具输出：本次 PubMed 检索与 efetch XML 解析；不证明全文内容、相关性或整体查全率"
 COLUMNS = ("pmid", "title", "abstract", "journal", "pubdate", "doi", "publication_types",
@@ -64,10 +73,13 @@ def validate_plan(plan):
     if bool(lo) != bool(hi):
         raise ValueError("日期限制必须同时填写起止日期，或都留空")
     if lo:
-        services.check_date(lo, "mindate")
-        services.check_date(hi, "maxdate")
+        # 本项目自订：日期写法在此归一为 NCBI 认的 ASCII 形式（2020/01/01 → 2020-01-01），
+        # 让 plan.json、导出固定窗口与已知集回执使用同一组日期字面量。
+        lo = services.check_date(lo, "mindate")
+        hi = services.check_date(hi, "maxdate")
         if services.expand_date(lo) > services.expand_date(hi, True):
             raise ValueError("日期区间倒挂")
+        plan = {**plan, "mindate": lo, "maxdate": hi}
     known = plan.get("known_relevant", [])
     if not isinstance(known, list):
         raise ValueError("known_relevant 必须是 PMID 与来源组成的数组")
@@ -226,9 +238,23 @@ def acquire_lock(root):
     return stream
 
 
-def actionable_warnings(warnings):
-    # 执行式与分批说明也位于 warnings 字段；它们本身不构成待解决问题。
-    return [w for w in warnings if not w.startswith(("NCBI 实际执行：", "（金标准 ", "（原始输入 "))]
+def normal_explanation(text):
+    """判断一条 warning 是否只是真实 wrapper 写出的日期/范围/执行式说明。
+
+    导出阶段的检查记录会在说明前加「<阶段> 」；阶段标签既可能以「：」结尾，
+    也可能带 retstart=0 这类偏移，所以只要求说明前缀出现在整条开头或空白之后。
+    """
+    text = str(text)
+    return any(text.startswith(prefix) or re.search(r"\s" + re.escape(prefix), text)
+               for prefix in EXPLANATION_PREFIXES)
+
+
+def actionable_warnings(warnings, legacy=False):
+    # warnings 里混有普通说明（执行式、日期口径、分批说明）与真正待解决的问题。
+    # 新口径靠说明前缀分界；带 ⚠️ 的一律保留，避免把「字段未核实」这类带说明前缀的真警告滤掉。
+    if legacy:
+        return [w for w in warnings if not w.startswith(LEGACY_WARNING_PREFIXES)]
+    return [w for w in warnings if "⚠️" in str(w) or not normal_explanation(w)]
 
 
 def csv_safe(value):
@@ -288,7 +314,7 @@ def record_batches(root, ids):
         yield name, data
 
 
-def screening_row(name, pid, rec):
+def screening_row(name, pid, rec, legacy=False):
     row = {key: "" for key in COLUMNS}
     row.update(pmid=pid, reviewer_decision="待筛选", source_record=name + "#PMID=" + pid,
                evidence=EVIDENCE, record_status="retrieved" if rec else "missing",
@@ -296,21 +322,44 @@ def screening_row(name, pid, rec):
     if rec is None:
         row.update(title=UNKNOWN, abstract=UNKNOWN)
     else:
-        abstract = "\n".join((s["label"] + ": " if s["label"] else "") + s["text"] for s in rec["abstract"])
+        if legacy:
+            # 上一版本只读主摘要区段，且把「有标签无正文」也算作摘要。
+            abstract = "\n".join((s["label"] + ": " if s["label"] else "") + s["text"]
+                                 for s in rec.get("abstract", []))
+            status = "available" if abstract else "not_provided"
+        else:
+            status, lines = services.abstract_material(rec)
+            abstract = "\n".join(lines)
         row.update(title=rec["title"], abstract=abstract or "⚠️ PubMed 本次记录未提供摘要；待全文核对",
                    journal=rec["journal"].get("title", rec["journal"].get("book", "")),
                    pubdate=rec["pubdate"], doi=rec["ids"].get("doi", ""),
                    publication_types="; ".join(rec["pt"]),
-                   abstract_status="available" if abstract else "not_provided")
+                   abstract_status=status)
     return {k: csv_safe(v) for k, v in row.items()}
 
 
-def screening_materials(root, ids):
+def legacy_ris_block(rec):
+    """上一版本 RIS：摘要只取主摘要区段，不补 OtherAbstract；其余字段与当前实现相同。"""
+    block = services.ris_record(rec)
+    lines = [line for line in block.split("\n") if not line.startswith("AB  - ")]
+    abstract = " ".join((s["label"] + ": " if s.get("label") else "") + s["text"]
+                        for s in rec.get("abstract", []))
+    abstract = " ".join(abstract.split())
+    if abstract:
+        index = next((i + 1 for i, line in enumerate(lines) if line.startswith("UR  - ")), None)
+        if index is None:
+            index = next((i for i, line in enumerate(lines) if line == "ER  - "), len(lines))
+        lines.insert(index, "AB  - " + abstract)
+    return "\n".join(lines)
+
+
+def screening_materials(root, ids, legacy=False):
     for name, data in record_batches(root, ids):
         by_id = {r["pmid"]: r for r in data["records"]}
         for pid in data["requested_pmids"]:
             rec = by_id.get(pid)
-            yield screening_row(name, pid, rec), services.ris_record(rec) + "\n\n" if rec else ""
+            block = (legacy_ris_block(rec) if legacy else services.ris_record(rec)) + "\n\n" if rec else ""
+            yield screening_row(name, pid, rec, legacy=legacy), block
 
 
 def render_screening(root, ids):
@@ -330,15 +379,18 @@ def render_screening(root, ids):
     return {"missing_pmids": missing, "no_abstract_pmids": no_abstract, "evidence": EVIDENCE}
 
 
-def assess(plan, export, recalls, batch_results, screening):
+def assess(plan, export, recalls, batch_results, screening, *, warning_contract=WARNING_CONTRACT):
     issues = []
+    legacy = warning_contract is None  # 旧交付没有口径声明；按当时的分类复现其状态。
     def issue(code, kind, detail):
         issues.append({"code": code, "kind": kind, "detail": detail})
     if export.get("integrity_status") != "no_discrepancy_detected":
         issue("search_integrity", "execution", "检索计数或分页存在差异，见 search-result.json")
     if export.get("metadata_status") != "written":
         issue("search_metadata", "execution", "检索伴随说明未成功写入")
-    if export.get("warnings"):
+    export_warnings = export.get("warnings", [])
+    export_warning_hit = bool(export_warnings) if legacy else bool(actionable_warnings(export_warnings))
+    if export_warning_hit:
         issue("query_warnings", "methodology", "须逐条核对 search-result.json 的警告与执行式")
     if not export.get("querytranslation"):
         issue("translation_missing", "methodology", "NCBI 实际执行式缺失")
@@ -349,9 +401,9 @@ def assess(plan, export, recalls, batch_results, screening):
     if not plan.get("known_relevant"):
         issue("known_set_missing", "methodology", "未提供独立来源的已知文献集，尚未验证已知文献找回")
     for result in recalls:
-        if result.get("missing") or result.get("term_ignored") or result.get("term_degraded"):
-            issue("recall_unresolved", "methodology", "已知集未找回或查询失真，见 recall 目录；未找回不直接证明缺词")
-        if actionable_warnings(result.get("warnings", [])):
+        if result.get("missing") or result.get("unknown") or result.get("term_ignored") or result.get("term_degraded"):
+            issue("recall_unresolved", "methodology", "已知集有未找回或无法判定项，见 recall 目录；未知不是漏检")
+        if actionable_warnings(result.get("warnings", []), legacy=legacy):
             issue("recall_warnings", "methodology", "已知集检验包含警告，见 recall 目录")
     for key in ("other_databases", "citation_tracking"):
         if not plan.get(key, "").strip() or "待确认" in plan.get(key, ""):
@@ -436,6 +488,9 @@ def verify(root):
     delivery = read_json(root / "delivery.json")
     if delivery.get("schema") != SCHEMA:
         raise ValueError("交付协议不支持")
+    warning_contract = delivery.get("warning_contract")
+    if warning_contract is not None and warning_contract != WARNING_CONTRACT:
+        raise ValueError("交付警告口径版本不受支持：" + str(warning_contract))
     required = {"plan.json", "state.json", "all-pmids.txt", "all-pmids.txt.meta.json",
                 "search-result.json", "screening.csv", "references.ris", "search-log.csv", "HANDOFF.md"}
     if not required.issubset(delivery["files"]):
@@ -469,21 +524,66 @@ def verify(root):
     exported = stages["search"]["result"]
     if read_json(root / "search-result.json") != {**exported, "evidence": EVIDENCE}:
         raise ValueError("检索回执与文件不一致")
+    present_scope = [key for key in EXPORT_SCOPE_FIELDS if key in exported]
+    if present_scope and len(present_scope) != len(EXPORT_SCOPE_FIELDS):
+        raise ValueError("检索回执的范围字段不完整：" +
+                         ", ".join(sorted(set(EXPORT_SCOPE_FIELDS) - set(present_scope))))
+    new_scope = len(present_scope) == len(EXPORT_SCOPE_FIELDS)
     query = plan["term"]
     datetype = plan.get("datetype", "pdat")
+    expected_bounds = []
     if plan.get("mindate"):
         lo = services.expand_date(services.check_date(plan["mindate"], "mindate"))
         hi = services.expand_date(services.check_date(plan["maxdate"], "maxdate"), True)
         query = f"({query}) AND ({lo}:{hi}[{datetype}])"
+        expected_bounds = [f"{lo}:{hi}"]
     expected_search = {"term": plan["term"], "effective_query": query, "datetype": datetype,
                        "format": "pmids", "unique": len(ids), "written_records": len(ids),
                        "sha256": digest(root / "all-pmids.txt")}
     if any(exported.get(k) != v for k, v in expected_search.items()):
         raise ValueError("检索回执与方案或固定名单不一致")
+    if new_scope:
+        # 新增范围字段必须能在离线状态下对回执、伴随说明（其一致性在下方统一核对）与方案互证。
+        if not isinstance(exported.get("field"), str) or exported["field"] != "":
+            raise ValueError("检索回执的字段范围与方案不一致")
+        frozen = exported.get("frozen_bounds")
+        if (not isinstance(frozen, list) or not all(
+                isinstance(item, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}", item)
+                for item in frozen)):
+            raise ValueError("检索回执的冻结日期窗口格式无效")
+        if frozen != expected_bounds:
+            raise ValueError("检索回执的冻结日期窗口与方案不一致")
+        scope_status = exported.get("scope_status")
+        if scope_status not in ("verified", "unverified", "not_requested"):
+            raise ValueError("检索回执的范围核实状态无效")
+        integrity_issues = exported.get("integrity_issues")
+        if not isinstance(integrity_issues, list):
+            raise ValueError("检索回执的完整性记录无效")
+        unverified = "scope_unverified" in integrity_issues
+        expected_status = ("unverified" if unverified else
+                           "verified" if expected_bounds else "not_requested")
+        if scope_status != expected_status:
+            raise ValueError("检索回执的范围状态与完整性或方案不一致")
+        checks = exported.get("retrieval_checks")
+        if not isinstance(checks, list):
+            raise ValueError("检索回执缺少逐次检查记录")
+        if any(not isinstance(check, dict) or bool(check.get("query_needs_review")) !=
+               bool(check.get("review_reasons") or check.get("topic_reasons")) for check in checks):
+            raise ValueError("检索回执的逐次检查标志与原因不一致")
+        # A changed slice topic is not evidence that its date window also changed.
+        scope_flagged = any(check.get("review_reasons") for check in checks)
+        topic_flagged = any(check.get("topic_reasons") for check in checks)
+        if topic_flagged != ("slice_topic_unverified" in integrity_issues):
+            raise ValueError("检索回执的逐次主题核对与完整性状态不一致")
+        if scope_flagged != unverified:
+            raise ValueError("检索回执的逐次范围核对与完整性状态不一致")
+        if "field_applied" in exported and exported["field_applied"] != exported["field"]:
+            raise ValueError("检索回执的字段下发记录与冻结字段不一致")
     meta = read_json(root / "all-pmids.txt.meta.json")
     if meta.get("schema") != "pubmed.export.v1" or any(meta.get(k) != v for k, v in expected_search.items()):
         raise ValueError("检索伴随说明与方案或固定名单不一致")
-    for key in ("integrity_status", "integrity_issues", "count_start", "count_end", "querytranslation", "missing_pmids"):
+    for key in ("integrity_status", "integrity_issues", "count_start", "count_end", "querytranslation",
+                "missing_pmids", *EXPORT_SCOPE_FIELDS):
         if meta.get(key) != exported.get(key):
             raise ValueError("检索伴随说明与回执不一致：" + key)
     if exported.get("audit_status") == "written" and meta.get("event_id") != exported.get("audit_event_id"):
@@ -493,6 +593,11 @@ def verify(root):
             or exported.get("integrity_issues") or exported.get("missing_pmids")):
         raise ValueError("检索完整性状态与回执计数不一致")
     known = [item["pmid"] for item in plan.get("known_relevant", [])]
+    # 新回执必须绑定方案原式与请求的绝对日期窗口；导出阶段固定后的 effective_query
+    # 仍由上面的 search 回执单独核验。
+    expected_scope = {"field": "", "mindate": plan.get("mindate", ""), "maxdate": plan.get("maxdate", ""),
+                      "reldate": 0, "datetype": plan.get("datetype", "pdat")}
+    legacy_scope = {"field": "", "mindate": "", "maxdate": "", "reldate": 0, "datetype": "pdat"}
     recalls = []
     for start in range(0, len(known), services.recall_limit):
         name = f"recall-{start // services.recall_limit:05d}"  # 本项目自订：沿用回执编号
@@ -502,9 +607,36 @@ def verify(root):
         expected_ids = known[start:start + services.recall_limit]
         found = result["found"]
         absent = [item["pmid"] for item in result["missing"]]
-        if (result.get("term") != query or result.get("gold_count") != len(expected_ids)
+        unknown = result.get('unknown', [])
+        if 'checks' in result:
+            checks = result['checks']
+            raw = {p for c in checks for p in c['returned']}
+            uncertain = {p for c in checks if c['status'] != 'checked' for p in c['pmids']}
+            if ([p for c in checks for p in c['pmids']] != expected_ids
+                    or any(c['status'] not in ('checked', 'unreliable_query') or not set(c['returned']).issubset(c['pmids'])
+                           or len(set(c['returned'])) != len(c['returned']) for c in checks)
+                    or result.get('retrieved') != [p for p in expected_ids if p in raw]
+                    or found != [p for p in expected_ids if p in raw - uncertain]
+                    or unknown != [p for p in expected_ids if p in uncertain]):
+                raise ValueError('已知集回执与方案批次不一致：' + name)
+        elif 'unknown' in result or 'retrieved' in result:
+            raise ValueError('已知集缺少逐批核验回执：' + name)
+        binding = result.get("receipt_binding")
+        if binding is None:
+            # 保留升级前回执：它们把冻结后的 effective_query 当作 term，且未传日期参数。
+            # 只认这一种旧形状，不能拿它给新回执或改动过的窗口背书。
+            if result.get("term") != query or result.get("scope") != legacy_scope:
+                raise ValueError("已知集回执与固定执行式或方案批次不一致：" + name)
+        elif binding == RECALL_BINDING:
+            if not {'checks', 'retrieved', 'unknown'} <= set(result):
+                raise ValueError("已知集新回执缺少逐批核验字段：" + name)
+            if result.get("term") != plan["term"] or result.get("scope") != expected_scope:
+                raise ValueError("已知集回执未绑定方案原式或请求日期窗口：" + name)
+        else:
+            raise ValueError("已知集回执的绑定说明不受支持：" + name)
+        if (result.get("gold_count") != len(expected_ids)
                 or found != [p for p in expected_ids if p in set(found)]
-                or absent != [p for p in expected_ids if p not in set(found)]):
+                or absent != [p for p in expected_ids if p not in set(found + unknown)]):
             raise ValueError("已知集回执与方案批次不一致：" + name)
         recalls.append(result)
     records, batches = {}, []
@@ -521,15 +653,27 @@ def verify(root):
         for _, data in record_batches(original, ids):
             if any(records.get(rec["pmid"]) != rec for rec in data["records"]):
                 raise ValueError("补取不能替换原先已取得的题录")
-    materials = list(screening_materials(root, ids))
-    expected_rows = [row for row, _ in materials]
     with (root / "screening.csv").open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
         rows = list(reader)
-        if reader.fieldnames != list(COLUMNS) or rows != expected_rows:
-            raise ValueError("筛选表与题录不一致或已有人工修改；请保留工作副本，拒绝覆盖")
-    if (root / "references.ris").read_text(encoding="utf-8") != "".join(block for _, block in materials):
-        raise ValueError("RIS 与实际取回题录不一致")
+        if reader.fieldnames != list(COLUMNS):
+            raise ValueError("筛选表列不完整")
+    ris_text = (root / "references.ris").read_text(encoding="utf-8")
+    materials = None
+    for legacy in (False, True):
+        candidate = list(screening_materials(root, ids, legacy=legacy))
+        if (rows == [row for row, _ in candidate]
+                and ris_text == "".join(block for _, block in candidate)):
+            materials = candidate
+            break
+    if materials is None:
+        # 文件字节已与交付清单一致（check_files 通过），差异不是「人工修改」的可靠推断；
+        # 旧版本生成格式（如只读 OtherAbstract 之前的摘要规则）也可能走到这里。
+        raise ValueError(
+            "筛选表与题录派生产物不一致，且不符合上一版本格式；文件字节与交付清单一致，"
+            "未检测到交付后改动。若此目录由旧版本生成，请用生成它的原版本核验；"
+            "或用当前版本新建任务并保留原目录，程序不会改写这些原始文件")
+    expected_rows = [row for row, _ in materials]
     missing = [row["pmid"] for row in expected_rows if row["record_status"] == "missing"]
     no_ab = [row["pmid"] for row in expected_rows if row["abstract_status"] == "not_provided"]
     metrics = {"candidate_pmids": len(ids), "retrieved_records": len(records),
@@ -557,7 +701,7 @@ def verify(root):
             or len(invalid) != len(index.diagnostics)
             or sorted(reported) != sorted(index.report_records.values())):
         raise ValueError("审计报告与原始日志或回执不一致")
-    issues = assess(plan, exported, recalls, batches, screened) + execution_issues(root, state, index)
+    issues = assess(plan, exported, recalls, batches, screened, warning_contract=warning_contract) + execution_issues(root, state, index)
     if issues != delivery["issues"]:
         raise ValueError("交付问题清单与证据不一致")
     expected = "needs_execution_repair" if any(i["kind"] == "execution" for i in issues) else (
@@ -751,7 +895,13 @@ async def run(plan_path=None, out_dir=None, resume=None):
             name = f"recall-{start // services.recall_limit:05d}"  # 本项目自订：回执编号
             path = "recall/" + name + ".json"
             async def recall():
-                result = json.loads(await services.check_recall(exported["effective_query"], " ".join(known[start:start + services.recall_limit]), as_json=True))
+                # 用方案原式与外置日期参数复查请求的绝对窗口；effective_query 里冻结后的
+                # 日期字面量由 search 阶段单独核验，不能拿来代替本阶段的窗口参数。
+                result = json.loads(await services.check_recall(
+                    plan["term"], " ".join(known[start:start + services.recall_limit]), as_json=True,
+                    mindate=plan.get("mindate", ""), maxdate=plan.get("maxdate", ""),
+                    datetype=plan.get("datetype", "pdat")))
+                result["receipt_binding"] = RECALL_BINDING
                 write_json(root / path, {**result, "evidence": EVIDENCE})
                 return result
             recalls.append(await stage(name, [path], recall))
@@ -813,6 +963,7 @@ async def run(plan_path=None, out_dir=None, resume=None):
                 local_path(root, rel)
                 inventory[rel] = digest(path)
         delivery = {"schema": SCHEMA, "status": status, "metrics": metrics, "issues": issues,
+                    "warning_contract": WARNING_CONTRACT,
                     "files": inventory, "completed_at": services.utc_now(), "evidence": EVIDENCE,
                     "policy": "状态与验收规则为本项目自订；哈希不是签名，不能证明来源真实性"}
         write_json(root / "delivery.json", delivery)

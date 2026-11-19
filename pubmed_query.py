@@ -1,7 +1,9 @@
 """Pure query diagnostics. No transport, MCP initialization or file operations.
 Moved rules and numeric literals retain their original source/policy annotations.
 """
+import calendar
 import re
+from collections import Counter
 
 
 # 本项目自订：仅解析明确分组的布尔子集；不实现或猜测 PubMed 的自动词映射。
@@ -176,6 +178,81 @@ def _same_label_pairs(wins):
             if wins[i][2] == wins[j][2]:
                 out.append((wins[i], wins[j]))
     return out
+
+
+def _required_window_occurrences(d):
+    """返回【每个布尔分支都要求】的日期窗口，并保留同一窗口被要求的次数。
+
+    与 _required_windows 的集合语义不同：这里用多重集，但复用同一个分词/递归解析器
+    （_window_query_tokens + _required_window_group），不另写一份。OR 按值取两边较小的
+    出现次数（只在某一支出现的日期不计），AND 拼接，NOT 只保留左边。
+    次数只用于提示「回显里同一窗口出现了多次」；不能据此断言它来自 term 还是参数，
+    也不能把只在 OR 某支出现的日期说成重复或对所有记录生效。"""
+    tokens = _window_query_tokens(d.get("querytranslation"))
+    try:
+        required, _ = _required_window_group(tokens, 0, occurrences=True)
+    except RecursionError:
+        return []
+    return required
+
+
+def _window_text(win):
+    lo, hi, label = win
+    return f"{lo}（{label}）" if lo == hi else f"{lo} → {hi}（{label}）"
+
+
+def _date_scope_hints(d):
+    """日期条件的人话补充：固定区间含首尾、日期口径、实际窗口、重复窗口。
+
+    〔本项目口径〕只描述可观测参数与 querytranslation 回显；不推断某条记录落在哪一段，
+    也绝不替使用者删除任何日期条件。重复判据用 _required_window_occurrences（OR 取交集），
+    只在某个 OR 分支出现的日期不在此列，不能据此声称它重复或对所有记录生效。
+
+    〔工具输出·本轮报告锚点〕SRC-MH：同一 PMID 限 2007–2009[pdat] 却展示 2010 Mar，
+    原排版另有 Epub 2009 Nov 3 —— 刊期年与 Epub 年跨年时输出需并列；SRC-MI：
+    term 内 2021[pdat] 与 mindate=maxdate=2021 同时下发时执行式出现两次同一窗口。
+    """
+    params = d.get("_request_params")
+    params = params if isinstance(params, dict) else {}
+    datetype = str(params.get("datetype") or "")
+    dr = str(d.get("_daterange") or "")
+    if not datetype:
+        hit = re.search(r"\bdatetype=(pdat|edat)\b", dr)
+        datetype = hit[1] if hit else ""
+    fixed = bool(params.get("mindate") or params.get("maxdate"))
+    rel = bool(params.get("reldate"))
+    echoed = _windows(d.get("querytranslation"))
+    # 无日期条件的普通查询不做布尔解析：只有参数日期或回显里至少两段窗口才可能重复。
+    if not fixed and not rel and len(echoed) < 2:
+        return []
+    wins = list(dict.fromkeys(echoed))
+    lines = []
+    if fixed:
+        label = {"pdat": "发表日期", "edat": "入库日期"}.get(datetype)
+        if label:
+            other = "入库日期" if datetype == "pdat" else "发表日期"
+            lines.append(f"日期口径：固定区间请求按{label}筛选（不是{other}）；"
+                         "mindate 与 maxdate 首尾两端都包含。")
+        else:
+            lines.append("日期口径：固定区间首尾两端都包含（mindate、maxdate 当天都在窗口内）。")
+        if wins and not rel:
+            lines.append("NCBI 实际执行式里出现的日期窗口："
+                         + "；".join(_window_text(w) for w in wins)
+                         + "。只在 OR 某一支出现的日期不对每条记录生效。")
+        elif not wins and not rel:
+            lines.append("⚠️ NCBI 没有回显日期窗口；不能据此确认日期条件已按预期执行。")
+    counts = {}
+    for win in _required_window_occurrences(d):
+        counts[win] = counts.get(win, 0) + 1
+    repeated = [(win, n) for win, n in counts.items() if n > 1]
+    if repeated:
+        lines.append("⚠️ 回显里同一日期窗口出现了多次："
+                     + "；".join(f"{_window_text(w)}×{n}" for w, n in repeated)
+                     + "。来源需核对：可能来自 term 内的重复写法、mindate/maxdate 参数，"
+                     "或绝对与相对日期同时下发；本工具不替你删除任何一侧。"
+                     "重复判断只按每个布尔分支都要求的窗口，仅在 OR 某一支出现的日期不在此列；"
+                     "同一窗口重复不改变名单，窗口不同时请按上面的实际执行窗口核对。")
+    return lines
 
 
 
@@ -502,13 +579,17 @@ def _term_lint(term):
     return out
 
 
+def _lowercase_and_changed(term, qt):
+    outside = re.sub(r'"[^"\n]*"|\[[^\]]*\]', lambda m: ' ' * len(m[0]), term)
+    return bool(re.search(r'\band\b', outside) and re.search(r'"and\s', qt, re.I))
+
+
 def _query_warnings(d):
     """只提示，不偷偷修写检索式；原始响应样例见审计回归测试。"""
     term = str(d.get("_term") or "")
     qt = str(d.get("querytranslation") or "")
-    outside = re.sub(r'"[^"\n]*"|\[[^\]]*\]', lambda m: " " * len(m[0]), term)
     warnings = [text for _, _, text in _syntax_findings(term)]
-    if re.search(r"\band\b", outside) and re.search(r'"and\s', qt, re.I):
+    if _lowercase_and_changed(term, qt):
         warnings.append("⚠️ 小写 and 被实际执行式当作词的一部分；请改为大写 AND 后重查。")
     missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", term)) -
                          set(re.findall(r"[㐀-鿿぀-ヿ]+", qt)))
@@ -518,38 +599,9 @@ def _query_warnings(d):
     return warnings
 
 
-def _required_window_group(tokens, index):
-    """解析一个括号组；显式传入 tokens，避免递归闭包保留整个分词列表。"""
-    required, op, seen = set(), "AND", False
-    while index < len(tokens):
-        token = tokens[index]
-        index += 1
-        if token == ")":
-            return required, index
-        if token in ("AND", "OR", "NOT"):
-            op = token
-            continue
-        if token == "(":
-            dates, index = _required_window_group(tokens, index)
-        else:
-            dates = set(_windows(token))
-        if not seen:
-            required = dates if op != "NOT" else set()
-        elif op == "AND":
-            required |= dates
-        elif op == "OR":
-            required &= dates
-        seen, op = True, "AND"
-    return required, index
-
-
-def _required_windows(d):
-    """提取布尔式每个分支都要求的日期。OR 取交集，AND 取并集，NOT 只保留左边。
-
-    不同日期值可以属于同一记录，因此这里只供提示，不据此提前返回空结果。
-    PubMed 布尔组合按从左到右处理；括号单独递归，短语和字段名里的算子不拆。
-    """
-    qt = str(d.get("querytranslation") or "")
+def _window_query_tokens(qt):
+    """把 querytranslation 切成「原子/AND/OR/NOT/括号」；引号短语与 [标签] 不拆。"""
+    qt = str(qt or "")
     tokens, start = [], 0
     pattern = r'"[^"\n]*"|\[[^\]]*\]|\b(?:AND|OR|NOT)\b|[()]'
     for match in re.finditer(pattern, qt):
@@ -564,12 +616,358 @@ def _required_windows(d):
     fragment = qt[start:]
     if fragment.strip():
         tokens.append(fragment)
+    return tokens
 
+
+def _required_window_group(tokens, index, *, occurrences=False):
+    """解析一个括号组；显式传入 tokens，避免递归闭包保留整个分词列表。
+
+    occurrences=False 时返回集合（_required_windows 旧口径：OR 取交集、AND 取并集、NOT 只留左边）。
+    occurrences=True 时返回列表多重集，供重复窗口提示；OR 取两边较小的出现次数，
+    因此只在 OR 某一支出现的日期不会被算作「每条记录都要求」。
+    """
+    empty = [] if occurrences else set()
+    required, op, seen = empty, "AND", False
+
+    def atom(token):
+        return list(_windows(token)) if occurrences else set(_windows(token))
+
+    def meet(left, right):
+        if not occurrences:
+            return left & right
+        lc = {w: left.count(w) for w in set(left)}
+        rc = {w: right.count(w) for w in set(right)}
+        return [w for w in dict.fromkeys(left + right)
+                for _ in range(min(lc.get(w, 0), rc.get(w, 0)))]
+
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == ")":
+            return required, index
+        if token in ("AND", "OR", "NOT"):
+            op = token
+            continue
+        if token == "(":
+            dates, index = _required_window_group(tokens, index, occurrences=occurrences)
+        else:
+            dates = atom(token)
+        if not seen:
+            required = empty if op == "NOT" else dates
+        elif op == "AND":
+            required = required + dates if occurrences else required | dates
+        elif op == "OR":
+            required = meet(required, dates)
+        seen, op = True, "AND"
+    return required, index
+
+
+def _required_windows(d):
+    """提取布尔式每个分支都要求的日期。OR 取交集，AND 取并集，NOT 只保留左边。
+
+    不同日期值可以属于同一记录，因此这里只供提示，不据此提前返回空结果。
+    PubMed 布尔组合按从左到右处理；括号单独递归，短语和字段名里的算子不拆。
+    """
+    qt = str(d.get("querytranslation") or "")
+    tokens = _window_query_tokens(qt)
     try:
         required, _ = _required_window_group(tokens, 0)
     except RecursionError:
         return []    # 极深表达式不作日期因果解释，仍返回实际执行式
     return [window for window in _windows(qt) if window in required]
+
+
+_UID_ATOM = re.compile(r'(?:"([0-9]+)"|([0-9]+))\s*\[(?:uid|pmid)\]', re.I)
+# 本项目自订：把回显/原式拆成「词项＋方括号标签」；引号短语保留为一个值。
+_ATOM_SPAN_RE = re.compile(r'\s*("[^"\n]*"|[^\s\[\]"]+)\s*\[([^\[\]\n]+)\]\s*')
+_BOOL_TOKEN_RE = re.compile(r'AND|OR|NOT|[()]')
+
+
+def _atom_span(text):
+    """返回 (值, 标签)；没有半角 [标签] 时返回 None。"""
+    match = _ATOM_SPAN_RE.fullmatch(str(text or ''))
+    return (match[1], match[2]) if match else None
+
+
+def _concept_norm(value):
+    value = str(value or '').strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    return re.sub(r'\s+', ' ', value).strip().casefold()
+
+
+def _query_atoms(text, field=''):
+    """按布尔算子/括号切出原子；引号短语与 [标签] 保留在同一个原子里。"""
+    for token in _window_query_tokens(text):
+        token = token.strip()
+        if not token or _BOOL_TOKEN_RE.fullmatch(token):
+            continue
+        yield token
+
+
+def _atom_role(text, field=''):
+    """判断原子是日期、UID 还是主题词；只看回显标签，不猜自动映射。"""
+    span = _atom_span(text)
+    if span is None:
+        bare = str(text or '').strip()
+        if str(field or '').casefold() == 'pmid' and re.fullmatch(r'(?:"?[0-9]+"?\s*)+', bare):
+            return 'uid'
+        return 'subject'
+    value, tag = span
+    norm = _tag_norm(tag)
+    if norm.partition(':')[0] in ('uid', 'pmid') and re.fullmatch(r'[0-9]+', value.strip('"')):
+        return 'uid'  # 本项目口径：UID 的 [UID]/[PMID] 两种拼写等价
+    if norm in _DATE_TAGS:
+        return 'date'
+    return 'subject'
+
+
+def _uid_atoms(text, field=''):
+    values = []
+    for atom in _query_atoms(text, field):
+        if _atom_role(atom, field) != 'uid':
+            continue
+        span = _atom_span(atom)
+        if span is not None:
+            values.append(span[0].strip('"'))
+        else:
+            values.extend(re.findall(r'[0-9]+', atom))  # 本项目口径：PMID 字段下空白分隔裸号是多个 UID
+    return values
+
+
+# Share the aliases used for wire scope and for explicit leaves. Never merge Title with Title/Abstract.
+_FIELD_ALIASES = {'title': {'ti'}, 'title/abstract': {'tiab'}, 'pmid': {'uid'},
+                  'journal': {'ta', 'jour'}, 'author': {'au'}, 'affiliation': {'ad'},
+                  'language': {'la', 'lang'}, 'grant': {'gr', 'grant number', 'grants and funding'},
+                  'corporate author': {'author - corporate', 'cn'}, 'all fields': {'all'}}
+_LITERAL_FIELDS = _FIELD_ALIASES.keys() - {'pmid', 'all fields'}
+_MEMBER_TAG = {alias: group for group, aliases in _FIELD_ALIASES.items() for alias in aliases}
+_MEMBER_TAG.update(dict.fromkeys(('dp', 'pdat', 'date', 'publication date'), 'date - publication'))
+_MEMBER_TAG.update(dict.fromkeys(('entry date', 'edat'), 'date - entry'))
+_MEMBER_TAG.update(dict.fromkeys(('mh', 'mesh'), 'mesh terms'))
+_MEMBER_TAG.update(dict.fromkeys(('pt', 'ptyp'), 'publication type'))
+_MEMBER_TAG.update({'tw': 'text word', 'text': 'text word', 'majr': 'mesh major topic',
+                    'sh': 'mesh subheading', 'subh': 'mesh subheading', 'subheading': 'mesh subheading',
+                    'nm': 'supplementary concept', 'ot': 'other term', 'sb': 'filter', 'subset': 'filter',
+                    'crdt': 'date - create', 'create date': 'date - create',
+                    'lr': 'date - modification', 'modification date': 'date - modification',
+                    'dcom': 'date - completion', 'completion date': 'date - completion',
+                    'mhda': 'date - mesh', 'mesh date': 'date - mesh'})
+
+
+def _expanded_date(v, end=False):
+    if not v:
+        return ''
+    p = v.replace('/', '-').split('-')
+    y = int(p[0])
+    mo = int(p[1]) if len(p) > 1 else (12 if end else 1)  # 来源：既有 _expand 年界规则
+    d = int(p[2]) if len(p) > 2 else (calendar.monthrange(y, mo)[1] if end else 1)  # 来源：既有 _expand 月界规则
+    return f'{y:04d}-{mo:02d}-{d:02d}'  # 来源：既有日期窗口规范格式
+
+
+def _member_span(text):
+    match = re.fullmatch(r'\s*("[^"\n]*"|[^\[\]"]+?)\s*\[([^\[\]\n]+)\]\s*', text)
+    return match.groups() if match else None
+
+
+def _member_atom(text, default_field='', ignored=()):
+    span = _member_span(text)
+    value = _concept_norm(span[0] if span else text)
+    if ignored and ' ' in value and '"' not in text:
+        value = ' '.join(word for word in value.split() if word not in ignored)
+    tag = _tag_norm(span[1]) if span else ''
+    base, sep, modifier = tag.partition(':')
+    tag = _MEMBER_TAG.get(base, base) + sep + modifier
+    # An explicit wide field outside the term cannot erase its narrower Title condition.
+    if not tag or (tag == 'title/abstract' and default_field == 'title'):
+        tag = default_field
+    if tag in _DATE_TAGS:
+        date_pat = r'\d{4}(?:[-/]\d{1,2}){0,2}'  # 来源：工具支持的年、月、日精度
+        m = re.fullmatch(f'({date_pat})(?::({date_pat}))?', value)
+        if m:
+            return ('date', tag, _expanded_date(m[1]), _expanded_date(m[2] or m[1], True))
+    return ('leaf', tag, value)
+
+
+def _member_group(kind, children):
+    if kind == 'NOT':
+        return kind, tuple(children)  # 有方向，不换序。
+    flat = set()
+    for child in children:
+        if child[0] == kind:
+            flat.update(child[1])
+        else:
+            flat.add(child)
+    return next(iter(flat)) if len(flat) == 1 else (kind, tuple(sorted(flat)))  # 本项目口径：同层 AND/OR 可换序、去重
+
+
+def _tagged_subject_membership(term, translation, field, uid_batch, limits, datetype, ignored, mappings):
+    """Check the whole explicit Boolean tree with its actual UID/date conjuncts. No sampling."""
+    default = field.casefold()
+    tokens = tuple(_query_atoms(term))
+    ignored = frozenset(_concept_norm(word) for word in ignored)
+
+    if not uid_batch and not any(_MEMBER_TAG.get(base, base) in _LITERAL_FIELDS for t in tokens
+                                 if (span := _member_span(t)) for base in [_tag_norm(span[1]).partition(':')[0]]):
+        return []  # A list comparison alone doesn't certify ordinary automatic mapping.
+
+    try:
+        user_atoms = {_member_atom(text, default, ignored) for text in tokens}
+        bare = {a[2] for a in user_atoms if a[:2] == ('leaf', '')}
+
+        # Use only server-declared expansions for an unqualified/All Fields operand.
+        # They may replace that operand, never a field, an exclusion or the tool's UID group.
+        expansions = {}
+        for row in mappings or ():
+            if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in ('from', 'to')):
+                continue
+            source = _member_atom(row['from'], default, ignored)
+            if source[:2] not in (('leaf', ''), ('leaf', 'all fields')):
+                continue
+            if not any(source == atom or (atom[:2] == ('leaf', '') and source[1] == ''
+                       and source[2] in atom[2].split()) for atom in user_atoms):
+                continue
+            mapped = _diagnostic_tree(row['to'])
+            if not all(_member_atom(t)[1] in ('all fields', 'mesh terms') for t in _query_atoms(row['to'])):
+                continue
+            if source in expansions and expansions[source] != mapped:
+                raise ValueError('同一检索片段回显了不同的映射')
+            expansions[source] = mapped
+        bare -= {source[2] for source in expansions}
+
+        def canonical(node, echo=False, mapped=False):
+            kind, text, children = node
+            if kind == 'leaf':
+                atom = _member_atom(text, '' if echo or mapped else default, () if mapped else ignored)
+                if mapped and atom[0] == 'leaf':
+                    # ESearch's mapping table retains apostrophes that its execution echo tokenizes as spaces.
+                    atom = (*atom[:2], ' '.join(atom[2].replace("'", ' ').split()))
+                if not echo and not mapped and atom[0] == 'leaf':
+                    if atom in expansions:
+                        return canonical(expansions[atom], mapped=True)
+                    if atom[1] == '' and '"' not in text and ' ' in atom[2]:
+                        words = [('leaf', '', w) for w in atom[2].split()]
+                        if words and all(w in expansions for w in words):
+                            return _member_group('AND', (canonical(expansions[w], mapped=True) for w in words))
+                if (echo and atom[0] == 'leaf' and atom not in user_atoms
+                        and atom[1] == 'all fields' and atom[2] in bare):
+                    return ('leaf', '', atom[2])  # 普通裸词的同词展开；显式限定和陌生词不能被折叠掉。
+                return atom
+            group = _member_group(kind, (canonical(child, echo, mapped) for child in children))
+            # Same-word automatic mapping is an alternative, not a mandatory MeSH condition.
+            if echo and group[0] == 'OR':
+                parts = set(group[1])
+                extra = {a for a in parts if a[:2] == ('leaf', 'mesh terms') and a not in user_atoms
+                         and ('leaf', '', a[2]) in parts}
+                if extra:
+                    return _member_group('OR', parts - extra)
+            return group
+
+        factors = [canonical(_diagnostic_tree(term))]
+        if uid_batch:
+            factors.append(_member_group('OR', (('leaf', 'pmid', pid) for pid in uid_batch)))
+        axis = 'date - publication' if datetype == 'pdat' else 'date - entry'
+        factors.extend(('date', axis, *window) for window in limits if window)
+        if _member_group('AND', factors) == canonical(_diagnostic_tree(translation), echo=True):
+            return []
+    except (ValueError, RecursionError):
+        pass  # 无法安全拆分不是等价证明。
+    return ['不能核实执行式保留了原式的主题概念、字段和布尔关系；请对照实际执行式']
+
+
+def _batch_uid_clause_verified(term, translation, field, batch):
+    """Require a whole UID disjunction as an AND factor, independent of user UID operands."""
+    def uid(text, bare=False):
+        match = _UID_ATOM.fullmatch(text.strip())
+        if match:
+            return match[1] or match[2]  # 本项目口径：带引号与裸数字的 UID 回显
+        if bare and re.fullmatch(r'[0-9]+', text.strip()):
+            return text.strip()
+
+    def members(node, bare=False):
+        kind, text, children = node
+        if kind == 'OR':
+            return set().union(*(members(child, bare) for child in children))
+        return {uid(text, bare) if kind == 'leaf' else None}
+
+    def factors(node):
+        if node[0] == 'AND':  # 本项目口径：只穿过必需合取，不穿过 OR/NOT 来认工具编号条件
+            for child in node[2]:
+                yield from factors(child)
+        else:
+            yield node
+
+    def uid_counts(text, bare=False):
+        return Counter(_uid_atoms(text, 'PMID' if bare else ''))
+
+    expected = set(batch)
+    try:
+        echoed = sum(members(node) == expected for node in factors(_diagnostic_tree(translation)))
+        if not echoed:
+            return False
+        bare = field == 'PMID'
+        original = uid_counts(term, bare=bare)
+        if original:
+            reserved = sum(members(node, bare) == expected for node in factors(_diagnostic_tree(term)))
+            if echoed <= reserved:
+                return False
+        return uid_counts(translation) == original + Counter(batch)
+    except (ValueError, RecursionError):
+        return False
+
+
+def _scope_evidence(term, translation, field, bounds, relative, datetype, uid_batch=(), *, check_subject=False, ignored=(), mappings=()):
+    """Validate observable scope, not just wire parameters. Return reasons and server-relative bounds."""
+    reasons = []
+    if uid_batch and not _batch_uid_clause_verified(term, translation, field, uid_batch):
+        reasons.append('不能核实执行式按完整的本批 PMID 与原式取交集')
+    # A field-looking date inside a quoted literal is not a date restriction.
+    structural = re.sub(r'"[^"\n]*"', '"term"', translation)
+    required = _required_window_occurrences({'querytranslation': structural}) if bounds or relative else []
+    windows = [(lo, hi) for lo, hi, label in required if label.endswith(f'[{datetype}]')]
+    if bounds:
+        if bounds in windows:
+            windows.remove(bounds)
+        else:
+            reasons.append('外加绝对日期不是执行式各分支的必需条件')
+    rel_window = None
+    if relative:
+        raw_tags = {_tag_norm(m[1]) for m in _TAG_SPAN_RE.finditer(re.sub(r'"[^"\n]*"', '', term))}
+        same_axis = ({'dp', 'pdat', 'date', 'publication date', 'date - publication'} if datetype == 'pdat' else
+                     {'edat', 'entry date', 'date - entry'})
+        if len(windows) == 1 and not raw_tags.intersection(same_axis):  # 本项目自订：只拦同轴、无法唯一归属的窗口
+            rel_window, = windows
+        else:
+            reasons.append('无法唯一核实外加相对日期窗口')
+    if uid_batch or check_subject:
+        reasons.extend(_tagged_subject_membership(term, translation, field, uid_batch, (bounds, rel_window), datetype, ignored, mappings))
+    if field:
+        accepted = _FIELD_ALIASES.get(field.casefold(), set()) | {field.casefold()}
+        # 本批 UID 是本工具外加的，不算主题词；原式自带的 UID/日期才是用户条件。
+        # 两者都按值（不含顺序/分组/[UID] 或 [PMID] 拼写）核销，避免把重复出现的用户 UID 误当主题词。
+        performed = Counter(str(pid) for pid in uid_batch)
+        user_uid = Counter(_uid_atoms(term, field))
+        tags = []
+        for atom in _query_atoms(translation):
+            role = _atom_role(atom)
+            if role == 'date':
+                continue
+            if role == 'uid':
+                span = _atom_span(atom)
+                value = span[0].strip('"') if span else atom.strip().strip('"')
+                if performed[value] > 0:
+                    performed[value] -= 1
+                    continue
+                if user_uid[value] > 0:
+                    user_uid[value] -= 1
+                if field.casefold() == 'pmid':
+                    tags.append('uid')  # 本项目口径：PMID 字段下 UID 原子就是该字段，不与主题词混淆
+                continue
+            span = _member_span(atom)
+            tags.append(_tag_norm(span[1]).partition(':')[0] if span else '')
+        if not tags or any(tag not in accepted for tag in tags):
+            reasons.append(f'不能核实所有主题词均按 {field} 执行')
+    return reasons, rel_window
 
 
 def _quoted_zero_warning(phrases):
@@ -641,8 +1039,9 @@ def _note(d, *, include_translation=True):
         dr = d["_daterange"]
         # 〔实测 2026-11-09〕旧判据里的「取交集」没了：现在 reldate 原样下发、由 NCBI 做两段 AND，
         # 所以该打 ⚠️ 的是「本工具补了边界」和「两段窗口不相交」这两种。
-        mark = "⚠️ " if ("由本工具补" in dr or "两段 AND" in dr or "没回显" in dr) else ""
+        mark = "⚠️ " if ("由本工具补" in dr or "请求日期范围未核实" in dr or "没回显" in dr) else ""
         lines.append(f"{mark}日期条件：{dr}")
+    lines.extend(_date_scope_hints(d))
     # 〔实测 2026-11-10〕这段判据原来在 `if d.get("_daterange")` 里面，于是
     #   "miniscrew[Title] AND 2019[dp] AND 2035[dp]"（互斥区间全写在 term 里、没传 mindate/reldate）
     # 这种根本不会提醒 —— 而 _daterange 只描述【本工具发出去的】日期参数，窗口本身在 qt 里就有。
@@ -682,7 +1081,7 @@ def _note(d, *, include_translation=True):
             #   `"tooth"[Title] AND "resorption"[Title] AND 2020/01/01:2026/12/31[Date - Publication]`
             #   —— field 明明生效，旧写法却因为「term 里有方括号」直接宣布 field 被 NCBI 丢掉，
             #   还教人「请直接改 term 里的标签」，那条建议在这个情况下会把对的查询改坏。
-            extra = f"\n   判据：「NCBI 实际执行」里出现了 [{fa}]，这个限定生效了。"
+            extra = f"\n   「NCBI 实际执行」里出现了 [{fa}]；这不证明每个主题词都按该字段执行。"
         elif re.search(r"\[[A-Za-z][^\]]{1,28}\]", str(d.get("_term") or "")):
             extra = ("\n   ⚠️ qt 里没有出现这个 field 的标签，而 term 自己写了字段标签 —— "
                      "实测这种情况下 term 内的标签赢、field 被丢"
@@ -815,14 +1214,34 @@ def _as_list(v):
 
 
 
-def _term_vanished(qt):
-    """实际执行式里除金标准 PMID（[UID]）与布尔算子/括号外是否还剩内容。
-    剩不下＝term 被 NCBI 忽略（常见于中文词，翻译为空），此时 `(term) AND (uids)` 退化成只剩
-    uids，found 会假阳性地全中。〔实测 A6：term=牙根吸收 → 执行式仅 uid OR 子句、found 3/3〕
-    这是启发式判断〔本项目自订〕：只覆盖「执行式纯由 uid 构成」这一可观测症状。"""
+def _term_vanished(qt, term=None, field=''):
+    """判断原式的主题词是否在整个执行式里消失。
+
+    旧口径只覆盖「执行式纯由 [UID] 构成」，且只认末尾/固定拼写，容易被 NCBI 的
+    排序、分组或 [PMID] 回显绕过。给出 term 时按原子角色判断：工具外加的本批 UID
+    与日期窗口（无论位置、括号或 [UID]/[PMID] 拼写）都不算主题词；原式本身是纯
+    UID/日期条件时，只有对应条件仍出现在执行式里才算保留（含 field=PMID 的裸号），
+    不能拿工具本批 UID 替代用户自己的 UID/日期。未给 term 时保持旧接口行为，供旧
+    调用与兼容层使用。
+    """
     if not qt or not qt.strip():
         return False  # 缺少执行式不能证明条件被清空。
-    s = re.sub(r'"?\d+"?\s*\[UID\]', " ", qt, flags=re.I)
+    if term is not None:
+        term_atoms = list(_query_atoms(term, field))
+        subjects = [atom for atom in term_atoms if _atom_role(atom, field) == 'subject']
+        user_uid = _uid_atoms(term, field)
+        user_dates = [atom for atom in term_atoms if _atom_role(atom, field) == 'date']
+        translation_atoms = list(_query_atoms(qt))
+        if subjects and not any(_atom_role(atom) == 'subject' for atom in translation_atoms):
+            return True  # 主题词整个消失
+        if user_uid:
+            echoed = set(_uid_atoms(qt))
+            if not any(value in echoed for value in user_uid):
+                return True  # 真实用户 UID 条件消失（工具本批 UID 不能替代它）
+        if user_dates and not any(_atom_role(atom) == 'date' for atom in translation_atoms):
+            return True  # 真实用户日期条件消失
+        return False
+    s = re.sub(r'"?\d+"?\s*\[(?:UID|PMID)\]', " ", qt, flags=re.I)
     s = re.sub(r"\b(AND|OR|NOT)\b", " ", s, flags=re.I)
     s = re.sub(r"[()\s]+", " ", s)
     return not s.strip()
@@ -834,7 +1253,7 @@ _DEGRADING_OUTMSG_RE = re.compile(
 )
 
 
-def _recall_warnings_and_degraded(raw_term, batch_ds):
+def _recall_warnings_and_degraded(raw_term, batch_ds, *, include_translation=True):
     """汇总 check_recall 对原始 term 的语法警告与各批 esearch 响应警告，并判定是否存在部分词失效/失真。
     用原始 raw_term 做语法/中文/短语缺口检查，防止外层 `({term}) AND (uids)` 吞掉括号失衡告警〔实测 2026-11-12〕。"""
     first_d = batch_ds[0]
@@ -844,7 +1263,7 @@ def _recall_warnings_and_degraded(raw_term, batch_ds):
         hint = "（查询含中文，建议先换成对应英文词重查，如 牙根吸收 → tooth resorption）" if _CJK.search(raw_term) else ""
         lines.append(f"⚠️ NCBI 未返回实际执行式（querytranslation 为空）{hint}"
                      f"—— 这个结果【不能】用来说明主题有无文献")
-    elif qt0.lower() != raw_term.strip().lower():
+    elif include_translation and qt0.lower() != raw_term.strip().lower():
         if len(qt0) > 600:
             lines.append(f"NCBI 实际执行：{qt0[:600]}…（截断；完整解析用 as_json=True 取）")
         else:
@@ -861,7 +1280,11 @@ def _recall_warnings_and_degraded(raw_term, batch_ds):
     for m in _query_warnings({"_term": raw_term, "querytranslation": qt0}):
         add(m)
 
-    degraded = any(breaking or code == "fw_and_punct" for code, breaking, _ in raw_findings)
+    # term_tag_ignored 在 lint 里仍是软标记（breaking=False，不拦、只在 _query_warnings 提示）。
+    # 但 check_recall 里「外加字段被明确忽略却仍找回金标准」是可靠性降级：命中可能靠自动映射/裸词，
+    # 不能把 found 当成「字段限定下可靠找回」。〔本轮真实路径复现的旧问题；只在此降级，不改 lint 档位〕
+    degraded = any(breaking or code in ("fw_and_punct", "term_tag_ignored", "term_tag_subfield")
+                   for code, breaking, _ in raw_findings)
     missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", str(raw_term or ""))) -
                          set(re.findall(r"[㐀-鿿぀-ヿ]+", qt0)))
     if qt0 and missing_cjk:
@@ -872,7 +1295,7 @@ def _recall_warnings_and_degraded(raw_term, batch_ds):
         original = {**d_b, "_term": raw_term}
         for note in _note(original, include_translation=False):
             add(note)
-        if not batch_qt or (_CJK.search(raw_term) and
+        if not batch_qt or _lowercase_and_changed(raw_term, batch_qt) or (_CJK.search(raw_term) and
                 set(re.findall(r"[㐀-鿿぀-ヿ]+", raw_term)) - set(re.findall(r"[㐀-鿿぀-ヿ]+", batch_qt))):
             degraded = True
         e = d_b.get("errorlist")

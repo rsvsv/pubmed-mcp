@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -69,7 +70,13 @@ class LowHit(unittest.TestCase):
 
     def test_auto_preserves_scope_order_and_original_result(self):
         scope = dict(field='Title', mindate='2020', maxdate='2024', reldate=30, datetype='edat')  # 本项目自订：检索限制夹具
-        with patch.object(m, '_esearch', self.fake), patch.dict(os.environ, {'PUBMED_AUDIT_DIR': ''}):
+        relative = '2026/10/21:2026/11/19[Date - Entry]'  # 本项目自订：服务器相对窗口夹具
+        absolute = '2020/01/01:2024/12/31[Date - Entry]'  # 本项目自订：mindate/maxdate 展开夹具
+        async def scoped(term, *args, **kwargs):
+            self.calls.append((term, kwargs))
+            qt = term.replace('[tiab]', '[Title]') + f' AND {absolute} AND {relative}'  # 本项目自订：实际执行式带回字段与日期
+            return response(qt, '0' if term == self.query else '12')  # 本项目自订：原式/放宽计数
+        with patch.object(m, '_esearch', scoped), patch.dict(os.environ, {'PUBMED_AUDIT_DIR': ''}):
             data = json.loads(run(m.search, self.query, as_json=True, **scope))
         self.assertEqual(data['count'], 0)  # 本项目自订：原计数不被诊断覆盖
         self.assertEqual(len(self.calls), 4)  # 本项目自订：原式加逐块计数，不递归
@@ -205,8 +212,12 @@ class Neighbors(unittest.TestCase):
 
     def test_titles_membership_and_filter_forwarding(self):
         scope = dict(field='Title', mindate='2020', maxdate='2024', reldate=30, datetype='edat')  # 本项目自订：范围夹具
-        with patch.object(m, '_esearch', self.search):
-            data = self.call(term='tooth[tiab]', with_titles=True, **scope)
+        async def scoped(term, **kwargs):
+            self.search_calls.append((term, kwargs))
+            qt = term.replace('tooth', 'tooth[Title]') + ' AND 2020/01/01:2024/12/31[Date - Entry] AND 2024/11/01:2024/12/01[Date - Entry]'  # 本项目自订：两段服务器日期回显
+            return response(qt, '1', ['2'])  # 本项目自订：仅一个候选符合全部限制
+        with patch.object(m, '_esearch', scoped):
+            data = self.call(term='tooth', with_titles=True, **scope)
         rows = {r['pmid']: r for r in data['candidate_details']}
         self.assertTrue(rows['2']['in_term'])  # 本项目自订：夹具命中
         self.assertFalse(rows['3']['in_term'])  # 本项目自订：夹具不命中
@@ -216,6 +227,47 @@ class Neighbors(unittest.TestCase):
         self.assertEqual(data['outside_term_pmids'], ['1', '3'])  # 本项目自订：未命中按原名次
         self.assertEqual({k: self.search_calls[0][1][k] for k in scope}, scope)  # 本项目自订：首批参数
         self.assertEqual(data['match_scope']['datetype'], 'edat')
+
+    def test_links_origin_survives_projection_without_claiming_query_additions(self):
+        with patch.object(m, '_esearch', self.search), tempfile.TemporaryDirectory() as tmp:
+            for compact in (False, True):
+                target = Path(tmp) / (str(compact) + '.json')
+                reply = self.call(term='tooth[tiab]', compact=compact, out_path=str(target))
+                full = json.loads(target.read_text(encoding='utf-8'))
+                self.assertTrue(full['outside_term_pmids'])
+                self.assertEqual(reply['provenance'], full['provenance'])
+                self.assertEqual(reply['provenance']['comparison'], 'not_compared')
+            self.assertIn('未比对改式前后', run(m.links, '1', to='pubmed'))  # 本项目自订：测试种子
+            self.assertNotIn('provenance', json.loads(run(m.links, '1', to='pmc', compact=True)))  # 本项目自订：非文献目标
+
+    def test_scope_missing_from_intersection_is_unknown(self):
+        for scope in ({'field':'Title'}, {'mindate':'2024', 'maxdate':'2024'}):  # 本项目自订：分别丢失字段或日期限制
+            qt = 'tooth[All Fields] AND (1[UID] OR 2[UID] OR 3[UID])'  # 本项目自订：仅回显未限定交集
+            with self.subTest(scope=scope), patch.object(m, '_esearch', AsyncMock(return_value=response(qt, '1', ['2']))):  # 本项目自订：实取不能证明受限命中
+                page = self.call(term='tooth', compact=True, **scope)
+                self.assertEqual(page['match_summary']['unknown'], len(self.targets))
+                self.assertTrue(all(r['in_term'] is None for r in page['targets']))
+                self.assertEqual(page['executions'], [{'status':'unreliable_query', 'querytranslation':qt}])
+                self.assertIn(qt, run(m.links, '1', to='pubmed', term='tooth', **scope))  # 本项目自订：文本也保留执行式
+
+    def test_partial_batch_echo_is_unknown_for_all_neighbors(self):
+        qt = 'tooth[Title] AND 2[UID]'  # 本项目自订：回显仅检查实取号，非整批
+        with patch.object(m, '_esearch', AsyncMock(return_value=response(qt, '1', ['2']))):  # 本项目自订：实取一个编号
+            data = self.call(term='tooth', compact=True)
+        self.assertTrue(all(row['in_term'] is None for row in data['targets']))
+        self.assertEqual(data['match_summary']['unknown'], len(self.targets))
+
+    def test_single_source_enriched_compact_recovers_link_order_after_paging(self):
+        self.targets = ['90', '10', '2', '12']  # 本项目自订：关联结果顺序，检索只命中中间项
+        with patch.object(m, '_esearch', self.search):
+            page = self.call(term='tooth[tiab]', with_titles=True, compact=True, offset=1, limit=3)  # 本项目自订：跳过开头的候选
+        rows = page['targets']
+        self.assertEqual({r['pmid']: r['in_term'] for r in rows}, {'10': False, '2': True, '12': False})  # 本项目自订：命中分类保持
+        self.assertEqual({r['pmid']: r['source_positions']['1'] for r in rows}, {'10': 2, '2': 3, '12': 4})  # 本项目自订：源列表的绝对位置
+
+    def test_compact_without_enrichment_marks_seed(self):
+        rows = self.call(compact=True)['targets']
+        self.assertEqual([r['pmid'] for r in rows if r.get('is_seed')], ['1'])  # 本项目自订：唯一种子
 
     def test_failures_and_degraded_query_are_unknown_not_false(self):
         degraded = response('1[UID] OR 2[UID] OR 3[UID]', '3', self.targets)  # 本项目自订：原词被吞的响应
@@ -244,7 +296,7 @@ class Neighbors(unittest.TestCase):
         self.assertIsNone(rows['3']['in_term'])  # 本项目自订：预算外候选
         self.assertEqual(rows['3']['match_status'], 'not_checked')  # 本项目自订：未检查状态
         self.summary.assert_awaited_once_with(['1', '2'], include_unavailable=True)  # 本项目自订：预算内请求
-        with patch.object(m, '_esearch', AsyncMock(return_value=response('tooth[tiab]', '0'))):  # 本项目自订：分页候选未命中
+        with patch.object(m, '_esearch', AsyncMock(return_value=response('tooth[tiab] AND 3[UID]', '0'))):  # 本项目自订：完整回显、分页候选未命中
             page = self.call(term='tooth[tiab]', offset=2, limit=1)  # 本项目自订：检查预算外页
         self.assertEqual(page['candidate_pmids'], ['3'])  # 本项目自订：分页目标
         self.assertFalse(page['candidate_details'][0]['in_term'])  # 本项目自订：已检查后才写 false
@@ -275,11 +327,94 @@ class Neighbors(unittest.TestCase):
         d = {**response('tooth[tiab] AND (1[UID] OR 2[UID] OR 3[UID])', '1', ['2']),  # 本项目自订：确定命中的交集
              'warninglist': {'phrasesignored': ['of']}}
         with patch.object(m, '_esearch', AsyncMock(return_value=d)):
-            data = self.call(term='effect of tooth[tiab]')
+            data = self.call(term='of tooth[tiab]')  # 只丢回执明确提示的 of，不把额外缺失的 effect 当停用词。
         rows = {r['pmid']: r for r in data['candidate_details']}
         self.assertTrue(rows['2']['in_term'])  # 本项目自订：停用词提示不抹掉有效匹配
         self.assertFalse(rows['3']['in_term'])  # 本项目自订：确定未匹配
         self.assertIn('停用词', '\n'.join(data['warnings']))
+
+    def test_compact_once_per_candidate_and_query_across_sources(self):
+        term = 'tooth[tiab]'
+        with patch.object(m, '_esearch', self.search):
+            raw = run(m.links, '1 4', to='pubmed', term=term, with_titles=True, compact=True)  # 本项目自订：共享候选的两个种子
+        page = json.loads(raw)
+        self.assertEqual(page['match_scope']['term'], term)
+        self.assertEqual([e['querytranslation'] for e in page['executions']], [self.search_calls[0][0]])  # 本项目自订：实际交集只列一次，不按候选重复
+        self.assertEqual(page['schema'], 'pubmed.links.compact.v1')  # 本项目自订：独立格式标识
+        self.assertTrue({'edges', 'candidate_pmids', 'match_checks'}.isdisjoint(page))
+        self.assertTrue(all('target_ids' not in s for s in page['sources']))
+        self.assertCountEqual([r['pmid'] for r in page['targets']], self.targets)
+        for row in page['targets']:
+            self.assertEqual(row['sources'], ['1', '4'])  # 本项目自订：实际显示的两个来源
+            self.assertEqual(row['in_term'], row['pmid'] == '2')  # 本项目自订：唯一命中
+            self.assertEqual(row['title'], 'Title ' + row['pmid'])
+            self.assertEqual(row['languages'], ['eng'])
+        self.assertEqual(len(self.search_calls), 1)  # 本项目自订：共享候选只交集检查一批
+        self.summary.assert_awaited_once()
+
+    def test_compact_page_and_full_file_use_same_checked_window(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, '_esearch', AsyncMock(side_effect=m.NcbiError('fixture outage'))):
+            target = Path(tmp) / 'links.json'
+            page = self.call(compact=True, term='tooth', out_path=str(target), offset=1, limit=1)  # 本项目自订：只检查中间项
+            full = json.loads(target.read_text(encoding='utf-8'))
+        self.assertEqual(page['content_schema'], full['schema'])
+        self.assertEqual(full['candidate_pmids'], self.targets)
+        self.assertEqual([r['pmid'] for r in page['targets']], self.targets[1:2])  # 本项目自订：当前页
+        row, = page['targets']
+        self.assertIsNone(row['in_term'])
+        self.assertEqual(row['match_status'], 'error')
+        self.assertIn('fixture outage', ' '.join(page['warnings']))
+        self.assertTrue(full['match_checks'])
+        self.assertEqual(page['sources'][0]['total'], len(self.targets))  # 本项目自订：分页前计数
+
+    def test_match_summary_precedes_truncated_titles_and_deduplicates(self):
+        with patch.object(m, '_esearch', self.search), patch.object(m._tools_module, '_NEIGHBOR_TEXT_CAP', 1):  # 本项目自订：仅展示一个详情
+            text = run(m.links, '1 4', to='pubmed', term='tooth')  # 本项目自订：两个种子共享同批候选
+            data = self.call(term='tooth', compact=True)
+        self.assertIn('本页去重候选 3 篇：命中 1，未命中 2', text)  # 本项目自订：汇总覆盖完整窗口
+        self.assertLess(text.index('本页去重候选'), text.index('｜未命中当前式'))
+        self.assertIn('本页共有 3 个去重候选，文本仅展示前 1 个候选详情', text)  # 本项目自订：仅文本预览截断
+        self.assertIn('with_titles=True, compact=True', text)
+        self.assertEqual(data['match_summary'], dict(window_total=3, inside=1, outside=2, unknown=0, unchecked=0, outside_window=0))  # 本项目自订：去重后的夹具统计
+
+    def test_failed_unchecked_and_off_page_counts_survive_file_and_preview(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, '_esearch', AsyncMock(side_effect=m.NcbiError('fixture'))), \
+                patch.object(m._tools_module, '_NEIGHBOR_ENRICH_CAP', 1):  # 本项目自订：首项检查失败，次项超预算
+            path = Path(tmp) / 'all.json'
+            preview = self.call(term='tooth', compact=True, offset=1, limit=2, out_path=str(path))  # 本项目自订：第一页候选不在本次窗口内
+            stored = json.loads(path.read_text(encoding='utf-8'))
+            empty = self.call(term='tooth', limit=0)  # 本项目自订：空窗口仍有其他候选
+        expected = dict(window_total=2, inside=0, outside=0, unknown=1, unchecked=1, outside_window=1)  # 本项目自订：故障/未查/窗外独立计数
+        self.assertEqual(preview['match_summary'], expected)
+        self.assertEqual(stored['match_summary'], expected)
+        self.assertEqual(empty['match_summary']['outside_window'], len(self.targets))
+        self.assertEqual(empty['match_summary']['window_total'], 0)  # 本项目自订：空页
+        self.assertNotIn('match_summary', self.call(with_titles=True))
+
+    def test_long_translation_stays_in_structured_fields(self):
+        executed = 'tooth[tiab] AND (' + ' OR '.join(f'{i}[UID]' for i in range(100)) + ')'  # 本项目自订：执行式超过旧截断长度
+        result = {**response(executed, '1', ['2']), 'warninglist': {'phrasesignored': ['of']}}  # 本项目自订：保留停用词警告
+        with patch.object(m, '_esearch', AsyncMock(return_value=result)):
+            check, = self.call(term='tooth')['match_checks']
+            recall = json.loads(run(m.check_recall, 'tooth', '2', as_json=True))  # 本项目自订：已知集夹具
+            diff = json.loads(run(m.diff, 'a', 'b', as_json=True))
+        for notes in (check['warnings'], recall['warnings'], diff['warnings_a'], diff['warnings_b']):
+            warnings = '\n'.join(notes)
+            self.assertNotIn('完整解析用 as_json', warnings)
+            self.assertIn('停用词', warnings)
+        self.assertEqual(check['querytranslation'], executed)
+        self.assertEqual(recall['querytranslations'], [executed])
+        self.assertEqual((diff['querytranslation_a'], diff['querytranslation_b']), (executed, executed))
+
+    def test_compact_non_publication_and_empty_page(self):
+        payload = {'linksets': [{'ids': ['1'], 'linksetdbs': [{'linkname': 'pubmed_pmc', 'links': ['42']}]}]}  # 本项目自订：PMC 目标
+        with patch.object(m, '_get_async', AsyncMock(return_value=json.dumps(payload))):
+            page = json.loads(run(m.links, '1', compact=True))  # 本项目自订：默认 PMC
+            empty = json.loads(run(m.links, '1', compact=True, limit=0))  # 本项目自订：空窗口
+        self.assertEqual(page['targets'], [{'id': '42', 'sources': ['1']}])  # 本项目自订：其他库的号不标成 PMID
+        self.assertFalse(empty['targets'])
+        self.assertEqual(empty['sources'][0]['total'], 1)  # 本项目自订：空窗口保留源计数
+        self.summary.assert_not_awaited()
 
     def test_old_call_adds_no_enrichment_request(self):
         mock = AsyncMock(side_effect=AssertionError('must not call'))
@@ -303,12 +438,222 @@ class Neighbors(unittest.TestCase):
         self.assertEqual(schemas['search']['properties']['diagnose']['default'], 'auto')
         self.assertEqual(schemas['count']['properties']['diagnose']['default'], 'off')
         self.assertIn('term', schemas['links']['properties'])
+        compact = schemas['links']['properties']['compact']
+        self.assertIs(compact['default'], False)
+        self.assertIn('精简 JSON', compact['description'])
         with patch.object(m, '_esearch', self.search):
             text = run(m.links, '1', to='pubmed', term='tooth[tiab]', with_titles=True)  # 本项目自订：源 PMID
         self.assertIn('未命中当前式', text)
         self.assertIn('Title 3', text)  # 本项目自订：候选标题
         self.assertIn('种子自身', text)
         self.assertIn('相似或被引用不等于符合研究问题', text)
+
+
+class LowHitScope(unittest.TestCase):
+    def test_parent_scope_loss_marks_unreliable_and_skips_children(self):
+        query = 'bone[tiab] AND root[tiab]'
+        mock = AsyncMock(return_value=response('bone[tiab] AND root[tiab]', '0'))  # 本项目自订：执行式丢了字段/日期
+        with patch.object(m, '_esearch', mock):
+            data = json.loads(run(m.search, query, as_json=True, field='Title', mindate='2020', maxdate='2024'))
+        self.assertEqual(mock.await_count, 1)  # 本项目自订：范围无法核实就不产生子请求
+        self.assertEqual(data['diagnostics']['status'], 'unreliable_query')
+        joined = '\n'.join(data['diagnostics']['warnings'] + data['next_steps'])
+        self.assertIn('不能核实所有主题词均按 Title 执行', joined)
+        self.assertIn('外加绝对日期不是执行式各分支的必需条件', joined)
+        self.assertEqual(data['diagnostics']['rows'], [])  # 本项目自订：不把无法核实的低命中继续放宽
+
+    def test_child_scope_loss_has_no_reliable_delta(self):
+        query = 'bone[tiab] AND root[tiab]'
+        parent_qt = ('bone[Title] AND root[Title] '
+                     'AND 2020/01/01:2024/12/31[Date - Publication]')  # 本项目自订：父查询带回字段和日期
+        child_qt = 'root[Title] OR bone[Title]'  # 本项目自订：子查询丢了日期限制
+
+        async def fake(term, *args, **kwargs):
+            if term == query:
+                return response(parent_qt, '0')
+            return response(child_qt, '5')
+
+        with patch.object(m, '_esearch', fake):
+            data = json.loads(run(m.search, query, as_json=True, field='Title',
+                                  mindate='2020', maxdate='2024'))
+        self.assertEqual(data['diagnostics']['status'], 'partial')
+        self.assertEqual(len(data['diagnostics']['rows']), 2)
+        for row in data['diagnostics']['rows']:
+            self.assertEqual(row['status'], 'unreliable_query')
+            self.assertIsNone(row['delta'])  # 本项目自订：范围丢失时不给可比较的差值
+            self.assertEqual(row['count'], 5)  # 本项目自订：计数保留，但只作为观测
+            self.assertTrue(any('日期' in note for note in row['warnings']))
+        joined = '\n'.join(data['next_steps'])
+        self.assertIn('不能按原式比较', joined)
+
+
+class ProtectedBlocks(unittest.TestCase):
+    def test_term_internal_date_and_type_are_not_offered(self):
+        query = 'bone[tiab] AND root[tiab] AND 2020:2024[dp] AND review[pt]'
+        calls = []
+
+        async def fake(term, *args, **kwargs):
+            calls.append(term)
+            return response(term, '0' if term == query else '9')
+
+        with patch.object(m, '_esearch', fake):
+            data = json.loads(run(m.search, query, as_json=True))
+        self.assertEqual(data['diagnostics']['status'], 'complete')
+        removed = [row['removed_block'] for row in data['diagnostics']['rows']]
+        self.assertEqual(removed, ['bone[tiab]', 'root[tiab]'])  # 本项目自订：只放宽概念块
+        self.assertEqual(data['diagnostics']['protected_blocks'], ['2020:2024[dp]', 'review[pt]'])
+        joined = '\n'.join(data['next_steps'])
+        self.assertIn('受保护块（含日期/文献类型限制', joined)
+        self.assertIn('其余字段、日期和排除条件保持不变', joined)
+        self.assertNotIn('去掉 2020:2024[dp]', joined)
+        self.assertNotIn('去掉 review[pt]', joined)
+
+    def test_all_blocks_protected_is_unsupported_without_child_requests(self):
+        query = '2020:2024[dp] AND review[pt]'
+        mock = AsyncMock(return_value=response(query, '0'))
+        with patch.object(m, '_esearch', mock):
+            data = json.loads(run(m.search, query, as_json=True))
+        self.assertEqual(mock.await_count, 1)
+        self.assertEqual(data['diagnostics']['status'], 'unsupported')
+        self.assertEqual(data['diagnostics']['rows'], [])
+        joined = '\n'.join(data['next_steps'])
+        self.assertIn('可拆分的块都含日期或文献类型限制', joined)
+
+
+class SearchEndVsWindow(unittest.TestCase):
+    def test_end_page_text_and_json_flags(self):
+        d = {'count': '5', 'idlist': ['4', '5'], 'querytranslation': 'x[All Fields]',
+             '_term': 'x', 'retstart': '3', '_request_params': {}}
+        with patch.object(m, '_esearch', AsyncMock(return_value=d)):
+            text = run(m.search, 'x', detail='ids', retstart=3, retmax=2, diagnose='off')
+            data = json.loads(run(m.search, 'x', detail='ids', retstart=3, retmax=2, diagnose='off', as_json=True))
+        self.assertIn('已到末页', text)
+        self.assertNotIn('不是末页', text)
+        self.assertTrue(data['end_page'])
+        self.assertFalse(data['window_exceeded'])
+        self.assertIsNone(data['next_retstart'])
+
+    def test_window_exceeded_is_not_reported_as_end_page(self):
+        ids = [str(i) for i in range(9991, 10000)]  # 本项目自订：窗口末端 9 条
+        d = {'count': '12000', 'idlist': ids, 'querytranslation': 'x[All Fields]',
+             '_term': 'x', 'retstart': '9990', '_request_params': {}}
+        with patch.object(m, '_esearch', AsyncMock(return_value=d)):
+            text = run(m.search, 'x', detail='ids', retstart=9990, retmax=10, diagnose='off')
+            data = json.loads(run(m.search, 'x', detail='ids', retstart=9990, retmax=10,
+                                  diagnose='off', as_json=True))
+        self.assertNotIn('已到末页', text)
+        self.assertIn('第 9999 条以后的【永远翻不到】', text)
+        self.assertTrue(data['window_exceeded'])
+        self.assertFalse(data['end_page'])
+        self.assertIsNone(data['next_retstart'])
+
+
+class MeshExactOtherType(unittest.TestCase):
+    @staticmethod
+    def fake(records, count):
+        async def get(path, params, timeout):
+            if path == 'esearch.fcgi':
+                ids = list(records)[:params['retmax']]
+                return json.dumps({'esearchresult': {'count': str(count), 'idlist': ids,
+                                                     'querytranslation': 'q[All Fields]'}})
+            ids = params['id'].split(',')
+            return json.dumps({'result': {'uids': ids, **{
+                i: records.get(i, {'uid': i, 'ds_meshterms': ['Related ' + i]}) for i in ids}}})
+        return get
+
+    QUAL = {'uid': '1', 'ds_meshui': 'Q1', 'ds_meshterms': ['Target'],
+            'ds_recordtype': 'qualifier'}  # 本项目自订：精确匹配但非描述符
+    DESC = {'uid': '2', 'ds_meshui': 'D1', 'ds_meshterms': ['Other'],
+            'ds_recordtype': 'descriptor'}
+
+    def test_exact_other_type_with_remaining_suggests_retmax(self):
+        with patch.object(m, '_get_async', self.fake({'1': self.QUAL, '2': self.DESC}, 3)):
+            text = run(m.mesh, 'Target', retmax=5)
+        self.assertIn('字面精确匹配，但类型是「副主题词 [sh]」而非描述符', text)
+        self.assertIn('可增大 retmax（上限 20）', text)
+        self.assertNotIn('中无字面精确匹配', text)
+
+    def test_exact_other_type_at_cap_does_not_suggest_retmax(self):
+        records = {'1': self.QUAL}
+        for i in range(10, 30):  # 本项目自订：填充到超过上限
+            records[str(i)] = {'uid': str(i), 'ds_meshterms': ['Other ' + str(i)],
+                               'ds_recordtype': 'descriptor'}
+        with patch.object(m, '_get_async', self.fake(records, len(records))):
+            text = run(m.mesh, 'Target', retmax=50)
+        self.assertIn('字面精确匹配，但类型是「副主题词 [sh]」而非描述符', text)
+        self.assertIn('已到上限 20', text)
+        self.assertNotIn('可增大 retmax', text)
+
+    def test_exact_other_type_without_remaining_has_no_hint(self):
+        with patch.object(m, '_get_async', self.fake({'1': self.QUAL, '2': self.DESC}, 2)):
+            text = run(m.mesh, 'Target', retmax=5)
+        self.assertNotIn('字面精确匹配，但类型是', text)
+
+
+class NeighborPagination(unittest.TestCase):
+    def setUp(self):
+        self.targets = ['1', '2', '3']  # 本项目自订：两个来源共享的候选夹具
+
+        async def elink(path, params, timeout):
+            return json.dumps({'linksets': [{'ids': [params['id']], 'linksetdbs': [
+                {'linkname': 'pubmed_pubmed', 'links': self.targets}]}]})
+
+        async def uid_echo(term, **kwargs):
+            batch = re.findall(r'(\d+)\[UID\]', term, re.I)
+            return response(term, str(len(batch)), batch)
+
+        async def summary(ids, **kw):
+            return [(p, {'title': 'Title ' + p, 'pubdate': 'fixture-date', 'lang': ['eng']}) for p in ids]
+
+        for name, value in (('_get_async', elink), ('_pmids_exist', AsyncMock(return_value={'1': 'present', '4': 'present'})),
+                            ('_esummary_dicts', summary), ('_esearch', uid_echo)):
+            patcher = patch.object(m, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_multi_source_window_over_cap_replays_at_same_offset(self):
+        with patch.object(m._tools_module, '_NEIGHBOR_ENRICH_CAP', 2):
+            page = json.loads(run(m.links, '1 4', to='pubmed', term='tooth[tiab]', as_json=True))
+            compact = json.loads(run(m.links, '1 4', to='pubmed', term='tooth[tiab]', compact=True))
+        pagination = page['pagination']
+        self.assertEqual(pagination['enrichment_cap'], 2)
+        self.assertEqual(pagination['window_total'], 3)
+        self.assertEqual(pagination['window_checked'], 2)
+        self.assertTrue(pagination['exceeded'])
+        self.assertIsNone(pagination['next_offset'])  # 本项目自订：不推进，先重放本页
+        self.assertEqual(pagination['safe_per_source_limit'], 1)  # 本项目自订：2 // 2 个来源
+        joined = '\n'.join(page['warnings'])
+        self.assertIn('安全重放：offset=0, limit=1', joined)
+        self.assertIn('不要直接用 offset+limit 前进', joined)
+        self.assertIn('该页检查完后再用 offset=1, limit=1', joined)
+        self.assertEqual(compact['safe_per_source_limit'], 1)
+        self.assertIsNone(compact['next_offset'])
+        self.assertEqual(compact['window_total'], 3)
+
+    def test_bounded_replay_provides_next_offset(self):
+        with patch.object(m._tools_module, '_NEIGHBOR_ENRICH_CAP', 2):
+            page = json.loads(run(m.links, '1 4', to='pubmed', term='tooth[tiab]',
+                                  as_json=True, offset=0, limit=1))
+        pagination = page['pagination']
+        self.assertFalse(pagination['exceeded'])
+        self.assertEqual(pagination['window_total'], 1)  # 本项目自订：两个来源的首项相同
+        self.assertEqual(pagination['next_offset'], 1)
+        self.assertIn('下一页 offset=1, limit=1', '\n'.join(page['warnings']))
+
+    def test_relative_window_drift_marks_affected_matches_unknown(self):
+        windows = iter(['2026/10/21:2026/11/19[Date - Publication]',
+                        '2026/10/22:2026/11/20[Date - Publication]'])  # 本项目自订：两批窗口不同
+
+        async def drifting(term, **kwargs):
+            batch = re.findall(r'(\d+)\[UID\]', term, re.I)
+            return response(term + ' AND ' + next(windows), str(len(batch)), batch)
+
+        with patch.object(m, 'GOLD_CHUNK', 2), patch.object(m, '_esearch', drifting):
+            data = json.loads(run(m.links, '1', to='pubmed', term='tooth[tiab]', reldate=30, as_json=True))
+        self.assertEqual(data['match_summary']['unknown'], len(self.targets))
+        self.assertEqual(data['match_summary']['inside'] + data['match_summary']['outside'], 0)
+        self.assertTrue(all(row['in_term'] is None for row in data['candidate_details']))
+        self.assertIn('相对日期窗口不一致', '\n'.join(data['warnings']))
 
 
 if __name__ == '__main__':

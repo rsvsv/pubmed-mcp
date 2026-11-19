@@ -139,7 +139,10 @@ class Tool(unittest.TestCase):
             return TXT
         with patch.object(m, "_get_async", fake):
             out = run(m.fetch_abstracts, "41421800,40272285,39606989,42458410")
-        self.assertEqual(out, "要 4 条 / 实取 4 条（分 1 批）\n\n" + TXT)
+        header, body = out.split('\n\n', 1)  # 本项目自订：仅分离回显与原文
+        self.assertIn('实取为记录数，不是摘要数', header)
+        self.assertIn('fields="title,abstract"', header)
+        self.assertEqual(body, TXT)
 
     def test_fields_projection_json(self):
         with patch.object(m, "_get_async", xml_fake()):
@@ -149,6 +152,37 @@ class Tool(unittest.TestCase):
         self.assertEqual(out["no_abstract"], ["42759866"])
         book = [r for r in out["records"] if r["pmid"] == "28722854"][0]
         self.assertEqual(book["source"], "book")
+
+    def test_empty_labels_do_not_make_abstracts_available(self):
+        pid = '22'  # 本项目自订：输入记录编号
+        xml = (f'<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>{pid}</PMID><Article><ArticleTitle>Fixture</ArticleTitle>'
+               '<Abstract><AbstractText Label="PURPOSE"> \n </AbstractText></Abstract></Article>'
+               '<OtherAbstract><AbstractText Label="RESULTS"><i/></AbstractText></OtherAbstract></MedlineCitation></PubmedArticle></PubmedArticleSet>')
+        with patch.object(m, '_get_async', xml_fake(xml)):
+            data = json.loads(run(m.fetch_abstracts, pid, fields='title,abstract,other_abstracts', as_json=True))
+            text = run(m.fetch_abstracts, pid, fields='title,abstract,other_abstracts')
+        rec, = data['records']
+        self.assertFalse(rec['has_abstract'])
+        self.assertEqual((data['no_abstract'], data['other_abstract_only']), ([pid], []))
+        self.assertEqual((rec['abstract'], rec['other_abstracts']), ([], []))
+        self.assertIn('此记录无摘要', text)
+
+    def test_only_other_abstract_is_not_no_abstract(self):
+        pid = '22'  # 本项目自订：替代摘要 XML 夹具编号
+        xml = (f'<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>{pid}</PMID><Article><ArticleTitle>Fixture</ArticleTitle></Article>'
+               '<OtherAbstract Language="fre"><AbstractText>Alternative text.</AbstractText></OtherAbstract></MedlineCitation></PubmedArticle></PubmedArticleSet>')
+        with patch.object(m, '_get_async', xml_fake(xml)):
+            for fields in ('title,abstract', 'title,abstract,other_abstracts'):
+                data = json.loads(run(m.fetch_abstracts, pid, fields=fields, as_json=True))
+                self.assertEqual(data['no_abstract'], [])
+                self.assertEqual(data['other_abstract_only'], [pid])
+                record, = data['records']
+                self.assertTrue(record['has_abstract'])
+                self.assertEqual(record['abstract_status'], 'other_abstract_only')
+                text = run(m.fetch_abstracts, pid, fields=fields)
+                self.assertNotIn('此记录无摘要', text)
+                self.assertIn('无主摘要', text)
+                self.assertEqual('Alternative text.' in text, 'other_abstracts' in fields)
 
     def test_default_json_fields_and_compact_authors(self):
         with patch.object(m, "_get_async", xml_fake()):
@@ -181,7 +215,9 @@ class Tool(unittest.TestCase):
         big = "1. x\n\nPMID: 41421800\n" + "a" * (m.FETCH_WARN_CHARS + 10)
         with patch.object(m, "_get_async", AsyncMock(return_value=big)):
             out = run(m.fetch_abstracts, "41421800")
-        self.assertTrue(out.startswith("要 1 条 / 实取 1 条（分 1 批）\n\n" + big))
+        header, body = out.split('\n\n', 1)  # 本项目自订：区分原排版说明与大结果提示
+        self.assertIn('原排版未逐篇核验', header)
+        self.assertTrue(body.startswith(big))
         self.assertIn("out_path", out.splitlines()[-1])
 
     def test_schema_new_params_optional(self):

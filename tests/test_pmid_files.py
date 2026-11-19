@@ -201,6 +201,16 @@ class DiffTests(Base):
         with self.assertRaisesRegex(m.NcbiError, "已存在"):
             m._diff_files(b, c, existing)
 
+    def test_current_candidate_is_not_complete(self):
+        baseline = write(self.p('baseline.txt'), '1 2\n')  # 本项目自订：完整旧名单
+        for schema in m._CANDIDATE_SCHEMAS:
+            current = write(self.p(schema + '.json'), json.dumps({'schema': schema, 'candidate_pmids': ['3']}))  # 本项目自订：只含新增的候选
+            output = self.p('diff.json')
+            with self.subTest(schema=schema), self.assertRaisesRegex(m.NcbiError, 'current.*完整'):
+                m._diff_files(baseline, current, output)
+            self.assertFalse(Path(output).exists())
+            self.assertEqual(m._read_pmid_file(current)['ids'], ['3'])  # 本项目自订：仍可作候选导出输入
+
     def test_diff_baseline_diff_rejected(self):
         b = write(self.p("b.json"), json.dumps({"schema": "pubmed.diff.v1", "candidate_pmids": ["1"]}))
         c = write(self.p("c.txt"), "1\n")

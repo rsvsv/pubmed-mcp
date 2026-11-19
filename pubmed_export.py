@@ -16,7 +16,238 @@ from typing import Literal
 import anyio
 from pydantic import StrictInt, StrictStr
 
-DEPENDENCIES = ('EFETCH_CHUNK', 'ESUMMARY_CHUNK', 'EXPORT_MAX', 'NO_BEGIN', 'NO_END', 'NcbiError', 'WINDOW', '_AUDIT_CONTEXT', '_EXPORT_BATCH_EXT', '_EXPORT_BATCH_SIZE', '_EXPORT_FORMATS', '_EXPORT_FORMAT_VERSION', '_EXPORT_JOB_SCHEMA', '_EXPORT_JOB_VERSION', '_EXPORT_RESULT_SCHEMA', '_EXPORT_STATE_DIR', '_EXPORT_STATE_SCHEMA', '_PMIDS_CSV_HEADER', '_REQ_CTR', '__version__', '_acquire_job_lock', '_add_job_warning', '_as_bool', '_audit', '_audit_clean', '_batch_file_path', '_batch_rel', '_batch_state_binding', '_batch_state_path', '_batch_state_payload', '_check_date', '_check_datetype', '_check_job_output', '_check_out_path', '_check_reldate', '_collect_window_checks', '_concat_batches_to_file', '_count_of', '_date_mid', '_efetch_xml_all', '_esearch', '_esummary_dicts', '_execute_export_job', '_expand', '_export_csv', '_export_csv_batch', '_export_job_batches', '_export_medline', '_export_medline_batch', '_export_metadata', '_export_ris', '_export_ris_batch', '_export_run', '_export_slice', '_fixed_job_path', '_freeze_export_query', '_get_async', '_ids_in_window', '_inspect_batch_file', '_job_path', '_load_batch_state', '_load_job_manifest', '_mask', '_new_job_manifest', '_next_day', '_normalize_writer_output', '_paths_same', '_pmid_binding', '_pmid_ids_sha256', '_publish_export_file', '_publish_no_clobber', '_read_pmid_file', '_record_count_change', '_record_parts', '_release_job_lock', '_remove_batch_state', '_required_windows', '_reset_batch_for_refetch', '_retrieval_check', '_revalidate_job_input', '_ris_block', '_save_batch_state', '_sha256_file', '_store_batch', '_stream_export', '_tool_version', '_utc_now', '_validate_job_manifest', '_verify_done_batch', '_verify_export', '_warn_bits', '_write_json_atomic', '_write_new_file', '_write_text', '_zero_explanation')
+DEPENDENCIES = ('EFETCH_CHUNK', 'ESUMMARY_CHUNK', 'EXPORT_MAX', 'NO_BEGIN', 'NO_END', 'NcbiError', 'WINDOW', '_AUDIT_CONTEXT', '_EXPORT_BATCH_EXT', '_EXPORT_BATCH_SIZE', '_EXPORT_FORMATS', '_EXPORT_FORMAT_VERSION', '_EXPORT_JOB_SCHEMA', '_EXPORT_JOB_VERSION', '_EXPORT_RESULT_SCHEMA', '_EXPORT_RIS_FORMAT_VERSION', '_EXPORT_STATE_DIR', '_EXPORT_STATE_SCHEMA', '_PMIDS_CSV_HEADER', '_REQ_CTR', '__version__', '_acquire_job_lock', '_add_job_warning', '_as_bool', '_audit', '_audit_clean', '_batch_file_path', '_batch_rel', '_batch_state_binding', '_batch_state_path', '_batch_state_payload', '_check_date', '_check_datetype', '_check_field', '_check_job_output', '_check_out_path', '_check_reldate', '_collect_window_checks', '_concat_batches_to_file', '_count_of', '_date_mid', '_efetch_xml_all', '_esearch', '_esummary_dicts', '_execute_export_job', '_expand', '_export_csv', '_export_csv_batch', '_export_job_batches', '_export_medline', '_export_medline_batch', '_export_metadata', '_export_ris', '_export_ris_batch', '_export_run', '_export_slice', '_fixed_job_path', '_freeze_export_query', '_get_async', '_ids_in_window', '_inspect_batch_file', '_job_path', '_load_batch_state', '_load_job_manifest', '_mask', '_new_job_manifest', '_next_day', '_normalize_writer_output', '_paths_same', '_pmid_binding', '_pmid_ids_sha256', '_publish_export_file', '_publish_no_clobber', '_read_pmid_file', '_record_count_change', '_record_parts', '_release_job_lock', '_remove_batch_state', '_required_windows', '_reset_batch_for_refetch', '_retrieval_check', '_revalidate_job_input', '_ris_block', '_save_batch_state', '_scope_evidence', '_sha256_file', '_store_batch', '_stream_export', '_tool_version', '_utc_now', '_validate_job_manifest', '_verify_done_batch', '_verify_export', '_warn_bits', '_write_json_atomic', '_write_new_file', '_write_text', '_zero_explanation')
+
+
+# 切片主题结构核对〔本项目自订判据〕：纯函数，无网络、无文件、无副作用。
+# 回显形状来源：tests/fixtures/audit_queries.json 第 200/232 行（`2019/01/01:2019/12/31[Date - Publication]`），
+# 单日窗口无冒号（`2026/11/08[Date - Publication]`，见 pubmed_query.py 的 _windows 说明）。
+# 目的：拆片时每片都额外 AND 了一段日期；核对「去掉这段切片日期后，主题布尔结构是否仍等于基线」，
+# 不能因为回显里带上了别的日期就整体判过，也不能把用户原有的日期条件一起删掉。
+_SLICE_DATE_RE = re.compile(
+    r"\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})"
+    r"(?:\s*:\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2}))?\s*\[([^\[\]]+)\]\s*")
+_SLICE_DATE_LABELS = {
+    "pdat": {"date - publication", "publication date", "date publication", "dp", "pdat"},
+    "edat": {"date - entry", "entry date", "date entry", "edat"},
+}
+
+
+def _slice_date_atom(text):
+    """把一个词项解析成日期窗口 (起, 止, 归一字段名)；不是日期窗口返回 None。"""
+    match = _SLICE_DATE_RE.fullmatch(str(text or ""))
+    if not match:
+        return None
+    g = match.groups()
+    lo = f"{int(g[0]):04d}-{int(g[1]):02d}-{int(g[2]):02d}"
+    hi = f"{int(g[3]):04d}-{int(g[4]):02d}-{int(g[5]):02d}" if g[3] else lo
+    label = " ".join(g[6].replace("_", " ").split()).casefold()
+    return lo, hi, label
+
+
+def _slice_tokens(text):
+    """把执行式切成词项/AND/OR/NOT/括号；引号短语与 [字段] 内的内容不拆。"""
+    tokens, buf = [], []
+    text = str(text or "")
+    quoted = bracketed = False
+    i = 0
+
+    def flush():
+        atom = "".join(buf).strip()
+        buf.clear()
+        if atom:
+            tokens.append(atom)
+
+    while i < len(text):
+        ch = text[i]
+        if quoted:
+            buf.append(ch)
+            if ch == '"':
+                quoted = False
+            i += 1
+            continue
+        if bracketed:
+            buf.append(ch)
+            if ch == "]":
+                bracketed = False
+            i += 1
+            continue
+        if ch == '"':
+            quoted = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "[":
+            bracketed = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "]":
+            raise ValueError("字段标签未配对")
+        if ch in "()":
+            flush()
+            tokens.append(ch)
+            i += 1
+            continue
+        if ch.isspace():
+            flush()
+            i += 1
+            continue
+        if i == 0 or text[i - 1].isspace() or text[i - 1] in "()":
+            match = re.match(r"(?:AND|OR|NOT)(?=\s|\(|\)|$)", text[i:])
+            if match:
+                flush()
+                tokens.append(match.group(0))
+                i += len(match.group(0))
+                continue
+        buf.append(ch)
+        i += 1
+    if quoted or bracketed:
+        raise ValueError("引号或字段标签未配对")
+    flush()
+    return tokens
+
+
+def _slice_parse(tokens, index=0, *, nested=False):
+    """按 PubMed 回显里大写布尔算子解析一个分组；语义不明时抛错，不猜。"""
+    parts, ops = [], []
+    expect_operand = True
+    closed = False
+    while index < len(tokens):
+        token = tokens[index]
+        if token == ")":
+            if not nested:
+                raise ValueError("多余的右括号")
+            if expect_operand:
+                raise ValueError("空括号或缺少操作数")
+            index += 1
+            closed = True
+            break
+        if token == "(":
+            if not expect_operand:
+                raise ValueError("分组与前一项之间缺少布尔算子")
+            node, index = _slice_parse(tokens, index + 1, nested=True)
+            parts.append(node)
+            expect_operand = False
+            continue
+        if token in ("AND", "OR", "NOT"):
+            if expect_operand:
+                raise ValueError("布尔算子缺少左操作数")
+            ops.append(token)
+            expect_operand = True
+            index += 1
+            continue
+        if not expect_operand:
+            raise ValueError("相邻词项之间缺少布尔算子")
+        parts.append(("leaf", token))
+        expect_operand = False
+        index += 1
+    if expect_operand:
+        raise ValueError("布尔表达式以算子结尾或缺少操作数")
+    if nested and not closed:
+        raise ValueError("括号未配对")
+    if not ops:
+        if len(parts) != 1:
+            raise ValueError("无法可靠拆分相邻词项")
+        return parts[0], index
+    if len(parts) != len(ops) + 1:
+        raise ValueError("布尔算子与操作数数量不匹配")
+    if "OR" in ops and any(op != "OR" for op in ops):
+        raise ValueError("同层混用 OR 与 AND/NOT，括号归属不明确")
+    if "NOT" in ops and "AND" in ops[ops.index("NOT"):]:
+        raise ValueError("NOT 后同层又有 AND，括号归属不明确")
+    if "NOT" in ops:
+        first = ops.index("NOT")
+        node = parts[0] if first == 0 else ("AND", tuple(parts[:first + 1]))
+        for right in parts[first + 1:]:
+            node = ("NOT", (node, right))
+        return node, index
+    return (ops[0], tuple(parts)), index
+
+
+def _slice_canon(node):
+    """归一布尔树：日期窗口统一成 ISO，AND/OR 结合律展开，纯嵌套括号消失。"""
+    kind = node[0]
+    if kind == "leaf":
+        date = _slice_date_atom(node[1])
+        return ("date",) + date if date else ("leaf", " ".join(node[1].split()))
+    children = tuple(_slice_canon(child) for child in node[1])
+    if kind in ("AND", "OR"):
+        flat = []
+        for child in children:
+            flat.extend(child[1] if child[0] == kind else (child,))
+        return kind, tuple(flat)
+    return kind, children
+
+
+def _slice_tree(text):
+    tokens = _slice_tokens(text)
+    if not tokens:
+        raise ValueError("执行式为空")
+    node, index = _slice_parse(tokens, 0)
+    if index != len(tokens):
+        raise ValueError("括号未配对")
+    return _slice_canon(node)
+
+
+def _slice_window_node(node, lo, hi, datetype):
+    labels = _SLICE_DATE_LABELS.get(datetype) or set()
+    return node[0] == "date" and node[1] == lo and node[2] == hi and node[3] in labels
+
+
+def _slice_required_date_count(tree, lo, hi, datetype):
+    """只数根 AND 链上的独立日期合取；OR/NOT 下的日期不算「每条记录都要求」。"""
+    if tree[0] != "AND":
+        return 0
+    return sum(1 for child in tree[1] if _slice_window_node(child, lo, hi, datetype))
+
+
+def _slice_remove_required_date(tree, count, lo, hi, datetype):
+    """从根 AND 链删掉不多于 count 个切片日期合取，其余原样保留。"""
+    kept, removed = [], 0
+    for child in tree[1]:
+        if removed < count and _slice_window_node(child, lo, hi, datetype):
+            removed += 1
+            continue
+        kept.append(child)
+    if not kept:
+        raise ValueError("去除切片日期后没有剩余主题条件")
+    return kept[0] if len(kept) == 1 else ("AND", tuple(kept))
+
+
+def _slice_topic_structure_reasons(baseline_translation, probe_translation, lo, hi, datetype):
+    """核对切片计数探测的主题结构；返回空列表才算通过。
+
+    只允许删掉「切片参数新加的那一段独立日期合取」。基线里原有的日期条件全部保留：
+    与切片窗口相同的日期按去重后的次数保留，位于 OR/NOT 下的日期一律不删。
+    """
+    lo, hi = str(lo), str(hi)
+    if not str(baseline_translation or "").strip():
+        return ["基线执行式缺失，无法核对切片主题布尔结构"]
+    try:
+        baseline = _slice_tree(baseline_translation)
+    except (ValueError, RecursionError) as exc:
+        return [f"基线执行式无法可靠解析（{exc}），不能据此判为通过"]
+    try:
+        probe = _slice_tree(probe_translation)
+    except (ValueError, RecursionError) as exc:
+        return [f"切片执行式无法可靠解析（{exc}），不能判为通过"]
+    original = _slice_required_date_count(baseline, lo, hi, datetype)
+    present = _slice_required_date_count(probe, lo, hi, datetype)
+    added = present - original
+    if added < 0:
+        return [f"切片执行式丢失基线原有的 {lo}→{hi} 日期条件（{original}→{present}）"]
+    if added > 1:
+        return [f"切片执行式里 {lo}→{hi} 的必需日期合取多出 {added} 个，无法唯一归属切片参数"]
+    if added == 0 and original == 0:
+        return [f"切片执行式未把 {lo}→{hi}[{datetype}] 作为必需的独立合取，无法核实切片范围"]
+    try:
+        stripped = _slice_remove_required_date(probe, added, lo, hi, datetype) if added else probe
+    except ValueError as exc:
+        return [f"去除切片日期条件失败（{exc}），无法核对主题结构"]
+    if stripped != baseline:
+        return ["切片执行式去除切片日期条件后，主题布尔结构与基线不一致"]
+    return []
 
 
 class Implementation:
@@ -33,20 +264,112 @@ class Implementation:
         return (datetime.date.fromisoformat(d) + datetime.timedelta(days=1)).isoformat()
 
 
-    async def _export_slice(self, term, lo, hi, state, *, expected_count=None):
+    def _execution_scope(self, d, *, field="", bounds=(), datetype="pdat"):
+        """核对一次实际 esearch 执行是否真的带上了冻结字段与冻结日期。
+
+        只看 NCBI 回显的执行式（_scope_evidence）与本次实际请求字段（_field_applied），
+        不改写响应里的 idlist/count；没有请求任何范围时直接返回空列表（旧调用零影响）。
+        原因列表非空即视为范围未核实：结果要报 needs_review 并出警告，不能让复核当成通过。
+        """
+        if not field and not bounds:
+            return []
+        term = d.get("_term") or ""
+        qt = d.get("querytranslation") or ""
+        reasons = []
+        if field:
+            found, _ = self.dependencies._scope_evidence(term, qt, field, None, 0, datetype)
+            reasons.extend(found)
+        for bound in bounds or ():
+            found, _ = self.dependencies._scope_evidence(term, qt, "", bound, 0, datetype)
+            reasons.extend(r for r in found if r not in reasons)
+        applied = str(d.get("_field_applied") or (d.get("request_params") or {}).get("field") or "").strip()
+        if field and applied:
+            try:
+                applied = self.dependencies._check_field(applied)
+            except self.dependencies.NcbiError:
+                pass
+            if applied != field:
+                reasons.append(f"实际下发字段 {applied!r} 与冻结字段 {field!r} 不一致")
+        return reasons
+
+
+    def _bind_page_scope(self, check, response, state, *, field, bounds, datetype):
+        """逐页合并分页与冻结范围核对；整份交付的状态取自这些实际的页记录。"""
+        reasons = list(check.get('review_reasons') or ())
+        for reason in self._execution_scope(response, field=field, bounds=bounds, datetype=datetype):
+            if reason not in reasons:
+                reasons.append(reason)
+        if reasons or field or bounds:
+            check['review_reasons'] = reasons
+            check['query_needs_review'] = bool(reasons or check.get('topic_reasons'))
+        if reasons:
+            state.setdefault('scope_unverified', []).append({'stage': check['stage'], 'reasons': reasons})
+
+
+    def _checked_page(self, d, stage, state, *, field="", bounds=(), datetype="pdat"):
+        """计数/取号响应的检查记录：保留原有计数与警告；有范围请求时再带核对结论。"""
+        check = self.dependencies._retrieval_check(d, stage)
+        self._bind_page_scope(check, d, state, field=field, bounds=bounds, datetype=datetype)
+        return check
+
+
+    @staticmethod
+    def _compare_window_execution(state, probe, checks):
+        """Compare only responses to the same query and date slice, including count probes."""
+        reference = probe['querytranslation']
+        for check in checks:
+            actual = check['querytranslation']
+            if reference and reference == actual:
+                continue
+            reason = '执行式与同一窗口的计数探测不同' if reference and actual else '同一窗口缺少可比对的执行式'
+            check['warnings'].append(f"⚠️ {check['stage']} {reason}（对照：{probe['stage']}）；已保留实取名单，请复核。")
+            state['window_execution_unverified'] = True
+
+    def _collect_export_window(self, state, probe, first, actual_count, context, *, field, bounds, datetype):
+        start = len(state['checks'])
+        self.dependencies._collect_window_checks(state, first, probe['count'], actual_count, context)
+        pages = state['checks'][start:]
+        for index, check in enumerate(pages):
+            self._bind_page_scope(check, first if not index else check, state,
+                                  field=field, bounds=bounds, datetype=datetype)
+        self._compare_window_execution(state, probe, pages)
+
+
+    async def _export_slice(self, term, lo, hi, state, *, expected_count=None,
+                            field="", bounds=(), datetype="pdat"):
         """按发表日期递归二分到 WINDOW 内；返回 (ids, 片数, 切片计数和)。
-        每次计数探测（含空片、内部节点）和取号分页都保留检查记录。"""
+        每次计数探测（含空片、内部节点）和取号分页都保留检查记录。
+        field/bounds 是冻结在 term 里的主题字段与绝对日期；每个请求重发字段，
+        空片（count=0）和只计数的探测也要核对实际执行式，不能因为没取号就跳过。"""
         context = f"export 切片 {lo}→{hi}："
-        d = await self.dependencies._esearch(term, retmax=0, mindate=lo, maxdate=hi)  # 本项目自订：只探测计数
+        d = await self.dependencies._esearch(term, retmax=0, field=field, mindate=lo, maxdate=hi, datetype=datetype)  # 本项目自订：只探测计数
         c = self.dependencies._count_of(d)
-        state.setdefault("checks", []).append(self.dependencies._retrieval_check(d, context + "计数探测"))
+        slice_bounds = tuple(dict.fromkeys((*bounds, (lo, hi))))
+        probe = self._checked_page(d, context + "计数探测", state, field=field,
+                                   bounds=slice_bounds, datetype=datetype)
+        state.setdefault("checks", []).append(probe)
+        baseline_qt = state.get("baseline_translation")
+        if baseline_qt is not None:
+            # 每片（根、内部、空片、叶片）的计数探测都比一次主题结构；
+            # 不通过只降级完整性并保留实取名单，不改写 idlist/count。
+            topic_reasons = _slice_topic_structure_reasons(
+                baseline_qt, probe.get("querytranslation") or "", lo, hi, datetype)
+            if topic_reasons:
+                probe["query_needs_review"] = True
+                probe["topic_reasons"] = list(topic_reasons)
+                state["slice_topic_unverified"] = True
+                state.setdefault("slice_topic_unverified_entries", []).append(
+                    {"stage": probe.get("stage") or context + "计数探测",
+                     "reasons": list(topic_reasons)})
         if expected_count is not None:
             self.dependencies._record_count_change(state, expected_count, c, context + "起始总数→根切片：")
         if c == 0:  # 本项目自订：空片无需取号
-            return [], 0, 0  # 本项目自订：空片返回计数口径
+            return [], 0, 0  # 本项目自订：空片返回计数口径；上面的计数探测已核对范围
         if c <= self.dependencies.WINDOW:
-            ids, c2, first, drift = await self.dependencies._ids_in_window(term, mindate=lo, maxdate=hi, context=context)
-            self.dependencies._collect_window_checks(state, first, c, c2, context)
+            ids, c2, first, drift = await self.dependencies._ids_in_window(
+                term, mindate=lo, maxdate=hi, context=context, field=field, datetype=datetype)
+            self._collect_export_window(state, probe, first, c2, context,
+                                        field=field, bounds=slice_bounds, datetype=datetype)
             if drift:
                 state.setdefault("drift", []).append(drift)
             return ids, 1, c  # 本项目自订：一个非空叶片，保留探测时计数
@@ -54,8 +377,10 @@ class Implementation:
         if lo >= hi or mid < lo or mid >= hi:
             raise self.dependencies.NcbiError(f"export：区间 {lo}→{hi} 仍有 {c} 条超过 {self.dependencies.WINDOW} 窗口且无法再二分；"
                             f"请缩小查询（加字段/日期限定）后重试。")
-        lids, ln, lc = await self.dependencies._export_slice(term, lo, mid, state)
-        rids, rn, rc = await self.dependencies._export_slice(term, self.dependencies._next_day(mid), hi, state)
+        lids, ln, lc = await self.dependencies._export_slice(
+            term, lo, mid, state, field=field, bounds=bounds, datetype=datetype)
+        rids, rn, rc = await self.dependencies._export_slice(
+            term, self.dependencies._next_day(mid), hi, state, field=field, bounds=bounds, datetype=datetype)
         if lc + rc != c:
             state.setdefault("drift", []).append(
                 f"⚠️ {context}子片计数和 {lc + rc} ≠ 父片计数 {c}；"
@@ -223,20 +548,29 @@ class Implementation:
             raise self.dependencies.NcbiError(f"无法安全发布导出文件（{p}）：{e}；请使用支持原子不覆盖发布的本地文件系统。") from e
 
 
-    async def _freeze_export_query(self, term, datetype, mindate, maxdate, reldate):
-        """固定用户日期条件；内部拆片不得覆盖此条件。相对区间只认独立 NCBI 回显。"""
+    async def _freeze_export_query(self, term, datetype, mindate, maxdate, reldate, field="", *, scope=None):
+        """固定用户日期条件；内部拆片不得覆盖此条件。相对区间只认独立 NCBI 回显。
+
+        field 只做白名单预检（主题字段按 search 的同一口径下发，不写进 query 文本）；
+        scope 若给出，回填冻结后的规范字段与绝对日期窗口，供每次执行逐条核对。
+        相对日期探针保持独立：主题 field 不作用于 `all[sb]` 探针。
+        """
         self.dependencies._check_datetype(datetype)
+        field = self.dependencies._check_field(field)
         if not isinstance(term, str) or not term.strip():
             raise self.dependencies.NcbiError("term 不能为空")
         lo, hi = self.dependencies._check_date(mindate, "mindate"), self.dependencies._check_date(maxdate, "maxdate")
         rel = self.dependencies._check_reldate(reldate)
         query = term
+        bounds = []
         if lo or hi:
             lo, hi = self.dependencies._expand(lo or self.dependencies.NO_BEGIN), self.dependencies._expand(hi or self.dependencies.NO_END, True)
             if lo > hi:
                 raise self.dependencies.NcbiError("日期区间倒挂：mindate 晚于 maxdate")
+            bounds.append((lo, hi))
             query = f'({query}) AND ({lo}:{hi}[{datetype}])'
         if rel:
+            # 独立探针：不带主题 field（把 field 套到 all[sb] 上会让回显窗口也受字段限制）。
             probe = await self.dependencies._esearch("all[sb]", retmax=0, reldate=rel, datetype=datetype)
             windows = list(dict.fromkeys(self.dependencies._required_windows(probe)))
             label = "发表日期[pdat]" if datetype == "pdat" else "入库日期[edat]"
@@ -247,7 +581,11 @@ class Implementation:
             self.dependencies._check_date(b, "NCBI maxdate")
             if a > b:
                 raise self.dependencies.NcbiError("NCBI 相对日期回显区间倒挂；请改用显式区间")
+            bounds.append((a, b))
             query = f'({query}) AND ({a}:{b}[{datetype}])'
+        if scope is not None:
+            scope.clear()
+            scope.update(field=field, bounds=tuple(bounds), datetype=datetype)
         return query
 
 
@@ -332,12 +670,12 @@ class Implementation:
     async def export(self, term: str, path: str, format: Literal["pmids", "csv", "medline", "ris"] = "pmids",
                      as_json: bool | str = False, metadata: bool | str = False,
                      datetype: Literal["pdat", "edat"] = "pdat", mindate: str = "", maxdate: str = "",
-                     reldate: StrictInt | StrictStr = 0) -> str:
+                     reldate: StrictInt | StrictStr = 0, field: str = "") -> str:
         """取全某查询的 PMID 并写文件；超 9999 窗口自动按发表日期二分切片。
         format: pmids / csv（核心题录，不含摘要）/ medline（.nbib）/ ris（全作者、摘要、文章号，供文献管理软件导入）。
         只回摘要（总数/片数/去重/路径/sha256），不回记录本身。path 显式给出且不得已存在（不覆盖）。
         切片计数与总数核对，不一致如实报告；检索期间数据库可能更新，结果以导出时点为准。
-        自订上限 10 万条；导入兼容性须实测。metadata 开启伴随说明；日期类型 pdat/edat，后者超窗拒绝。
+        自订上限 10 万条；导入兼容性须实测。metadata 开启伴随说明；日期类型 pdat/edat，后者超窗拒绝。field 同 search。
         """
         if format not in ("pmids", "csv", "medline", "ris"):
             raise self.dependencies.NcbiError("format 只支持 pmids / csv / medline / ris")
@@ -352,23 +690,30 @@ class Implementation:
             raise self.dependencies.NcbiError(f"文件已存在：{p}。本工具不覆盖已有文件，请换个路径或先移走旧文件。")
         meta_enabled = self.dependencies._as_bool(metadata, "metadata")
         self.dependencies._check_datetype(datetype)
+        field = self.dependencies._check_field(field)  # 预检：拼错/无效字段在联网前就报错
         if meta_enabled:
             self.dependencies._check_out_path(p + ".meta.json")
         ctr = []
         token = self.dependencies._REQ_CTR.set(ctr)
         try:
-            query = await self.dependencies._freeze_export_query(term, datetype, mindate, maxdate, reldate)
+            scope = {}
+            query = await self.dependencies._freeze_export_query(
+                term, datetype, mindate, maxdate, reldate, field, scope=scope)
             return await self.dependencies._export_run(term, p, format, json_mode, ctr, query=query,
-                                     metadata=meta_enabled, datetype=datetype)
+                                     metadata=meta_enabled, datetype=datetype, field=scope.get("field", field),
+                                     bounds=scope.get("bounds", ()))
         finally:
             self.dependencies._REQ_CTR.reset(token)
 
 
-    async def _export_run(self, term, p, format, json_mode, ctr, *, query=None, metadata=False, datetype="pdat"):
-        """执行导出；请求计数上下文由公开入口管理，成功、异常与取消均恢复。"""
+    async def _export_run(self, term, p, format, json_mode, ctr, *, query=None, metadata=False, datetype="pdat",
+                          field="", bounds=()):
+        """执行导出；请求计数上下文由公开入口管理，成功、异常与取消均恢复。
+        field/bounds 只用于逐次核对执行式，不改写返回的 idlist/检查记录。"""
         query = term if query is None else query
+        bounds = tuple(bounds or ())
         t0 = datetime.datetime.now().isoformat(timespec="seconds")
-        d0 = await self.dependencies._esearch(query, retmax=0)
+        d0 = await self.dependencies._esearch(query, retmax=0, field=field)
         total = self.dependencies._count_of(d0)
         qt = (d0.get("querytranslation") or "").strip()
         warn = []  # 全部响应提示在写出结果前统一汇总，保留阶段和重复出现的证据。
@@ -377,21 +722,30 @@ class Implementation:
                             f"请缩小查询（加字段/日期限定）后重试。")
         if datetype == "edat" and total > self.dependencies.WINDOW:
             raise self.dependencies.NcbiError("edat 超窗拆片尚未经联网集合验证；请给定更小入库日期区间，或明确选择 pdat 拆片；未给日期时 edat 不用于筛选，仍不自动改换拆片类型")
-        state = {"drift": [], "checks": [self.dependencies._retrieval_check(d0, "export 起始计数：")], "count_changed": False}
+        state = {"drift": [], "checks": [], "count_changed": False, "baseline_translation": qt}
+        baseline = self._checked_page(d0, "export 起始计数：", state, field=field, bounds=bounds, datetype=datetype)
+        state["checks"].append(baseline)
         if total <= self.dependencies.WINDOW:
-            ids, cnt, first, drift = await self.dependencies._ids_in_window(query, context="export：")
+            ids, cnt, first, drift = await self.dependencies._ids_in_window(
+                query, context="export：", field=field, datetype=datetype)
             n_slices, slice_sum = 1, cnt  # 原文/来源：现有单窗口导出的片数口径
-            self.dependencies._collect_window_checks(state, first, total, cnt, "export：")
+            self._collect_export_window(state, baseline, first, cnt, "export：",
+                                        field=field, bounds=bounds, datetype=datetype)
             if drift:
                 state["drift"].append(drift)
         else:
             ids, n_slices, slice_sum = await self.dependencies._export_slice(
-                query, self.dependencies.NO_BEGIN, self.dependencies.NO_END, state, expected_count=total)
+                query, self.dependencies.NO_BEGIN, self.dependencies.NO_END, state, expected_count=total,
+                field=field, bounds=bounds, datetype=datetype)
         raw_n = len(ids)
         ids = list(dict.fromkeys(ids))
-        d_end = await self.dependencies._esearch(query, retmax=0)
+        d_end = await self.dependencies._esearch(query, retmax=0, field=field)
         total_end = self.dependencies._count_of(d_end)
-        state["checks"].append(self.dependencies._retrieval_check(d_end, "export 结束计数："))
+        end = self._checked_page(d_end, "export 结束计数：", state, field=field, bounds=bounds, datetype=datetype)
+        state["checks"].append(end)
+        self._compare_window_execution(state, baseline, (end,))
+        scope_unverified = state.get("scope_unverified") or ()
+        topic_unverified = state.get("slice_topic_unverified_entries") or ()
         t1 = datetime.datetime.now().isoformat(timespec="seconds")
         mismatch = []
         if slice_sum != total:
@@ -461,10 +815,18 @@ class Implementation:
             integrity_issues.append("count_changed")
         if state["drift"]:
             integrity_issues.append("pagination_drift")
+        if state.get('window_execution_unverified'):
+            integrity_issues.append('window_execution_unverified')
+        if topic_unverified:
+            integrity_issues.append("slice_topic_unverified")
         if slice_sum != total or raw_n != len(ids):
             integrity_issues.append("slice_overlap_or_count_mismatch")
+        if scope_unverified:
+            integrity_issues.append("scope_unverified")
         integrity_status = ("missing_records" if missing_pmids else
                             "needs_review" if integrity_issues else "no_discrepancy_detected")
+        scope_status = ("unverified" if scope_unverified else
+                        "verified" if (field or bounds) else "not_requested")
         result_details = {"written_records": written_records, "missing_pmids": missing_pmids,
                           "integrity_status": integrity_status, "integrity_issues": integrity_issues}
         if total == 0 and not ids:
@@ -473,10 +835,24 @@ class Implementation:
             mismatch.append("⚠️ 命中 0 条，" + empty_note + self.dependencies._zero_explanation(d0, 0))
         warn += [text for check in state["checks"] for text in check["warnings"]]
         warn += mismatch + state["drift"] + ([coverage] if coverage else [])
+        scope_warnings = []
+        for entry in scope_unverified:
+            detail = "；".join(entry.get("reasons") or ()) or "执行式缺失或无法解析"
+            scope_warnings.append(f"⚠️ {entry.get('stage') or 'export'}字段/日期范围未核实：{detail}")
+        warn += list(dict.fromkeys(scope_warnings))
+        topic_warnings = []
+        for entry in topic_unverified:
+            detail = "；".join(entry.get("reasons") or ()) or "执行式缺失或无法解析"
+            topic_warnings.append(f"⚠️ {entry.get('stage') or 'export 切片'}主题结构与基线不一致或无法核实："
+                                  f"{detail}；已保留实取名单，请复核。")
+        warn += list(dict.fromkeys(topic_warnings))
         if datetype == "edat" and query == term:
-            warn.append("⚠️ 未给日期区间或相对天数：datetype=edat 未用于日期筛选")
+            warn.append("日期条件：未给日期区间或相对天数：datetype=edat 未用于日期筛选")
         record = dict(term=term, effective_query=query, datetype=datetype,
                                 datetype_applied=query != term, path=p, format=format,
+                                field=field, field_applied=field or "",
+                                frozen_bounds=[f"{a}:{b}" for a, b in bounds],
+                                scope_status=scope_status,
                                 count_start=total, count_end=total_end, slices=n_slices, fetched=raw_n,
                                 unique=len(ids), sha256=sha, started=t0, ended=t1, requests=nreq,
                                 querytranslation=qt, warnings=warn, retrieval_checks=state["checks"], **result_details)
@@ -596,6 +972,18 @@ class Implementation:
         return doc
 
 
+    def _format_version(self, fmt):
+        """按格式返回当前格式化器版本。
+
+        RIS 的摘要正文口径变过（含 OtherAbstract、无正文标签不再计），旧 RIS 检查点
+        的批文件与当前写出的摘要格式不同；必须按格式单独提升版本，不能把本来兼容的
+        csv/medline/pmids 检查点一并失效。
+        """
+        if fmt == "ris":
+            return self.dependencies._EXPORT_RIS_FORMAT_VERSION
+        return self.dependencies._EXPORT_FORMAT_VERSION
+
+
     def _validate_job_manifest(self, manifest, jobdir, *, expected_format=None, expected_out=None,
                                require_metadata_phase=False):
         import os
@@ -614,13 +1002,16 @@ class Implementation:
         if not isinstance(fm, dict) or fm.get("format") not in self.dependencies._EXPORT_FORMATS:
             fail("formatter.format 缺失或不是支持格式")
         fmt = fm.get("format")
-        if fm.get("format_version") != self.dependencies._EXPORT_FORMAT_VERSION:
-            fail(f"格式化器版本 {fm.get('format_version')!r} 与本工具支持的 {self.dependencies._EXPORT_FORMAT_VERSION} 不兼容")
+        expected_version = self._format_version(fmt)
+        if fm.get("format_version") != expected_version:
+            fail(f"格式化器版本 {fm.get('format_version')!r} 与本工具支持的 {fmt} 版本 "
+                 f"{expected_version} 不兼容；旧 {fmt.upper()} 检查点的内容格式与当前不同，"
+                 "不能续跑混用，请重新建作业")
         if manifest.get("format") not in (None, fmt):
             fail(f"顶层 format={manifest.get('format')!r} 与 formatter.format={fmt!r} 不一致")
-        if manifest.get("format_version") not in (None, self.dependencies._EXPORT_FORMAT_VERSION):
+        if manifest.get("format_version") not in (None, expected_version):
             fail(f"顶层 format_version={manifest.get('format_version')!r} 与本工具支持的 "
-                 f"{self.dependencies._EXPORT_FORMAT_VERSION} 不兼容")
+                 f"{fmt} 版本 {expected_version} 不兼容")
         if expected_format is not None and fmt != expected_format:
             fail(f"作业格式是 {fmt!r}，与请求的 {expected_format!r} 不一致")
         if require_metadata_phase and manifest.get("phase") != "metadata":
@@ -706,13 +1097,14 @@ class Implementation:
         ids = list(parsed["ids"])
         chunks = self.dependencies._export_job_batches(ids, batch_size)
         ext = self.dependencies._EXPORT_BATCH_EXT[fmt]
+        format_version = self._format_version(fmt)
         return {
             "schema": self.dependencies._EXPORT_JOB_SCHEMA,
             "job_version": self.dependencies._EXPORT_JOB_VERSION,
             "tool_version": self.dependencies.__version__,
             "format": fmt,
-            "format_version": self.dependencies._EXPORT_FORMAT_VERSION,
-            "formatter": {"format": fmt, "format_version": self.dependencies._EXPORT_FORMAT_VERSION},
+            "format_version": format_version,
+            "formatter": {"format": fmt, "format_version": format_version},
             "created_at": self.dependencies._utc_now(),
             "updated_at": self.dependencies._utc_now(),
             "phase": "metadata",
