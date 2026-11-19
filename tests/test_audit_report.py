@@ -168,6 +168,18 @@ class AuditReport(unittest.TestCase):
             m._audit_report([source, changed], str(self.dir / "bad.md"), skip_invalid=True)
         self.assertFalse((self.dir / "bad.md").exists())
 
+    def test_invalid_batch_translations_do_not_drop_other_rows(self):
+        valid = {'event': 'check_recall', 'batch_translations': True, 'querytranslations': ['', 'fixture']}
+        for invalid in (None, 7, {'x': 'fixture'}, ['fixture', None]):  # 本项目自订：离线坏字段夹具
+            with self.subTest(invalid=invalid):
+                source = self.fixture('translations.jsonl', [valid, dict(valid, querytranslations=invalid)])
+                with self.assertRaisesRegex(m.NcbiError, '分批执行式'):
+                    m._audit_report([source], str(self.dir / 'strict.csv'))
+                out = self.dir / ('partial-' + type(invalid).__name__ + '.csv')
+                result = m._audit_report([source], str(out), skip_invalid=True)
+                self.assertEqual((result['records'], result['skipped']), (1, 1))  # 本项目自订：各一行
+                self.assertIn('INVALID_INPUT', out.read_text(encoding='utf-8-sig'))
+
     def test_invalid_lines_require_explicit_partial_report(self):
         path = self.dir / "bad.jsonl"
         path.write_bytes(b'{"event":"count"}\n{bad}\n\xff\n{"event":"count","count":NaN}\n')

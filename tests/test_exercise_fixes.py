@@ -159,7 +159,8 @@ class CitationAndAudit(unittest.TestCase):
         with patch.object(m, "_pmids_exist", AsyncMock(return_value={"1": "present"})), patch.object(m, "SNOW_SINGLE_CAP", 2), patch.object(m, "_get_async", fake):
             for direction in ("refs", "citedin"):
                 text = run(m.links, "1", to=direction)
-                self.assertIn("pubmed_pubmed_" + direction + "=10,11…共 3", text)
+                label = '施引文献' if direction == 'citedin' else '参考文献'
+                self.assertIn(f'{label} 3 篇；目标 PMID：10,11…', text)  # 本项目自订：截断只限展示
 
     def test_citation_missing_or_wrong_linkset_is_failure(self):
         for sets in ([], [{"ids": ["9"]}], [{"ids": ["1", "9"]}]):

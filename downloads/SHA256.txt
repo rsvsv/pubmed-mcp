@@ -1,1 +1,1 @@
-ba7a2976c7396fc753ac5d5d044b39457fdae4370d26f727aac028e85ed59b59  pubmed-mcp-portable.zip  [measured: build tool output]
+6413dcde6789b57e5836574cc40c171f7be3b9e9759ff7a10c53ca0b21dac6d9  pubmed-mcp-portable.zip  [measured: build tool output]

@@ -5,6 +5,7 @@ Numeric values in JSON artifacts are tool observations unless marked project pol
 """
 import argparse
 import csv
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -23,7 +24,8 @@ spec.loader.exec_module(m)
 services = m.review_services()
 
 SCHEMA = "pubmed.review.v1"  # 本项目自订：交付协议版本
-WARNING_CONTRACT = "pubmed.review.warnings.v2"  # 本项目自订：日期/范围说明与待解决警告的分界口径
+PREVIOUS_WARNING_CONTRACT = 'pubmed.review.warnings.v2'  # 本项目自订：核验旧版交付时保留原分类
+WARNING_CONTRACT = 'pubmed.review.warnings.v3'  # 本项目自订：已知集请求故障属于执行问题
 BATCH_SIZE = 50  # 本项目自订：单批题录规模，沿用 efetch 分批规模
 RECALL_BINDING = "plan_term_with_requested_window"  # 本项目自订：新回执必须绑定原式与外置日期参数
 EXPORT_SCOPE_FIELDS = ("field", "frozen_bounds", "scope_status")  # 本项目自订：检索回执新增的范围字段
@@ -45,6 +47,20 @@ PLAN_FIELDS = {"question", "eligibility", "term", "strategy_status", "strategy_r
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+@contextmanager
+def csv_rows(path):
+    # Dedicated review process: a legal field cannot be longer than its UTF-8 file.
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        previous = csv.field_size_limit()
+        try:
+            try:
+                csv.field_size_limit(max(previous, os.fstat(stream.fileno()).st_size))
+            except OverflowError:  # older Windows Python accepts only a C long
+                csv.field_size_limit(2**31 - 1)  # 本项目口径：旧版 Windows C long 可表示上界
+            yield csv.DictReader(stream)
+        finally:
+            csv.field_size_limit(previous)
 
 
 def write_json(path, data):
@@ -379,6 +395,20 @@ def render_screening(root, ids):
     return {"missing_pmids": missing, "no_abstract_pmids": no_abstract, "evidence": EVIDENCE}
 
 
+def failed_recall_checks(result):
+    return [c for c in result.get('checks', []) if 'error' in c]
+
+
+def plan_dates(plan):
+    return {'mindate': plan.get('mindate', ''), 'maxdate': plan.get('maxdate', ''),
+            'datetype': plan.get('datetype', 'pdat')}
+
+
+def missing_from_export(known, ids):
+    exported = set(ids)
+    return [p for p in known if p not in exported]
+
+
 def assess(plan, export, recalls, batch_results, screening, *, warning_contract=WARNING_CONTRACT):
     issues = []
     legacy = warning_contract is None  # 旧交付没有口径声明；按当时的分类复现其状态。
@@ -401,9 +431,21 @@ def assess(plan, export, recalls, batch_results, screening, *, warning_contract=
     if not plan.get("known_relevant"):
         issue("known_set_missing", "methodology", "未提供独立来源的已知文献集，尚未验证已知文献找回")
     for result in recalls:
-        if result.get("missing") or result.get("unknown") or result.get("term_ignored") or result.get("term_degraded"):
+        failed = failed_recall_checks(result) if warning_contract == WARNING_CONTRACT else []
+        if failed:
+            issue('recall_execution', 'execution', '已知集交集请求失败或回包无效；恢复时只重试这些批次：'
+                  + '；'.join(' '.join(c['pmids']) for c in failed))
+        failed_ids = {p for c in failed for p in c['pmids']}
+        uncertain = set(result.get('unknown', [])) - failed_ids
+        if result.get('missing') or uncertain or result.get('term_ignored') or result.get('term_degraded'):
             issue("recall_unresolved", "methodology", "已知集有未找回或无法判定项，见 recall 目录；未知不是漏检")
-        if actionable_warnings(result.get("warnings", []), legacy=legacy):
+        warnings = result.get('warnings', [])
+        if failed:
+            execution_notes = {w for c in failed for w in c['warnings']}
+            warnings = [w for w in warnings if w not in execution_notes]
+            if not uncertain:
+                warnings = [w for w in warnings if not w.startswith('⚠️ 范围或执行式无法核实的批次列为 unknown')]
+        if actionable_warnings(warnings, legacy=legacy):
             issue("recall_warnings", "methodology", "已知集检验包含警告，见 recall 目录")
     for key in ("other_databases", "citation_tracking"):
         if not plan.get(key, "").strip() or "待确认" in plan.get(key, ""):
@@ -473,8 +515,8 @@ def verify_report_rows(root, report, rows):
         path = Path(folder) / "expected.csv"
         services.audit_report([str(p) for p in sorted((root / "audit").glob("*.jsonl"))],
                         str(path), skip_invalid=True)
-        with path.open(encoding="utf-8-sig", newline="") as stream:
-            expected = list(csv.DictReader(stream))
+        with csv_rows(path) as reader:
+            expected = list(reader)
     try:
         matches = [normalized(row) for row in rows] == [normalized(row) for row in expected]
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -483,13 +525,41 @@ def verify_report_rows(root, report, rows):
         raise ValueError("审计报告展示列与原始日志不一致")
 
 
+def verify_retry_event(index, original_receipt, old, new, retried):
+    if new.get('audit_status') != 'written':
+        return  # assess keeps an unwritten event as an execution gap.
+    event = json.loads(index.report_records['event', new['audit_event_id']])
+    reused = [c['pmids'] for c in old['checks'] if 'error' not in c]
+    expected = {'event': 'retry_recall', 'outcome': 'success', 'checks': new['checks'],
+                'term': new['term'], 'scope': new['scope'], 'reused_batches': reused,
+                'pmids': [p for c in old['checks'] for p in c['pmids']],
+                'found': len(new['found']), 'missing': len(new['missing']),
+                'unknown': new['unknown'], 'retrieved': new['retrieved']}
+    if 'previous_sha256' in event or 'retried_batches' in event:
+        expected.update(previous_sha256=digest(original_receipt), retried_batches=retried)
+    elif event.get('input_params', {}).get('previous') != {**old, 'evidence': EVIDENCE}:
+        raise ValueError('重试审计事件未绑定原已知集回执')
+    if any(event.get(k) != v for k, v in expected.items()):
+        raise ValueError('重试审计事件与已知集回执不一致')
+    requests = [req['params'] for req in event['logical_requests'] if req['endpoint'] == 'esearch.fcgi']
+    for batch, params in zip(retried, requests):
+        term = '(' + new['term'] + ') AND (' + ' OR '.join(p + '[uid]' for p in batch) + ')'
+        if params.get('db') != 'pubmed' or params.get('term') != term or params.get('retmax') != len(batch):
+            raise ValueError('重试审计中的实际请求与失败批次不一致')
+        scope = new['scope']
+        if any(params.get(k, '') != scope[k] for k in ('field', 'mindate', 'maxdate')) or params.get('reldate') or (scope['mindate'] and params.get('datetype') != scope['datetype']):
+            raise ValueError('重试审计中的实际请求日期与原范围不一致')
+    if len(requests) != len(retried):
+        raise ValueError('重试审计中的实际请求数量与失败批次不一致')
+
+
 def verify(root):
     root = Path(root).resolve()
     delivery = read_json(root / "delivery.json")
     if delivery.get("schema") != SCHEMA:
         raise ValueError("交付协议不支持")
     warning_contract = delivery.get("warning_contract")
-    if warning_contract is not None and warning_contract != WARNING_CONTRACT:
+    if warning_contract not in (None, PREVIOUS_WARNING_CONTRACT, WARNING_CONTRACT):
         raise ValueError("交付警告口径版本不受支持：" + str(warning_contract))
     required = {"plan.json", "state.json", "all-pmids.txt", "all-pmids.txt.meta.json",
                 "search-result.json", "screening.csv", "references.ris", "search-log.csv", "HANDOFF.md"}
@@ -595,8 +665,7 @@ def verify(root):
     known = [item["pmid"] for item in plan.get("known_relevant", [])]
     # 新回执必须绑定方案原式与请求的绝对日期窗口；导出阶段固定后的 effective_query
     # 仍由上面的 search 回执单独核验。
-    expected_scope = {"field": "", "mindate": plan.get("mindate", ""), "maxdate": plan.get("maxdate", ""),
-                      "reldate": 0, "datetype": plan.get("datetype", "pdat")}
+    expected_scope = {'field': '', 'reldate': 0, **plan_dates(plan)}  # 本项目口径：综述只外加绝对日期
     legacy_scope = {"field": "", "mindate": "", "maxdate": "", "reldate": 0, "datetype": "pdat"}
     recalls = []
     for start in range(0, len(known), services.recall_limit):
@@ -611,10 +680,21 @@ def verify(root):
         if 'checks' in result:
             checks = result['checks']
             raw = {p for c in checks for p in c['returned']}
+            if warning_contract == WARNING_CONTRACT and result.get('receipt_binding') == RECALL_BINDING:
+                translations = [c['querytranslation'] for c in checks]
+                if not translations or result.get('querytranslations') != translations or result.get('querytranslation') != translations[0]:  # 本项目口径：首批执行式单列
+                    raise ValueError('已知集汇总执行式与逐批回执不一致：' + name)
+                for c in checks:
+                    if 'observed_pmids' in c or c.get('error_kind') == 'invalid_intersection':
+                        observed = c.get('observed_pmids')
+                        if not isinstance(observed, list) or c['returned'] != list(dict.fromkeys(p for p in observed if p in c['pmids'])):
+                            raise ValueError('已知集异常回包与本批实取名单不一致：' + name)
             uncertain = {p for c in checks if c['status'] != 'checked' for p in c['pmids']}
             if ([p for c in checks for p in c['pmids']] != expected_ids
                     or any(c['status'] not in ('checked', 'unreliable_query') or not set(c['returned']).issubset(c['pmids'])
-                           or len(set(c['returned'])) != len(c['returned']) for c in checks)
+                           or len(set(c['returned'])) != len(c['returned'])
+                           or ('error' in c and c['status'] == 'checked')
+                           for c in checks)
                     or result.get('retrieved') != [p for p in expected_ids if p in raw]
                     or found != [p for p in expected_ids if p in raw - uncertain]
                     or unknown != [p for p in expected_ids if p in uncertain]):
@@ -634,9 +714,10 @@ def verify(root):
                 raise ValueError("已知集回执未绑定方案原式或请求日期窗口：" + name)
         else:
             raise ValueError("已知集回执的绑定说明不受支持：" + name)
+        found_ids, not_missing = set(found), set(found + unknown)
         if (result.get("gold_count") != len(expected_ids)
-                or found != [p for p in expected_ids if p in set(found)]
-                or absent != [p for p in expected_ids if p not in set(found + unknown)]):
+                or found != [p for p in expected_ids if p in found_ids]
+                or absent != [p for p in expected_ids if p not in not_missing]):
             raise ValueError("已知集回执与方案批次不一致：" + name)
         recalls.append(result)
     records, batches = {}, []
@@ -650,11 +731,29 @@ def verify(root):
     original = repair_origin(root, state)
     if original is not None:
         verify(original)
+        old_stages = read_json(original / 'state.json')['stages']
+        if stages['search'] != old_stages['search']:
+            raise ValueError('修复不能替换原检索阶段或其绑定文件')
+        for name, entry in stages.items():
+            if not name.startswith('recall-'):
+                continue
+            old, new = old_stages[name]['result'], entry['result']
+            retried = [c['pmids'] for c in failed_recall_checks(old)]
+            if not retried:
+                if old != new:
+                    raise ValueError('修复不能替换已完成的已知集回执')
+                continue
+            before, after = old['checks'], new['checks']
+            missing_by_id = {item['pmid']: item for item in new['missing']}
+            if ([c['pmids'] for c in before] != [c['pmids'] for c in after]
+                    or any(a != b for a, b in zip(before, after) if 'error' not in a)
+                    or any(missing_by_id.get(item['pmid']) != item for item in old['missing'])):
+                raise ValueError('修复不能替换原先非故障批次的已知集证据')
+            verify_retry_event(index, original / 'recall' / (name + '.json'), old, new, retried)
         for _, data in record_batches(original, ids):
             if any(records.get(rec["pmid"]) != rec for rec in data["records"]):
                 raise ValueError("补取不能替换原先已取得的题录")
-    with (root / "screening.csv").open(encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream)
+    with csv_rows(root / 'screening.csv') as reader:
         rows = list(reader)
         if reader.fieldnames != list(COLUMNS):
             raise ValueError("筛选表列不完整")
@@ -681,12 +780,11 @@ def verify(root):
     if metrics != delivery["metrics"]:
         raise ValueError("交付汇总与原始材料不一致")
     screened = {"missing_pmids": missing, "no_abstract_pmids": no_ab, "evidence": EVIDENCE,
-                "known_missing_from_export": [p for p in known if p not in set(ids)]}
+                "known_missing_from_export": missing_from_export(known, ids)}
     if stages["screening"]["result"] != screened:
         raise ValueError("筛选回执与实际题录或已知集不一致")
     report = stages["report"]["result"]
-    with (root / "search-log.csv").open(encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream)
+    with csv_rows(root / 'search-log.csv') as reader:
         report_rows = list(reader)
         if reader.fieldnames != list(services.report_columns):
             raise ValueError("审计报告列不完整")
@@ -735,13 +833,18 @@ def copy_verified(source, target, expected_sha):
             pass
 
 
-def prepare_repair(source):
+def prepare_repair(source, *, allow_complete=False):
     source = Path(source).resolve()
     source_lock = acquire_lock(source)
     try:
         checked = verify(source)
-        if not checked["metrics"]["missing_pmids"]:
-            raise ValueError("原交付没有可自动补取的缺失题录")
+        old_state = read_json(source / 'state.json')
+        retry_stages = {name for name, entry in old_state['stages'].items()
+                        if name.startswith('recall-') and failed_recall_checks(entry['result'])}
+        if not checked['metrics']['missing_pmids'] and not retry_stages:
+            if allow_complete:
+                return None, checked
+            raise ValueError('原交付没有可自动重试的题录或已知集批次')
         target = source.with_name(source.name + ".repair")
         if target.resolve() != target:
             raise ValueError("修复目录不能通过链接指向其它目录")
@@ -765,12 +868,11 @@ def prepare_repair(source):
                     raise ValueError("修复目录非空且无初始化标识，拒绝接管")
                 write_json(marker, info)
             if (target / "state.json").exists():
-                return target
+                return target, checked
             for name, sha in files.items():
                 copy_verified(local_path(source, name), local_path(target, "original/" + name), sha)
-            old_state = read_json(source / "state.json")
             kept = {name: entry for name, entry in old_state["stages"].items()
-                    if name == "search" or name.startswith("recall-")
+                    if name == 'search' or (name.startswith('recall-') and name not in retry_stages)
                     or (name.startswith("records-") and not entry["result"]["missing_pmids"])}
             copy_verified(source / "plan.json", local_path(target, "plan.json"), files["plan.json"])
             for entry in kept.values():
@@ -785,7 +887,7 @@ def prepare_repair(source):
                      "evidence": EVIDENCE,
                      "repair_source": info}
             services.write_json_atomic(str(target / "state.json"), state)
-            return target
+            return target, checked
         finally:
             target_lock.close()
     finally:
@@ -795,8 +897,7 @@ def prepare_repair(source):
 def preserve_uncommitted(root, name, paths):
     screening = root / "screening.csv"
     if "screening.csv" in paths and screening.exists() and screening.stat().st_size:
-        with screening.open(encoding="utf-8-sig", newline="") as stream:
-            reader = csv.DictReader(stream)
+        with csv_rows(screening) as reader:
             if reader.fieldnames != list(COLUMNS):
                 raise ValueError("未提交筛选表格式不明，拒绝移动或覆盖")
             for row in reader:
@@ -817,9 +918,8 @@ async def run(plan_path=None, out_dir=None, resume=None):
     if resume:
         root = Path(resume).resolve()
         if (root / "delivery.json").exists():
-            checked = verify(root)
-            if checked["metrics"]["missing_pmids"]:
-                repaired = prepare_repair(root)
+            repaired, checked = prepare_repair(root, allow_complete=True)
+            if repaired is not None:
                 return await run(resume=str(repaired))
             return checked
         if not (root / "state.json").exists() and (root / "repair-init.json").exists():
@@ -879,10 +979,10 @@ async def run(plan_path=None, out_dir=None, resume=None):
             services.write_json_atomic(str(root / "state.json"), state)
             return result
 
+        scope = plan_dates(plan)
         async def search():
             result = json.loads(await services.export(plan["term"], str(root / "all-pmids.txt"),
-                as_json=True, metadata=True, datetype=plan.get("datetype", "pdat"),
-                mindate=plan.get("mindate", ""), maxdate=plan.get("maxdate", "")))
+                as_json=True, metadata=True, **scope))
             write_json(root / "search-result.json", {**result, "evidence": EVIDENCE})
             if result.get("metadata_status") != "written":
                 raise ValueError("名单已保留，但伴随说明失败；不能标为完成")
@@ -897,10 +997,12 @@ async def run(plan_path=None, out_dir=None, resume=None):
             async def recall():
                 # 用方案原式与外置日期参数复查请求的绝对窗口；effective_query 里冻结后的
                 # 日期字面量由 search 阶段单独核验，不能拿来代替本阶段的窗口参数。
-                result = json.loads(await services.check_recall(
-                    plan["term"], " ".join(known[start:start + services.recall_limit]), as_json=True,
-                    mindate=plan.get("mindate", ""), maxdate=plan.get("maxdate", ""),
-                    datetype=plan.get("datetype", "pdat")))
+                args = (plan['term'], ' '.join(known[start:start + services.recall_limit]))
+                if state.get('repair_source'):
+                    previous = str(local_path(root, 'original/' + path))
+                    result = json.loads(await services.retry_recall(*args, previous, **scope))
+                else:
+                    result = json.loads(await services.check_recall(*args, as_json=True, **scope))
                 result["receipt_binding"] = RECALL_BINDING
                 write_json(root / path, {**result, "evidence": EVIDENCE})
                 return result
@@ -917,7 +1019,7 @@ async def run(plan_path=None, out_dir=None, resume=None):
             batches.append(await stage(name, [path], fetch))
         async def screening():
             result = await anyio.to_thread.run_sync(render_screening, root, ids)
-            result["known_missing_from_export"] = [pid for pid in known if pid not in set(ids)]
+            result['known_missing_from_export'] = missing_from_export(known, ids)
             return result
         screened = await stage("screening", ["screening.csv", "references.ris"], screening)
         async def audit_report():

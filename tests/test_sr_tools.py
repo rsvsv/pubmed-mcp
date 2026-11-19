@@ -59,6 +59,7 @@ class CheckRecall(unittest.TestCase):
         text = run(m.check_recall, "tooth", "1,2")
         self.assertIn("检回 2 个，未检回 0 个", text)
         self.assertIn("不代表整体查全率", text)
+        self.assertNotIn('存在性未确认', text)
         self.esummary.assert_not_awaited()
 
     def test_partial_missing_present_title(self):
@@ -67,6 +68,9 @@ class CheckRecall(unittest.TestCase):
         text = run(m.check_recall, "tooth", "1 2 3")
         self.assertIn("检回 2 个，未检回 1 个", text)
         self.assertIn("PMID 2（记录存在，本次未检回）Missing paper title", text)
+        self.assertNotIn('每次只去掉一个限制', text)
+        self.assertIn('核对已知题录与原式用词', text)
+        self.assertNotIn('请先核号', text)
         data = json.loads(run(m.check_recall, "tooth", "1 2 3", as_json=True))
         self.assertEqual(data["found"], ["1", "3"])
         self.assertEqual(data["missing"], [{"pmid": "2", "state": "present", "title": "Missing paper title"}])
@@ -79,6 +83,8 @@ class CheckRecall(unittest.TestCase):
         self.assertEqual(states, {"1": "unavailable", "2": "unknown"})
         text = run(m.check_recall, "tooth", "1,2")
         self.assertIn("存在性未确认", text)
+        self.assertIn('请先核号、重查题录', text)
+        self.assertIn('仍计入未检回，不计入无法判定', text)
 
     def test_metadata_failure_keeps_determination(self):
         self.esearch.return_value = esr(1, ["1"], term="(tooth) AND (1[uid] OR 2[uid])")
@@ -133,8 +139,19 @@ class CheckRecall(unittest.TestCase):
         self.assertEqual(data['retrieved'], data['unknown'])
         self.assertEqual(data['retrieved'], ['1', '2', '3'])  # 本项目自订：仅实取，不归因于原式
         self.assertEqual((data['found'], data['missing']), ([], []))
-        self.assertTrue(any('未参与实际检索' in w for w in data['warnings']))
+        self.assertTrue(any('原式条件未完整保留' in w for w in data['warnings']))
         self.assertIn('无法判定', run(m.check_recall, '牙根吸收', '1,2,3'))
+
+    def test_each_batch_labels_its_own_execution(self):
+        subjects = ['tooth[All Fields] AND ', 'knee[All Fields] AND ', '']
+        ids = ['1', '2', '3']  # 本项目自订：正常、换主题、仅剩编号
+        self.esearch.side_effect = [esr(1, [p], qt=f'{subject}{p}[UID]', term=f'(tooth) AND ({p}[uid])')  # 本项目自订：每批一条
+                                    for p, subject in zip(ids, subjects)]
+        with patch.object(m, 'GOLD_CHUNK', 1):  # 本项目自订：强制逐条分批
+            text = run(m.check_recall, 'tooth', ' '.join(ids))
+        self.assertIn('第 1 批（本批已核实）', text)  # 本项目自订：仅这批认证
+        self.assertIn('第 2 批（无法核实原式或范围，无法判定）', text)  # 本项目自订：不得声称只有编号
+        self.assertIn('第 3 批（原式条件未完整保留，无法判定）', text)  # 本项目自订：仅剩编号
 
     def test_normal_term_not_flagged_ignored(self):
         data = json.loads(run(m.check_recall, "tooth", "1,2", as_json=True))
@@ -229,6 +246,9 @@ class Diff(unittest.TestCase):
         self.assertIn("当次仅 a 有 1 条", text)  # 本项目自订：对称名单差
         self.assertIn("共同 2 条", text)
         self.assertIn("不判断相关性", text)
+        self.assertIn('不证明由改式造成', text)
+        self.assertIn('不代表文献被数据库删除', text)
+        self.assertNotIn('（b 有 a 无）', text)
         data = json.loads(run(m.diff, "a", "b", as_json=True))
         self.assertEqual(data["added"], ["4"])
         self.assertEqual(data["removed"], ["1"])
@@ -238,6 +258,8 @@ class Diff(unittest.TestCase):
         self.two_queries(["1", "2"], ["1", "2"])
         data = json.loads(run(m.diff, "a", "b", as_json=True))
         self.assertEqual((data["added_count"], data["removed_count"]), (0, 0))
+        self.assertNotIn('数据库删除', run(m.diff, 'a', 'b'))
+        self.assertIn('不代表文献被数据库删除', data['caveat'])
 
     def test_window_exceeded_advises_export(self):
         self.two_queries(["1"], ["2"], a_count=10000)

@@ -50,10 +50,15 @@ def _mesh_kind_label(record_type):
 
 
 # 本项目自订：一批题录共用来源说明，不逐 PMID 重复，不继承上一调用的检索状态。
-_SEARCH_ORIGIN = {"source": "search", "comparison": "not_compared",
-                  "note": "来源：本次检索；未核对是否为改式新增。要查新增，用同范围 diff。不能据本次命中断言全领域只有这些。"}
-_LINKS_ORIGIN = {"source": "links", "comparison": "not_compared",
-                 "note": "来源：追引／近邻；未比对改式前后。即使未命中原式，也不证明放宽式命中它。各源位置按本次关联返回次序，不是原文引文编号或质量排名。"}
+_SEARCH_ORIGIN = {"source": "search", "comparison": "not_compared", "note": "本次检索"}
+_LINKS_ORIGIN = {"source": "links", "comparison": "not_compared", "note": "追引／近邻候选"}
+_EMPTY_LINK_PAGE = '本页未取编号；请给正 limit 后从同一 offset 重试。'
+_TITLE_FAILURE_PREFIX = '⚠️ 缺失项标题获取失败'
+_ZERO_CITATION_CAUTION = {'citedin': '0 条不等于无人引用', 'refs': '0 条不等于原文无引文'}  # 本项目口径：仅说明未录入关系
+
+
+def _uid_intersection(term, batch):
+    return f'({term}) AND (' + ' OR '.join(f'{p}[uid]' for p in batch) + ')'
 
 
 def _window_match_counts(window, details, all_pmids):
@@ -394,7 +399,13 @@ class Implementation:
                     f"但注意 PubMed 的收录不会到那一年）。")
             q.update(mindate=lo, maxdate=hi, datetype=datetype)
         payload = self.dependencies._safe_json(await self.dependencies._get_async("esearch.fcgi", q, 25), "esearch")  # 原文/来源：现有 _esearch 请求超时保持不变
-        d = self.dependencies._validate_esearch_page(payload.get("esearchresult"), rs, _rm)
+        page = payload.get('esearchresult')
+        try:
+            d = self.dependencies._validate_esearch_page(page, rs, _rm)
+        except self.dependencies.NcbiError as exc:
+            exc.rejected_page = ({k: page[k] for k in ('count', 'idlist', 'querytranslation') if k in page}
+                                 if isinstance(page, dict) else {})
+            raise
         d.setdefault('retstart', str(rs))  # 无上游回显时沿用已校验的实际请求偏移，供快照、文本和审计使用。
         d["_term"] = term
         d["_request_params"] = {k: v for k, v in q.items() if k not in ("api_key", "email")}
@@ -1049,15 +1060,15 @@ class Implementation:
                      out_path: str = "", previous_path: str = "", max_show: StrictInt | StrictStr = 20,  # 本项目自订：保留展示默认值
                      diagnose: Literal["auto", "always", "off"] = "auto",
                      low_hit_threshold: StrictInt | StrictStr = 10) -> str:  # 本项目自订：低命中阈值
-        """检索 PubMed；仅计数用 count。英文词、短语[tiab]、大写 AND/OR/NOT；主题/类型用 [MeSH Terms]/[Publication Type]。
+        """PubMed 检索；计数用 count。英文词、短语[tiab]、大写 AND/OR/NOT、[MeSH Terms]/[Publication Type]。
         field: Title、Title/Abstract、Journal、Author、Affiliation、Language、Grant、PMID。
         sort: pub_date/relevance/author（非质量）；datetype: pdat发表/edat入库；日期年/月/日，reldate近天数与区间取交集。
-        retmax≤1000，retstart零起≤9998，只取前9999条〔工具口径〕。空页不证明取全。
+        retmax≤1000，retstart零起≤9998，限前9999条〔工具口径〕；空页非取全。
         brief题名/日期/全部类型；full加引用；ids不取元数据/撤稿。JSON含执行式、分页、缺失号。
-        少看几条用 retmax；out_path 存本页题录，此时 max_show 限展示。previous_path 略过已展示未变者；deferred_pmids 未读。
-        先读警告：丢词/改写计数非原式；零条非无文献；命中非短语存在；字段省略非缺失，PMC非可下载。
-        diagnose: auto首页低命中逐块计数，always强制尝试，off不加请求；拆不清不猜，增幅非相关性。
-        查新见 literature-search；已知集用 check_recall，近邻用 links(term=当前式,with_titles=True,to=pubmed)，两式比较用 diff。
+        少看用retmax；仅out_path可设max_show/previous_path，跳过已展示未变者；deferred_pmids未读。
+        丢词/改写计数非原式；零条非无文献；命中非短语存在；省略非缺失，PMC非可下载。
+        diagnose: auto首页低命中逐块计数，always强制，off不加请求；增幅非相关性。
+        本页不代表取全；是否仅新式命中尚未比较。同范围比 diff，已知集 check_recall，近邻 links，查新见 literature-search。
         """
         # 〔实测 2026-11-10〕这里【不能】给 _int 传 lo：传了就把负数当场夹平，
         #    _esearch 里那句「retmax 是负数，本工具不替它编一个意思」根本轮不到（-3 变 0、静默出结果）。
@@ -1174,7 +1185,7 @@ class Implementation:
             if outp:
                 return await self._save_search_snapshot(result, pairs, detail, outp, previous, show)
             return json.dumps(result, ensure_ascii=False)
-        head = [self._query_heading(term, d), f"命中 {count} 条，本页取得 {len(ids)} 个 PMID（retstart={d.get('retstart')}）",
+        head = [self._query_heading(term, d), f"本次检索命中 {count} 条，本页取得 {len(ids)} 个 PMID（retstart={d.get('retstart')}）",
                 f"排序：{applied_sort}" + ("（NCBI 默认顺序，未指定排序）" if applied_sort == "default" else "")]
         if next_start is not None:
             head.append(f"下一页 retstart={next_start}；本次仅返回当前页，未筛完全部命中。")
@@ -1185,8 +1196,6 @@ class Implementation:
                             "请按年份或字段拆分查询。")
         elif ids:
             head.append(f"已到末页：本页末个 PMID 是检索结果的第 {page_end} 个；翻到末页不等于已读完全部题录。")
-        if ids:
-            head.append(_SEARCH_ORIGIN['note'])
         notes = self.dependencies._note(d, include_translation=False) + guidance
         head += notes
         if win_warn:
@@ -1413,7 +1422,7 @@ class Implementation:
         if term:
             for start in range(0, len(selected), self.dependencies.GOLD_CHUNK):  # 本项目自订：沿用已知集分批预算
                 batch = selected[start:start + self.dependencies.GOLD_CHUNK]
-                query = f'({term}) AND (' + ' OR '.join(f'{p}[uid]' for p in batch) + ')'
+                query = _uid_intersection(term, batch)
                 check = {'pmids': batch, 'term': query, 'status': 'unknown'}
                 try:
                     d = await self.dependencies._esearch(query, retmax=len(batch), **scope)
@@ -1455,7 +1464,8 @@ class Implementation:
                     record = records.get(pid) or {}
                     if not record.get('error') and record.get('title'):
                         details[pid].update(title=record['title'], pubdate=record.get('pubdate') or None,
-                                            languages=self.dependencies._as_list(record.get('lang') or []), metadata_status='available')
+                                            languages=[lang for v in self.dependencies._as_list(record.get('lang') or [])
+                                                       if isinstance(v, str) and (lang := v.strip())], metadata_status='available')
                     else:
                         details[pid]['metadata_status'] = 'unavailable' if record.get('error') else 'missing'
                 if any(details[p]['metadata_status'] != 'available' for p in selected):
@@ -1473,11 +1483,11 @@ class Implementation:
                     mindate: str = "", maxdate: str = "", reldate: StrictInt | StrictStr = 0,  # 本项目自订：默认不限相对日期
                     datetype: Literal["pdat", "edat"] = "pdat",
                     compact: Annotated[bool | str, Field(description='精简 JSON，每个目标列一次。out_path 仍存完整记录。')] = False) -> str:
-        """查关联/追引。pmids逗号/空格分隔，最多50个〔工具口径〕；to: pmc默认/gene/nucleotide/pubmed/citedin/refs。
-        pubmed含自身；PMC非下载保证；关联为空非无引文；元数据缺失/状态未知分开报。方括号为其它关联数。
-        compact=True给精简JSON；完整JSON含来源/边/候选。out_path存全量并回路径/sha/字节数。offset/limit切各源名单及检查窗口，不裁文件。部分失败保留，全失败报错。
-        pubmed/refs/citedin可带term：in_term真/假/null；null为未检查/失败/失真，非漏检。须传原式相同字段/日期限制。
-        with_titles附标题/日期/语言；检查前200篇〔自订预算〕，余项未检查；分页每源limit≤预算/来源数。相似非相关，须读摘要。
+        """关联/追引。pmids逗号/空格分隔，最多50个〔工具口径〕；to: pmc默认/gene/nucleotide/pubmed/citedin/refs。
+        pubmed含自身；PMC非下载保证，无关联非无全文；引文仅限已录入关系。来源未知/请求失败不能判零；方括号为其它关联数。
+        compact=True精简JSON；out_path存全量并回路径/sha/字节数。offset/limit按源切页和检查窗口，不裁文件。部分失败保留，全失败报错。
+        pubmed/refs/citedin可带term，传原式字段/日期；in_term=null为未查/失败/失真，非漏检。
+        with_titles附标题/日期/语言；前200篇〔自订预算〕，每源limit≤预算/来源数。次序非引文编号或质量排名；追引未比对改式新增，相关性须读摘要。
         """
         uniq, _ = self.dependencies._parse_pmids(pmids)
         db = self.dependencies._check_db(to)
@@ -1510,12 +1520,14 @@ class Implementation:
         except self.dependencies.NcbiError as exc:
             exist = {pid: "unknown" for pid in uniq}
             metadata_warnings.append("⚠️ esummary 存在性检查失败，关联查询继续：" + self.dependencies._mask(str(exc)))
+        text_mode = not (json_mode or outp)
         out = [None] * len(uniq)
-        counts = [0] * len(uniq)          # 旧文本口径：直接链接条数（同一目标出现在多个 linkname 时重复计）
         errs = []
         sources = [None] * len(uniq)
         snow = db in ("citedin", "refs")
         snow_link = "pubmed_pubmed_citedin" if db == "citedin" else ("pubmed_pubmed_refs" if db == "refs" else "")
+        target_db = 'pubmed' if snow else db
+        allowed_dbs = ('nucleotide', 'nuccore') if db == 'nucleotide' else (target_db,)
         show_cap = (self.dependencies.SNOW_SINGLE_CAP if len(uniq) == 1 else self.dependencies.SNOW_BATCH_CAP) if snow else 8
         candidate_db = db in ("pubmed", "refs", "citedin")
         direct_names = {
@@ -1540,7 +1552,7 @@ class Implementation:
             if vals is None:
                 vals = lsd.get("neighbors")
             if vals is None:
-                return []
+                raise self.dependencies.NcbiError('elink 关系组缺少目标名单，关联未知')
             if not isinstance(vals, list):
                 vals = [vals]
             got = []
@@ -1550,6 +1562,8 @@ class Implementation:
                 text = str(value).strip()
                 if not re.fullmatch(r"[0-9]+", text) or len(text) > 64:  # 本项目自订：ID 长度防护
                     raise self.dependencies.NcbiError("elink 返回了非法目标 ID")
+                if not text.strip('0'):  # 本项目口径：NCBI UID 须为正整数
+                    raise self.dependencies.NcbiError('elink 目标 ID 不能为零')
                 got.append(str(int(text)))
             return got
 
@@ -1562,11 +1576,11 @@ class Implementation:
                      "other_relations": []}
             direct = []
             try:
-                params = {"dbfrom": "pubmed", "db": "pubmed" if snow else db, "id": pid, "retmode": "json"}
+                params = {"dbfrom": "pubmed", "db": target_db, "id": pid, "retmode": "json"}
                 if snow_link:
                     params["linkname"] = snow_link
                 d = self.dependencies._safe_json(await self.dependencies._get_async("elink.fcgi", params, 25), "elink")
-                sets = d.get("linksets") or []
+                sets = d.get("linksets", [])
                 if not isinstance(sets, list):
                     raise self.dependencies.NcbiError("elink 的 linksets 不是列表，不能判断关联关系")
                 if snow and (not sets or any(not isinstance(s, dict) for s in sets)):
@@ -1575,33 +1589,38 @@ class Implementation:
                 for ls in sets:
                     if not isinstance(ls, dict):
                         raise self.dependencies.NcbiError("elink 的 linkset 结构异常，不能判断关联关系")
-                    if snow:
-                        # 引文方向必须逐字属于请求号；多号混合的 linkset 不能用来判方向。
-                        src_ids = {str(x) for x in self.dependencies._as_list(ls.get("id") or ls.get("ids") or [])}
-                        if src_ids != {pid}:
-                            continue
-                    else:
-                        src_ids = ({str(x) for x in self.dependencies._as_list(ls.get("id") or [])}
-                                   | {str(x) for x in self.dependencies._as_list(ls.get("ids") or [])})
-                        if src_ids and src_ids != {pid}:
-                            continue
-                    owned.append(ls)
+                    # 单号发请求不代替回包归属；两种键并存时也不能忽略冲突。
+                    src_ids = {str(x) for key in ('id', 'ids') if key in ls
+                               for x in self.dependencies._as_list(ls[key])}
+                    if src_ids == {pid}:
+                        if 'dbfrom' in ls and ls['dbfrom'] != 'pubmed':
+                            raise self.dependencies.NcbiError('elink 来源库与请求不符，关联未知')
+                        owned.append(ls)
                 if (snow or sets) and not owned:
                     raise self.dependencies.NcbiError("elink 未返回归属于请求号的 linkset")
                 for ls in owned:
                     error = ls.get("error") or ls.get("ERROR")
                     if error:
                         raise self.dependencies.NcbiError(self.dependencies._mask(f"elink 来源请求失败：{error}"))
-                    for lsd in (ls.get("linksetdbs") or []):
+                    groups = ls.get('linksetdbs', [])  # 此键缺省是有效空关联；类型错误不是空关联。
+                    if not isinstance(groups, list):
+                        raise self.dependencies.NcbiError('elink 的 linksetdbs 不是列表，关联未知')
+                    for lsd in groups:
                         if not isinstance(lsd, dict):
                             raise self.dependencies.NcbiError("elink 的 linksetdb 结构异常，不能判断关联关系")
                         error = lsd.get("error") or lsd.get("ERROR")
                         if error:
                             raise self.dependencies.NcbiError(self.dependencies._mask(f"elink 关联请求失败：{error}"))
+                        name = lsd.get('linkname')
+                        if not isinstance(name, str) or not name.strip():
+                            raise self.dependencies.NcbiError('elink 未给出有效 linkname，关联方向未知')
+                        if snow and name != snow_link:
+                            raise self.dependencies.NcbiError('elink 返回的引文方向与请求不符，关联未知')
+                        if 'dbto' in lsd and lsd['dbto'] not in allowed_dbs:
+                            raise self.dependencies.NcbiError('elink 目标库与请求不符，关联未知')
                         dests = _link_targets(lsd)
                         if not dests:
                             continue
-                        name = str(lsd.get("linkname") or db)
                         if name not in direct_names:
                             gloss = "（PMC 中引用本文的全文，不是参考文献）" if name == "pubmed_pmc_refs" else ""
                             entry["other_relations"].append(
@@ -1613,12 +1632,14 @@ class Implementation:
                 entry["error"] = str(e)
                 entry["relation_status"] = "error"
                 sources[i] = entry
-                out[i] = f"PMID {pid}  请求失败（原因见表头）"
+                if text_mode:
+                    out[i] = f"PMID {pid}  ⚠️ 请求失败，关联未知：{str(e)[:120]}"  # 本项目自订：原因预览限长
+                    if state != 'present':
+                        out[i] += '；题录存在性未确认，请核号'
                 return
 
             seen = set()
             for name, dests in direct:
-                counts[i] += len(dests)
                 if name not in entry["linknames"]:
                     entry["linknames"].append(name)
                 for target in dests:
@@ -1630,20 +1651,26 @@ class Implementation:
                 entry["relation_status"] = "no_linkset"
                 entry["error"] = "elink 没返回这个号的 linkset，关联未知（不是「没有关联」）"
             sources[i] = entry
+            if not text_mode:
+                return
 
             # 默认保留按关联名称的概览；显式分页则与 JSON 使用同一份去重来源名单。
             if not sets:
                 out[i] = (f"PMID {pid}  ⚠️ elink 没返回这个号的 linkset —— 请求没给回这个号，"
-                          f"这【不是】「没有全文」，先核对 PMID")
+                          f"这【不是】「没有关联」，先核对 PMID")
+                if state != 'present':
+                    out[i] += '；题录存在性未确认'
                 return
             mine, other = [], []
-            for name, dests in direct:
+            displayed_groups = [(snow_link, entry['target_ids'])] if snow and direct else direct
+            for name, dests in displayed_groups:
                 more_hint = ""
                 if len(dests) > show_cap:
-                    more_hint = f"…共 {len(dests)}" + (
+                    more_hint = ('…' if snow else f"…共 {len(dests)}") + (
                         f"（多号批量每号限展 {self.dependencies.SNOW_BATCH_CAP}，单号调用可展 {self.dependencies.SNOW_SINGLE_CAP}）"
                         if snow and len(uniq) > 1 else "")
-                mine.append(f"{name}=" + ",".join(
+                prefix = '目标 PMID：' if snow else f'{name}='
+                mine.append(prefix + ",".join(
                     (x if db != "pmc" else f"PMC{x}") for x in dests[:show_cap]) + more_hint)
             for item in entry["other_relations"]:
                 other.append(f"{item['relation']}:{item['count']} 条{item['note']}")
@@ -1651,38 +1678,50 @@ class Implementation:
             if mine and (off or lim is not None):
                 page_ids = _page(entry['target_ids'])
                 positions = _positions(page_ids)
-                where = f"第 {positions['first']} 至 {positions['last']} 项" if page_ids else '本页无目标'
-                shown = ','.join(('PMC' if db == 'pmc' else '') + v for v in page_ids[:show_cap])
-                remaining = f'；文本仅列前 {show_cap} 个，整页见 compact=True' if len(page_ids) > show_cap else ''
-                out[i] = f"PMID {pid}  来源列表{where}（共 {entry['target_count']} 个）：{shown}{remaining}" + tail
-                if state != 'present':
-                    out[i] += '  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核'
+                if page_ids:
+                    where = f"第 {positions['first']} 至 {positions['last']} 项"
+                    shown = ','.join(('PMC' if db == 'pmc' else '') + v for v in page_ids[:show_cap])
+                    remaining = f'；文本仅列前 {show_cap} 个，整页见 compact=True' if len(page_ids) > show_cap else ''
+                    out[i] = f"PMID {pid}  来源列表{where}（共 {entry['target_count']} 个）：{shown}{remaining}" + tail
+                else:
+                    out[i] = (f"PMID {pid}  分页前有 {entry['target_count']} 个目标；"
+                              f"本页未展示编号（offset={off}, limit={lim}），不是零关联。" + tail)
             elif mine:
-                out[i] = f"PMID {pid}  " + "  ".join(mine) + tail
-                if state != "present":
-                    out[i] += "  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核"
+                count_note = ''
+                if snow:
+                    label = '施引文献' if db == 'citedin' else '参考文献'
+                    count_note = f"{label} {entry['target_count']} 篇；"
+                out[i] = f"PMID {pid}  {count_note}" + "  ".join(mine) + tail
             elif state == "unavailable":
                 out[i] = (f"PMID {pid}  ⚠️ esummary 未找到此号的文档摘要（cannot get document summary）；"
                           "请核对 PMID 或稍后重试，不能据此判断全文可用性") + tail
             elif state == "unknown":
                 out[i] = f"PMID {pid}  ⚠️ 元数据缺失，存在性无法确认；请重试" + tail
             elif snow:
-                zero_msg = ("(PubMed 未录入施引记录；0 条不等于无人引用)"
-                            if db == "citedin" else "(PubMed 未录入参考文献；0 条不等于原文无引文)")
-                out[i] = f"PMID {pid}  {zero_msg}" + tail
+                label = '施引记录' if db == 'citedin' else '参考文献'
+                out[i] = f"PMID {pid}  (PubMed 未录入{label}；{_ZERO_CITATION_CAUTION[db]})" + tail
             else:
                 out[i] = f"PMID {pid}  ({db} 库无直接对应记录)" + tail
+            if mine and state != 'present':
+                out[i] += '  ⚠️ esummary 未确认此号，以上关联来自 elink；请复核'
 
         async with anyio.create_task_group() as tg:
             for i, pid in enumerate(uniq):
                 tg.start_soon(one, i, pid)
-        if errs and len(errs) == len(uniq):
-            raise self.dependencies.NcbiError(f"elink 全部 {len(errs)} 个请求都失败，第一个原因：" + errs[0])
+        source_states = {e['source']: {k: e[k] for k in ('source_status', 'relation_status', 'target_count', 'error')}
+                         for e in sources}
+        failed = sum(bool(e['error']) for e in sources)
+        if failed == len(sources):
+            self.dependencies._audit('links', to=db, requested=len(uniq), errors=failed,
+                                     pmids=uniq, source_states=source_states, warnings=metadata_warnings)
+            first = sources[0]  # 本项目口径：首个输入来源
+            exc = self.dependencies.NcbiError(f"elink 全部 {failed} 个来源失败或无法确认；PMID {first['source']}：{first['error']}")
+            exc.link_sources = sources
+            raise exc
 
-        if sum(entry["target_count"] for entry in sources) > self.dependencies.EXPORT_MAX:
+        direct_total = sum(entry['target_count'] for entry in sources)
+        if direct_total > self.dependencies.EXPORT_MAX:
             raise self.dependencies.NcbiError("关联目标超过本项目安全上限；请减少源 PMID，未写入截断文件")
-        if (json_mode or outp) and all(entry.get("error") for entry in sources):
-            raise self.dependencies.NcbiError("elink 全部来源关联状态无法确认，未生成完整结果文件")
 
         enriched, match_checks = {}, []
         match_summary = {}
@@ -1729,11 +1768,7 @@ class Implementation:
                 next_offset = enrich_page['next_offset']
                 if next_offset is not None:
                     metadata_warnings.append(
-                        f'本页去重窗口 {window_total} 个候选在检查预算 {_NEIGHBOR_ENRICH_CAP} 内（本页已检查）；'
-                        f'下一页 offset={next_offset}, limit={lim}（offset/limit 按每个来源各自切片）。')
-                else:
-                    metadata_warnings.append(
-                        f'已到各来源末页（本页去重窗口 {window_total} 个候选，未超过检查预算 {_NEIGHBOR_ENRICH_CAP}）。')
+                        f'下一页 offset={next_offset}, limit={lim}（按来源翻页）。')
             enrich_page = {'enrichment_cap': _NEIGHBOR_ENRICH_CAP, 'window_total': window_total,
                            'window_checked': min(window_total, _NEIGHBOR_ENRICH_CAP),
                            'safe_per_source_limit': safe_limit, 'next_offset': next_offset,
@@ -1751,7 +1786,6 @@ class Implementation:
                     detail['source_count'] += 1  # 本项目自订：每个源的 target_ids 已去重
                     if db == 'pubmed':
                         detail['best_rank'] = min(detail['best_rank'] or rank, rank)
-            metadata_warnings.append('相似或被引用不等于符合研究问题；未命中候选仍须阅读标题摘要，不能自动判定研究空白。')
 
         def _candidate_details(cands):
             # 保留 sources/edges/candidate_pmids 的原顺序，只给候选详情另设阅读顺序。
@@ -1770,6 +1804,7 @@ class Implementation:
                 shown_targets += len(ids)
                 src_out.append({"source": entry["source"], "source_status": entry["source_status"],
                                 "relation": entry["relation"], "target_ids": ids,
+                                'linknames': entry['linknames'], 'other_relations': entry['other_relations'],
                                 **({'page_positions': _positions(ids)} if displayed else {}),
                                 "error": entry["error"], "relation_status": entry["relation_status"],
                                 "fetched_at": entry["fetched_at"]})
@@ -1795,20 +1830,18 @@ class Implementation:
             no_link = [e["source"] for e in sources if e["relation_status"] in ("no_linkset", "no_owned_linkset")]
             if no_link:
                 warnings.append("⚠️ 这些源的 elink 没有可归属于请求号的 linkset，关联状态未知（不是已确认无关联）："
-                                + ", ".join(no_link[:5]))
-            if displayed and (off or lim is not None):
-                if compact_mode:
-                    warnings.append('按来源分页。各来源 total 是分页前计数，本页仅检查选定窗口内的候选。')
-                else:
-                    warnings.append("offset/limit 按每个源去重后的 target_ids 切片，并限定本次候选检查窗口；"
-                                    "counts 为切片前计数；out_path 仍保存全量名单与各项检查状态。")
-            if db == "citedin":
-                warnings.append("citedin 只覆盖 PubMed 已录入的施引记录；0 条不等于无人引用。")
-            elif db == "refs":
-                warnings.append("refs 只覆盖 PubMed 已录入的参考文献；0 条不等于原文无引文。")
-            if not candidate_db:
-                warnings.append(f'targets 的 id 属于 {db} 库。' if compact_mode and displayed else
-                                f"to={db} 的目标不是 PubMed PMID，candidate_pmids 为空。")
+                                + ", ".join(no_link))
+            unverified = [e['source'] for e in sources if e['source_status'] != 'present']
+            if unverified:
+                warnings.append(f"⚠️ 来源 PMID {', '.join(unverified)} 的题录存在性未确认；请核号、重试。")
+            if snow:
+                empty_sources = [e['source'] for e in sources if e['relation_status'] == 'ok'
+                                 and e['source_status'] == 'present' and not e['target_count']]
+                if empty_sources:
+                    warnings.append(f"PMID {', '.join(empty_sources)}：PubMed 未录入该方向引文；{_ZERO_CITATION_CAUTION[db]}。")
+            if displayed and lim == 0 and not (term or titles):
+                warnings.append(_EMPTY_LINK_PAGE)
+            details = _candidate_details(cands) if term or titles else []
             return {
                 "schema": schema,
                 "to": db,
@@ -1819,15 +1852,15 @@ class Implementation:
                 "candidate_pmids": cands,
                 **({'provenance': _LINKS_ORIGIN} if candidate_db else {}),
                 **({'match_summary': match_summary} if term else {}),
-                **({'candidate_details': _candidate_details(cands),
-                    'outside_term_pmids': [r['pmid'] for r in _candidate_details(cands) if r['in_term'] is False],
+                **({'candidate_details': details,
+                    'outside_term_pmids': [r['pmid'] for r in details if r['in_term'] is False],
                     'match_scope': {'term': term, **scope, 'offset': off, 'limit': lim}, 'match_checks': match_checks,
                     'enrichment_cap': _NEIGHBOR_ENRICH_CAP} if term or titles else {}),
                 "counts": {
                     "sources": len(uniq),
                     "sources_with_targets": sum(1 for e in sources if e["target_count"]),
-                    "sources_with_errors": sum(bool(e.get("error")) for e in sources),
-                    "targets": sum(e["target_count"] for e in sources),
+                    "sources_with_errors": failed,
+                    "targets": direct_total,
                     "targets_returned": shown_targets,
                     "per_source": {e["source"]: e["target_count"] for e in sources},
                     "candidate_pmids": len(cands),
@@ -1842,14 +1875,13 @@ class Implementation:
                     **enrich_page,
                 },
                 "warnings": warnings,
-                "source_note": ("每个源一次 elink 请求，另加一次 esummary 判号是否存在；"
-                                "source_status=unknown 表示存在性无法确认；须结合源状态、错误和分页前计数判断，"
-                                "分页后 target_ids 为空不表示无关联；candidate_pmids 只汇总 pubmed/refs/citedin 目标。"),
-                "evidence": "来源：本次 elink/esummary 关联与题录响应，in_term 来自各批 esearch（见 match_checks）；未检查/失败/失真不算阴性，不证明全文引用覆盖或文献纳入资格",
+                "source_note": f"pubmed→{db}；按来源统计",
+                "evidence": "elink / esummary" + ("；交集执行见 match_checks" if term else ""),
             }
 
-        self.dependencies._audit("links", to=db, pmids=uniq, requested=len(uniq), direct_total=sum(counts),
-               errors=len(errs), warnings=metadata_warnings, show_cap=show_cap, offset=off, limit=lim,
+        self.dependencies._audit("links", to=db, pmids=uniq, requested=len(uniq), direct_total=direct_total,
+               errors=failed, source_states=source_states,
+               warnings=metadata_warnings, show_cap=show_cap, offset=off, limit=lim,
                as_json=json_mode, term=term, with_titles=titles, match_scope=scope, match_checks=match_checks,
                **({'compact': True} if compact_mode else {}), **({'out_path': outp} if outp else {}))
         if compact_mode:
@@ -1861,7 +1893,7 @@ class Implementation:
             p, nbytes, sha = await anyio.to_thread.run_sync(
                 functools.partial(self.dependencies._write_json_new, outp, full, indent=None))
             self.dependencies._audit("links", path=p, bytes=nbytes, sha256=sha, requested=len(uniq),
-                   direct_total=sum(counts), errors=len(errs))
+                   direct_total=direct_total)
             if compact_mode:
                 compact_page.update(path=p, bytes=nbytes, sha256=sha, content_schema=schema)
                 return json.dumps(compact_page, ensure_ascii=False, separators=(',', ':'))
@@ -1870,6 +1902,8 @@ class Implementation:
                        "targets": full["counts"]["targets"], "edges": len(full["edges"]),
                        "candidate_pmids": len(full["candidate_pmids"]),
                        "counts": full["counts"],
+                       "source_issues": [{'source': e['source'], **source_states[e['source']]}
+                                         for e in sources if e['error'] or e['source_status'] != 'present'],
                        **({'provenance': full['provenance']} if candidate_db else {}),
                        **({'match_summary': match_summary} if term else {}),
                        "pagination": {"offset": off, "limit": lim,
@@ -1880,27 +1914,18 @@ class Implementation:
         if json_mode:
             return json.dumps(_model(displayed=True), ensure_ascii=False)
 
-        head = [f"elink pubmed→{db}，{len(uniq)} 个 PMID（每个一次请求，另加一次 esummary 判号是否存在）："]
-        if candidate_db:
-            head.append(_LINKS_ORIGIN['note'])
+        label = {'pubmed': '近邻候选', 'citedin': '施引候选', 'refs': '参考文献候选'}.get(db, '关联')
+        head = [f"{label}（pubmed→{db}），{len(uniq)} 个来源 PMID："]
         head.extend(metadata_warnings)
         if not (term or titles) and lim is not None:
             if lim == 0:
-                head.append('本页未取编号；请给正 limit 后从同一 offset 重试。')
+                head.append(_EMPTY_LINK_PAGE)
             elif more_targets:
                 head.append(f'下一页 offset={off + lim}, limit={lim}（按每个来源各自翻页）。')
-        if errs:
-            head.append(f"⚠️ {len(errs)} 个请求失败（那是故障，不是「没有链接」）：" + "; ".join(errs[:3]))
-        legend = {"pmc": "直接对应记录＝PMC 关联，开放许可/当前可下载性未核实；无关联不代表其它站点无全文",
-                  "gene": "直接对应记录＝NCBI 把这个号关联到了 Gene 条目",
-                  "nucleotide": "直接对应记录＝NCBI 把这个号关联到了核酸序列条目",
-                  "pubmed": "直接对应记录＝NCBI 列出的【相关文献】（含这篇自己），与有没有全文无关；"
-                            "要判断能不能下载请用 to=pmc",
-                  "citedin": "直接对应记录＝PubMed 已录入的【施引文献】PMID（滚雪球向前追踪）；未收录施引不等于无人引用",
-                  "refs": "直接对应记录＝PubMed 已录入的【参考文献】PMID（滚雪球向后追踪）；早期文献可能未录入引文关系"}[db]
         detail_lines = []
         if term or titles:
-            detail_lines.append('候选标题与命中状态（先列确认未命中的候选，源文献自身标为种子）：')
+            if enriched:
+                detail_lines.append('候选详情：')
             if term:
                 detail_lines.append('命中判断范围：' + json.dumps({'term': term, **scope}, ensure_ascii=False))
                 detail_lines.extend('交集实际执行：' + (check['querytranslation'] or '未返回') + '；' + check['status']
@@ -1915,14 +1940,13 @@ class Implementation:
                                         'error': '⚠️ 标题请求失败'}.get(row['metadata_status'], '⚠️ 标题未返回')
                 seed = '；种子自身' if row['is_seed'] else ''
                 date = ('｜' + (row['pubdate'] or '日期未返回')) if row['metadata_status'] == 'available' else ''
-                detail_lines.append(f"  PMID {row['pmid']}｜{label}{seed}{date}｜{title}")
+                language = '｜语言：' + ', '.join(row['languages']) if row['languages'] else ''
+                detail_lines.append(f"  PMID {row['pmid']}｜{label}{seed}{date}{language}｜{title}")
             if len(rows) > _NEIGHBOR_TEXT_CAP:
                 detail_lines.append(f'本页共有 {len(rows)} 个去重候选，文本仅展示前 {_NEIGHBOR_TEXT_CAP} 个候选详情。'
                                     '要整页可用标题，首次调用即可传 with_titles=True, compact=True；'
                                     '超出检查预算的候选用 offset、limit 分页。')
-        return ("\n".join(head) + "\n" + "\n".join(str(x) for x in out)
-                + ('\n' + '\n'.join(detail_lines) if detail_lines else '')
-                + f"\n说明：{legend}；方括号为其它关联计数。")
+        return '\n'.join(head + out + detail_lines)
 
 
     def _retrieval_check(self, d, stage):
@@ -2072,7 +2096,17 @@ class Implementation:
         显式传原搜索的字段/日期。逐批核对：retrieved 是实取；found/missing 只计可靠批次，unknown 不算漏检。
         逐块用 count；扩展 links，对比 diff；查新见 literature-search。
         """
-        json_mode = self.dependencies._as_bool(as_json, "as_json")
+        return await self._recall(term, pmids, as_json, field, mindate, maxdate, reldate, datetype)
+
+    async def retry_recall(self, term, pmids, previous_path, *, mindate='', maxdate='', datetype='pdat'):
+        """Internal review repair: bind the prior receipt without embedding it in the audit."""
+        payload = await anyio.Path(previous_path).read_bytes()
+        previous = json.loads(payload)
+        self.dependencies._audit('retry_recall', previous_sha256=hashlib.sha256(payload).hexdigest())
+        return await self._recall(term, pmids, True, '', mindate, maxdate, 0, datetype, previous)  # 本项目口径：综述仅绑定绝对日期
+
+    async def _recall(self, term, pmids, as_json, field, mindate, maxdate, reldate, datetype, previous=None):
+        json_mode = self.dependencies._as_bool(as_json, 'as_json')
         if not str(term or "").strip():
             # 旧版空 term 拼成「() AND (uids)」，NCBI 只执行 uid 部分 → 报「全找回」并误指中文〔实测 2026-11-13〕。
             raise self.dependencies.NcbiError("term 不能为空：空检索式没有可测的找回率。")
@@ -2082,20 +2116,55 @@ class Implementation:
                             f"收到 {len(uniq)} 个，请分批。")
         scope = self._review_scope(field, mindate, maxdate, reldate, datetype)
         # 分批交集：一次塞 200 个 pmid[uid] 会让 GET URL 超长被 NCBI 414〔实测 A1〕。
-        batches = [uniq[i:i + self.dependencies.GOLD_CHUNK] for i in range(0, len(uniq), self.dependencies.GOLD_CHUNK)]
-        batch_ds, checks = [], []
+        reused, old_missing = {}, {}
+        if previous is None:
+            chunk = self.dependencies.GOLD_CHUNK
+            batches = [uniq[i:i + chunk] for i in range(0, len(uniq), chunk)]  # 本项目口径：按当前批量上限切片
+        else:
+            batches = [c['pmids'] for c in previous['checks']]
+            if previous['term'] != term or previous['scope'] != scope or [p for b in batches for p in b] != uniq:
+                raise self.dependencies.NcbiError('恢复的已知集批次与原式、范围或来源名单不一致')
+            reused = {tuple(c['pmids']): c for c in previous['checks'] if 'error' not in c}
+            old_missing = {item['pmid']: item for item in previous['missing']}
+        checks, attempted = [], []
         for batch in batches:
-            gold_q = f"({term}) AND (" + " OR ".join(f"{p}[uid]" for p in batch) + ")"
-            d = await self.dependencies._esearch(gold_q, retmax=len(batch), **scope)
-            count = self.dependencies._count_of(d)
-            got = d.get("idlist") or []
-            if count != len(got) or len(set(got)) != len(got) or not set(got).issubset(batch):
-                raise self.dependencies.NcbiError(f"check_recall 交集结果异常：命中 {count}、返回 {len(got)} 个（本批金标准 {len(batch)} 个）。"
-                                f"交集不应超出金标准集，请复核查询。")
-            check = self._intersection_check(term, d, scope, batch)
-            checks.append(dict(check, pmids=batch, returned=list(got)))
-            batch_ds.append(d)
-        first_d = batch_ds[0]
+            saved = reused.get(tuple(batch)) if reused else None
+            if saved is not None:
+                checks.append(dict(saved))
+                continue
+            gold_q = _uid_intersection(term, batch)
+            d = None
+            if previous is not None:
+                attempted.append(batch)
+            try:
+                d = await self.dependencies._esearch(gold_q, retmax=len(batch), **scope)
+                count = self.dependencies._count_of(d)
+                got = d.get('idlist') or []
+                if count != len(got) or len(set(got)) != len(got) or not set(got).issubset(batch):
+                    raise self.dependencies.NcbiError(f'check_recall 交集结果异常：命中 {count}、返回 {len(got)} 个（本批金标准 {len(batch)} 个）。请复核查询。')
+                check = self._intersection_check(term, d, scope, batch)
+                checks.append(dict(check, pmids=batch, returned=list(got)))
+            except self.dependencies.NcbiError as exc:
+                message = self.dependencies._mask(str(exc))
+                # 服务器实取名单可含批外号，不能把它混入按已知集统计的 retrieved。
+                page = d if d is not None else getattr(exc, 'rejected_page', None)
+                received = page is not None  # 空对象也是已收到但被拒的回包。
+                payload = page or {}
+                ids = payload.get('idlist')
+                observed = [p for p in ids if isinstance(p, str) and re.fullmatch(r'[1-9][0-9]*', p)] if isinstance(ids, list) else []
+                translation = payload.get('querytranslation')
+                label = '交集回包不一致' if received else '交集请求未取得有效回包'
+                checks.append(dict(status='unreliable_query', pmids=batch,
+                                   returned=list(dict.fromkeys(p for p in observed if p in batch)), error=message,
+                                   error_kind='invalid_intersection' if received else 'request_failed',
+                                   **({'observed_pmids': observed, 'observed_count': payload.get('count')} if received else {}),
+                                   querytranslation=translation.strip() if isinstance(translation, str) else '',
+                                   term_ignored=False, term_degraded=False,
+                                   warnings=[f'⚠️ {label}，请按原范围重试 PMID {", ".join(batch)}：{message}']))
+        if all('error' in c for c in checks):
+            self.dependencies._audit('check_recall', checks=checks, querytranslations=[c['querytranslation'] for c in checks],
+                                     batch_translations=True, pmids=uniq, unknown=uniq, scope=scope, term=term)
+            raise self.dependencies.NcbiError('check_recall 全部批次失败：' + checks[0]['error'])  # 本项目口径：显示首个失败原因
         windows = {tuple(c['relative_window']) for c in checks if c.get('relative_window')}
         if len(windows) > 1:
             for c in checks:
@@ -2107,11 +2176,12 @@ class Implementation:
         unknown = [p for p in uniq if p in uncertain]
         found = [p for p in uniq if p in raw and p not in uncertain]
         missing = [p for p in uniq if p not in raw and p not in uncertain]
-        miss_info, meta_warn = [], ""
-        if missing:
+        miss_info = []
+        fresh_missing = [p for p in missing if p not in old_missing]
+        if fresh_missing:
             try:
-                recs = dict(await self.dependencies._esummary_dicts(missing, include_unavailable=True))
-                for p in missing:
+                recs = dict(await self.dependencies._esummary_dicts(fresh_missing, include_unavailable=True))
+                for p in fresh_missing:
                     r = recs.get(p)
                     if r is not None and not r.get("error") and r.get("title"):
                         miss_info.append({"pmid": p, "state": "present", "title": r.get("title") or ""})
@@ -2120,20 +2190,23 @@ class Implementation:
                     else:
                         miss_info.append({"pmid": p, "state": "unknown", "title": ""})
             except self.dependencies.NcbiError as e:
-                meta_warn = f"⚠️ 缺失项标题获取失败（不影响 found/missing 判定）：{str(e)[:200]}"
-                miss_info = [{"pmid": p, "state": "unknown", "title": ""} for p in missing]
+                meta_warn = f"{_TITLE_FAILURE_PREFIX}（不影响 found/missing 判定）：{str(e)[:200]}"  # 本项目口径：原因预览限长
+                miss_info = [{"pmid": p, "state": "unknown", "title": "", "metadata_warning": meta_warn} for p in fresh_missing]
+        if old_missing:
+            indexed = {**old_missing, **{item['pmid']: item for item in miss_info}}
+            miss_info = [indexed[p] for p in missing]
         caveat = ("只证明这批已知集的找回，不代表整体查全率；金标准集可能有偏（如只取某综述的参考文献）。"
                   "present＝记录存在但未被本次实际执行式检回；unavailable/unknown＝存在性未确认，不能断定是 term 漏了它。")
-        qt = (first_d.get("querytranslation") or "").strip()
-        translations = [(d.get("querytranslation") or "").strip() for d in batch_ds]
+        translations = [c['querytranslation'] for c in checks]
+        qt = translations[0]  # 本项目口径：始终指首批，不借其它批次的执行式
         # term 本身就只由 PMID[uid] 构成时，执行式只剩 uid 是正常结果，不是「被忽略」
         # 〔实测 2026-11-13：term=42988646[uid] → 执行式 42988646[UID] AND 42988646[UID]，旧版误报 term_ignored〕。
         term_ignored = any(c['term_ignored'] for c in checks)
         term_degraded = any(c['term_degraded'] for c in checks)
-        warn = list(dict.fromkeys(w for c in checks for w in c['warnings']))
+        warn = [w for c in checks for w in c['warnings']]
         if term_ignored:
             hint = '（常见于中文词，可换英文词重查）' if self.dependencies._CJK.search(term) else ''
-            warn.append(f'⚠️ 至少一批 term 未参与实际检索{hint}；该批实取 PMID 不代表原式命中。')
+            warn.append(f'⚠️ 至少一批原式条件未完整保留{hint}；该批实取 PMID 不代表原式命中。')
         if unknown:
             warn.append('⚠️ 范围或执行式无法核实的批次列为 unknown，不计入检回或未检回。')
         controls = []
@@ -2143,16 +2216,23 @@ class Implementation:
                                  ('外加相对日期', {'reldate': 0}), ('外加字段', {'field': ''})):  # 本项目口径：每次只改变一个限制
                 if any(scope[key] for key in reset):
                     controls.append({'omit': label, 'tool': 'check_recall', 'arguments': {**original, **reset}})
-            warn.append('定位未命中原因：每次只去掉一个限制，保留其余条件和同一组 PMID，再比 found/missing/unknown；本次结果不能直接说明是哪项造成的。')
-        if meta_warn:
-            warn.append(meta_warn)
+            if controls:
+                warn.append('定位未命中原因：每次只去掉一个限制，保留其余条件和同一组 PMID，再比 found/missing/unknown；本次结果不能直接说明是哪项造成的。')
+            elif any(item['state'] == 'present' for item in miss_info):
+                warn.append('请核对已知题录与原式用词；本次没有外加字段或日期可单独去掉。')
+        if any(item['state'] == 'unknown' and 'metadata_warning' not in item for item in old_missing.values()):
+            # Older receipts kept title request failures only in the stage warnings.
+            warn.extend(w for w in previous['warnings'] if w.startswith(_TITLE_FAILURE_PREFIX))
+        warn.extend(item['metadata_warning'] for item in miss_info if 'metadata_warning' in item)
+        warn = list(dict.fromkeys(warn))
         if n_in != len(uniq):
             warn.append(f"（原始输入 {n_in} 个，去重后 {len(uniq)} 个）")
         if len(batches) > 1:
             warn.append(f"（金标准 {len(uniq)} 个分 {len(batches)} 批交集判定，每批最多 {self.dependencies.GOLD_CHUNK} 个，避免 URL 超长）")
-        self.dependencies._audit("check_recall", term=term, gold=len(uniq), found=len(found), missing=len(missing),
+        self.dependencies._audit('retry_recall' if previous is not None else 'check_recall', term=term, gold=len(uniq), found=len(found), missing=len(missing),
                term_ignored=term_ignored, term_degraded=term_degraded, querytranslation=qt,
-               querytranslations=translations, scope=scope, pmids=uniq, warnings=warn,
+               querytranslations=translations, batch_translations=True, scope=scope, pmids=uniq, warnings=warn,
+               **({'reused_batches': [list(b) for b in reused], 'retried_batches': attempted} if previous is not None else {}),
                retrieved=retrieved, unknown=unknown, checks=checks)
         if json_mode:
             return json.dumps({"term": term, "scope": scope, "gold_count": len(uniq), "found": found, "missing": miss_info,
@@ -2162,9 +2242,21 @@ class Implementation:
                                "querytranslation": qt, "querytranslations": translations,
                                "warnings": warn, "caveat": caveat}, ensure_ascii=False)
         head = [f"查询：{term}", self._scope_note(scope),
-                f"金标准 {len(uniq)} 个 PMID，检回 {len(found)} 个，未检回 {len(missing)} 个，无法判定 {len(unknown)} 个"]
+                f"金标准 {len(uniq)} 个 PMID，检回 {len(found)} 个，未检回 {len(missing)} 个，无法判定 {len(unknown)} 个",
+                "只核对这批已知文献，不代表整体查全率。"]
         for number, c in enumerate(checks, 1):  # 本项目自订：批次从首批编号
-            head.append(f"第 {number} 批 NCBI 实际执行：{c['querytranslation'] or '⚠️【待确认】'}")
+            if 'error' in c:
+                if c.get('error_kind') == 'invalid_intersection':
+                    head.append(f"第 {number} 批回包不一致，无法判定；实际执行：{c['querytranslation'] or '⚠️【待确认】'}")
+                else:
+                    head.append(f'第 {number} 批请求失败，无法判定。')
+                continue
+            status = ''
+            if c['status'] != 'checked':
+                status = '（原式条件未完整保留，无法判定）' if c['term_ignored'] else '（无法核实原式或范围，无法判定）'
+            elif unknown:
+                status = '（本批已核实）'
+            head.append(f"第 {number} 批{status} NCBI 实际执行：{c['querytranslation'] or '⚠️【待确认】'}")
         head += warn
         if unknown:
             head.append('无法判定：' + ', '.join(unknown))
@@ -2180,7 +2272,8 @@ class Implementation:
                     head.append(f"  PMID {mi['pmid']} ⚠️ esummary 未找到文档摘要，存在性未确认")
                 else:
                     head.append(f"  PMID {mi['pmid']} ⚠️ 元数据缺失，存在性未确认")
-        head.append("说明：" + caveat)
+            if any(mi['state'] != 'present' for mi in miss_info):
+                head.append('存在性未确认的 PMID 仍计入未检回，不计入无法判定。请先核号、重查题录，再判断是否漏了文献。')
         return "\n".join(head)
 
 
@@ -2525,12 +2618,13 @@ class Implementation:
         head += ["  " + w for w in warn_a]
         head += [f"term_b：{term_b}", f"  命中 {b_count}，取回 {len(b_ids)}"]
         head += ["  " + w for w in warn_b]
-        head.append(origin['note'])
+        head.append('执行式、范围或分页需复核；目前只报告实取差异。复核后也只能确认名单差，不能凭名单归因于改式。' if uncertain
+                    else '已比对当次取回的两份名单；差异不证明由改式造成。')
         head.extend('⚠️ ' + reason for reason in compare_notes)
         head.extend(f"⚠️ {page['stage']}：{'；'.join(page['reasons'])}；实际执行：{page['querytranslation'] or '未返回'}" for page in review_pages)
         add_label = "实取仅 b 有" if uncertain else "当次仅 b 有"
         remove_label = "实取仅 a 有" if uncertain else "当次仅 a 有"
-        head.append(f"{add_label} {len(added)} 条（b 有 a 无）；{remove_label} {len(removed)} 条（a 有 b 无）；共同 {common} 条")
+        head.append(f"{add_label} {len(added)} 条；{remove_label} {len(removed)} 条；共同 {common} 条")
         if preview_mode:
             head.append(previews["note"])
             for label, title, ids in (("added", add_label, added), ("removed", remove_label, removed)):
@@ -2544,7 +2638,9 @@ class Implementation:
                 head.append(f"{add_label}（展示 {min(ms, len(added))}/{len(added)}）：" + ", ".join(added[:ms]))
             if removed:
                 head.append(f"{remove_label}（展示 {min(ms, len(removed))}/{len(removed)}）：" + ", ".join(removed[:ms]))
-        head.append("说明：" + caveat)
+        head.append('名单不判断相关性，须读摘要；数据库可能在两次取号之间更新。')
+        if removed:
+            head.append('仅 a 有不代表文献被数据库删除；若 b 只搜补检日期，区间外的旧文献也会在此列。')
         return "\n".join(head)
 
 
@@ -2579,9 +2675,16 @@ class Implementation:
                         child_audit_failures.append({"direction": direction, "seeds": batch,
                                                      "error": audit_failure["error"]})
                     message = self.dependencies._mask(str(exc))
-                    errors.append({"direction": direction, "seeds": batch, "error": message})
-                    sources.extend({"source": pid, "source_status": "failed", "relation": direction,
-                                    "target_ids": [], "error": message, "fetched_at": self.dependencies._utc_now()} for pid in batch)
+                    per_source = getattr(exc, 'link_sources', None)
+                    if per_source is not None:
+                        sources.extend(per_source)
+                        errors.extend({'direction': direction, 'seeds': [s['source']], 'error': s['error']}
+                                      for s in per_source)
+                    else:
+                        errors.append({"direction": direction, "seeds": batch, "error": message})
+                        sources.extend({"source": pid, "source_status": "unknown", "relation": direction,
+                                        "relation_status": "error", "target_ids": [], "error": message,
+                                        "fetched_at": self.dependencies._utc_now()} for pid in batch)
                 if len(edges) > self.dependencies.EXPORT_MAX:
                     raise self.dependencies.NcbiError("滚雪球来源边超过本项目安全上限；请减少种子后重跑，未发布候选文件")
         successful = [source for source in sources if not source.get("error")]

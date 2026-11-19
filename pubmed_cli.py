@@ -40,7 +40,7 @@ def build_parser():
                        help="离线比较两份完整 PMID 文本名单；候选 JSON 只能按名单导出")
     modes.add_argument("--snowball", metavar="SEEDS", help="联网追查参考文献和施引，扣除已有名单")
     modes.add_argument("--review-plan", metavar="JSON", help="按方案联网生成综述检索交付目录")
-    modes.add_argument("--resume-review", metavar="DIR", help="续跑交付或补取缺失题录，可能联网")
+    modes.add_argument("--resume-review", metavar="DIR", help="续跑交付、补取缺失题录或重试已知集失败批次，可能联网")
     modes.add_argument("--verify-review", metavar="DIR", help="离线核验交付文件、阶段与审计一致性")
     outputs = parser.add_argument_group("输出及命令专用参数")
     outputs.add_argument("--out", metavar="FILE", help="审计报告、名单导出、差集或追引用的输出；拒绝覆盖")

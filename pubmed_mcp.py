@@ -1159,6 +1159,7 @@ def review_services():
         'implementation_fingerprint': lambda: _implementation_fingerprint,
         'export': lambda: export,
         'check_recall': lambda: check_recall,
+        'retry_recall': lambda: _audited(_tools_impl.retry_recall),
         'mask': lambda: _mask,
     }, {
         'recall_limit': lambda: GOLD_MAX,

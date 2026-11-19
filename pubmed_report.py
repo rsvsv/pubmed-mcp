@@ -30,6 +30,10 @@ def _report_value(value):
 def validate_audit_record(rec, audit_schema):
     if not isinstance(rec, dict) or not isinstance(rec.get("event"), str) or not rec["event"].strip():
         raise ValueError("记录必须是含非空 event 字符串的对象")
+    if rec.get('batch_translations'):
+        translations = rec.get('querytranslations')
+        if not isinstance(translations, list) or not translations or not all(isinstance(t, str) for t in translations):
+            raise ValueError('分批执行式必须为非空的字符串数组；未返回的批次用空字符串占位')
     if "audit_schema" in rec:
         if rec["audit_schema"] != audit_schema:
             raise ValueError("不支持的 audit_schema")
@@ -124,7 +128,11 @@ def audit_report(inputs, out, *, skip_invalid=False, verify_files=False,
         counts = {k: rec[k] for k in ("count", "count_start", "count_end", "count_a", "count_b", "returned",
                   "requested", "unique", "written_records", "gold", "found", "missing", "added", "removed",
                   "common", "descriptors", "direct_total", "errors") if k in rec}
-        translation = rec.get("querytranslation", rec.get("querytranslations"))
+        translations = rec.get('querytranslations')
+        if rec.get('batch_translations'):
+            translation = translations[0] if len(translations) == 1 else translations  # 本项目口径：单批保持文本，多批保留顺序与空位
+        else:
+            translation = rec.get('querytranslation', translations)
         if translation is None and ("querytranslation_a" in rec or "querytranslation_b" in rec):
             translation = {k: rec[k] for k in ("querytranslation_a", "querytranslation_b") if k in rec}
         key = ("event", rec["event_id"]) if rec.get("event_id") else ("legacy", path, line)

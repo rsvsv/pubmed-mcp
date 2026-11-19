@@ -34,6 +34,8 @@ python pubmed_mcp.py --verify-export results.ris
 
 esummary 存在性检查失败时，来源状态保留为 `unknown` 并附警告，继续尝试独立的 elink 关联请求。
 
+目标库与来源库的回显若与请求冲突，或已经给出关系组却缺少目标名单，该来源记为未知，不报零。所有来源均未取得可判定关系时，文字、JSON 和文件模式都报错；启用审计时按源保留原因。完整 JSON 中的 `other_relations` 是其它关系的名称和计数，不计入直接目标。
+
 每条边保留来源 PMID、方向和目标 ID。只有 PubMed 目标进入 `candidate_pmids`，PMC、Gene 等 ID 不会冒充 PMID。部分请求失败会列明；全部失败报错。PubMed 未录入引用不代表论文没有引用。清单命令拒绝分页后的引用 JSON，要求用 `out_path` 保存全量结果；部分源失败的全量文件仍须核对警告。
 
 ## 名单比较与直接导出

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -304,6 +305,90 @@ class Delivery(unittest.TestCase):
         self.assertEqual(result['handoff_status'], 'needs_methodology_review')
         self.assertIn('recall_unresolved', {i['code'] for i in r.read_json(self.out / 'delivery.json')['issues']})
         self.assertEqual(r.verify(self.out)['status'], 'verified')
+
+    def test_partial_recall_timeout_keeps_receipt_but_blocks_screening(self):
+        second = '2'  # 本项目自订：在导出名单内，唯独该号的复查请求失败
+        self.plan['known_relevant'].append({'pmid': second, 'source': 'independent fixture'})
+        self.plan_path.write_text(json.dumps(self.plan), encoding='utf-8')
+        original = m._esearch
+        async def esearch(term, **kwargs):
+            if second + '[uid]' in term:
+                raise m.NcbiError('fixture timeout')
+            return await original(term, **kwargs)
+        with patch.object(m, '_esearch', esearch), patch.object(m, 'GOLD_CHUNK', 1):  # 本项目自订：每号单独请求
+            handoff = self.execute()
+        receipt, = (self.out / 'recall').glob('*.json')
+        data = r.read_json(receipt)
+        self.assertEqual(data['found'], ['1'])  # 本项目自订：成功批次
+        self.assertEqual(data['unknown'], [second])
+        self.assertFalse(data['missing'])
+        self.assertEqual(handoff['handoff_status'], 'needs_execution_repair')
+        self.assertIn('recall_execution', {i['code'] for i in r.read_json(self.out / 'delivery.json')['issues']})
+        self.assertEqual(r.verify(self.out)['status'], 'verified')
+        with (self.out / 'search-log.csv').open(encoding='utf-8-sig', newline='') as stream:
+            row = next(v for v in csv.DictReader(stream) if v['event'] == 'check_recall')
+        self.assertEqual(json.loads(row['querytranslation']), data['querytranslations'])
+        first_digest = r.digest(receipt)
+        requests = []
+        online = False
+        def retry(endpoint, params, *args, **kwargs):
+            term = params['term']
+            requests.append(term)
+            self.assertIn(second + '[uid]', term)
+            self.assertNotIn('1[uid]', term)  # 本项目自订：已成功来源不能重查
+            if not online:
+                raise m.NcbiError('still offline')
+            return json.dumps({'esearchresult': {'count': '1', 'idlist': [second], 'querytranslation': term}})  # 本项目自订：恢复后确认一个号
+        with patch.object(m, '_esearch', REAL_ESEARCH), patch.object(m, '_get', retry):
+            with patch.object(r, 'verify', wraps=r.verify) as verify:
+                pending = anyio.run(r.run, None, None, str(self.out))
+            self.assertEqual([call.args for call in verify.call_args_list].count((self.out,)), 1)  # 本项目自订：原路径仅作一次持锁核验
+            self.assertEqual(pending['handoff_status'], 'needs_execution_repair')
+            online = True
+            repaired = anyio.run(r.run, None, None, pending['directory'])
+        self.assertEqual(repaired['handoff_status'], 'ready_for_screening')
+        self.assertEqual(len(requests), 2)  # 本项目自订：两次恢复各取一个失败批次
+        self.assertEqual(r.digest(receipt), first_digest)
+        self.assertEqual(self.calls, [['1', second]])  # 本项目自订：未重取已完成的题录
+        self.assertEqual(r.verify(Path(repaired['directory']))['status'], 'verified')
+        current = Path(repaired['directory'])
+        prior = r.read_json(current / 'original' / 'state.json')['stages']['recall-00000']  # 本项目自订：首个回执
+        result = r.read_json(current / 'state.json')['stages']['recall-00000']['result']  # 本项目自订：首个回执
+        event = json.loads(r.AuditIndex(current).report_records['event', result['audit_event_id']])
+        self.assertNotIn('previous', event['input_params'])
+        self.assertEqual(event['previous_sha256'], r.digest(current / 'original' / 'recall' / receipt.name))
+        for case in ('prior_event', 'changed_search', 'translation', 'observed'):
+            with self.subTest(case=case):
+                base = current if case != 'observed' else Path(pending['directory'])
+                self.out = Path(shutil.copytree(base, self.root / case))
+                if case == 'prior_event':
+                    self.rewrite_recall(lambda v: v.update(audit_event_id=prior['result']['audit_event_id']))
+                    self.rewrite_json('state.json', lambda v: v['stages']['recall-00000'].update(  # 本项目自订：绑定确实存在的旧事件
+                        audit_event_sha256=prior['audit_event_sha256']))
+                    self.rebind([], 'recall-00000')  # 本项目自订：首个回执
+                    reason = '重试审计事件'
+                elif case == 'changed_search':
+                    self.rewrite_search(lambda v: v.update(warnings=['different search warning']))
+                    reason = '原检索阶段'
+                elif case == 'translation':
+                    self.rewrite_recall(lambda v: v['querytranslations'].reverse())
+                    reason = '汇总执行式'
+                else:
+                    self.rewrite_recall(lambda v: v['checks'][-1].update(error_kind='invalid_intersection', observed_pmids=[second]))
+                    reason = '异常回包'
+                with self.assertRaisesRegex(ValueError, reason):
+                    r.verify(self.out)
+
+    def test_verification_reads_its_own_large_audit_field(self):
+        self.execute()
+        index = r.AuditIndex(self.out)
+        previous = csv.field_size_limit(128)  # 本项目自订：缩小解析上限模拟长列，避免膨胀夹具
+        try:
+            self.assertTrue(any(len(row) > csv.field_size_limit() for row in index.report_records.values()))
+            self.assertEqual(r.verify(self.out)['status'], 'verified')
+            self.assertEqual(csv.field_size_limit(), 128)  # 本项目自订：核验结束恢复原设置
+        finally:
+            csv.field_size_limit(previous)
 
     def test_live_recall_cannot_substitute_for_exported_ids(self):
         self.plan['known_relevant'] = [{'pmid': '3', 'source': 'independent fixture'}]

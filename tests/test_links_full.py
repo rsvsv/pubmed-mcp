@@ -58,7 +58,7 @@ class TextCompatibility(unittest.TestCase):
                 patch.object(m, "_get_async", static_elink(body)):
             text = run(m.links, "1")
         self.assertIn("PMID 1  pubmed_pmc=PMC123,PMC124", text)
-        self.assertIn("说明：", text)
+        self.assertNotIn("说明：", text)
 
     def test_citation_cap_and_gloss_unchanged(self):
         async def fake(path, params, timeout):
@@ -68,7 +68,8 @@ class TextCompatibility(unittest.TestCase):
                 patch.object(m, "SNOW_SINGLE_CAP", 2), patch.object(m, "_get_async", fake):
             for direction in ("refs", "citedin"):
                 text = run(m.links, "1", to=direction)
-                self.assertIn("pubmed_pubmed_" + direction + "=10,11…共 3", text)
+                label = '参考文献' if direction == 'refs' else '施引文献'
+                self.assertIn(f'{label} 3 篇；目标 PMID：10,11…', text)  # 本项目自订：总数与展示编号分栏
 
     def test_missing_metadata_stays_unknown_in_text(self):
         async def fake(path, params, timeout):
@@ -83,9 +84,10 @@ class TextCompatibility(unittest.TestCase):
     def test_no_linkset_is_not_no_relation_in_text(self):
         with patch.object(m, "_pmids_exist", AsyncMock(return_value={"1": "present"})), \
                 patch.object(m, "_get_async", static_elink({"linksets": []})):
-            text = run(m.links, "1")
-        self.assertIn("没返回这个号的 linkset", text)
-        self.assertIn("不是", text)
+            with self.assertRaises(m.NcbiError) as caught:
+                run(m.links, '1')  # 本项目自订：唯一来源也无法确认
+        self.assertIn('没返回这个号的 linkset', str(caught.exception))
+        self.assertIn('不是', str(caught.exception))
 
     def test_citation_ownership_failure_raises(self):
         for sets in ([], [{"ids": ["9"]}], [{"ids": ["1", "9"]}]):
@@ -95,11 +97,78 @@ class TextCompatibility(unittest.TestCase):
                 with self.assertRaisesRegex(m.NcbiError, "失败"):
                     run(m.links, "1", to="refs")
 
+    def test_single_citation_id_is_not_a_count(self):
+        body = {'linksets': [{'ids': ['1'], 'linksetdbs': [  # 本项目自订：合成来源
+            {'linkname': 'pubmed_pubmed_citedin', 'links': ['3']}]}]}  # 本项目自订：目标号与篇数不同
+        with patch.object(m, '_pmids_exist', AsyncMock(return_value={'1': 'present'})), \
+                patch.object(m, '_get_async', static_elink(body)):
+            text = run(m.links, '1', to='citedin')  # 本项目自订：合成来源
+        self.assertIn('施引文献 1 篇；目标 PMID：3', text)  # 本项目自订：一篇、编号为三
+
+    def test_consecutive_calls_distinguish_zero_error_and_empty_page(self):
+        positive, empty, failed, unknown = '11', '22', '33', '44'  # 本项目自订：四个测试源
+        states = dict.fromkeys((positive, empty, failed), 'present') | {unknown: 'unknown'}
+        async def fake(path, params, timeout):
+            pid = params['id']
+            if pid == failed:
+                raise m.NcbiError('fixture timeout')
+            groups = [{'linkname': params['linkname'], 'links': ['101', '202']}] if pid == positive else []  # 本项目自订：分页目标
+            return elink_body(pid, groups)
+        with patch.object(m, '_pmids_exist', AsyncMock(return_value=states)), patch.object(m, '_get_async', fake):
+            for options in ({}, {'as_json': True}, {'compact': True}):
+                def call(ids, **kw):
+                    return run(m.links, ids, to='citedin', **options, **kw)
+                def notices(raw):
+                    return '\n'.join(json.loads(raw)['warnings']) if options else raw
+                for _ in ('first', 'repeat'):
+                    good = call(positive)
+                    self.assertNotIn('放宽式', good)
+                    self.assertNotIn('无人引用', good)
+                    if options:
+                        self.assertEqual(json.loads(good)['warnings'], [])
+                        self.assertEqual(json.loads(good)['provenance']['comparison'], 'not_compared')
+                raw_mixed = call(' '.join((empty, failed, unknown)))
+                mixed = notices(raw_mixed)
+                if not options:
+                    self.assertEqual(mixed.count('PMID ' + failed), 1)  # 本项目自订：仅在失败来源行写原因
+                    rows = {p: next(line for line in mixed.splitlines() if line.startswith('PMID ' + p + ' '))
+                            for p in (empty, failed, unknown)}
+                    self.assertIn('无人引用', rows[empty])
+                    self.assertIn('请求失败', rows[failed])
+                    self.assertIn('存在性', rows[unknown])
+                else:
+                    sources = {r['source']: r for r in json.loads(raw_mixed)['sources']}
+                    self.assertEqual(sources[empty]['relation_status'], 'ok')
+                    self.assertEqual(sources[failed]['relation_status'], 'error')
+                    self.assertEqual(sources[unknown]['source_status'], 'unknown')
+                    self.assertIn('PMID ' + empty + '：PubMed 未录入', mixed)
+                for expected in (empty, failed, unknown, '无人引用', '请求失败', '存在性'):
+                    self.assertIn(expected, mixed)
+                self.assertEqual(mixed.count('无人引用'), 1)  # 本项目自订：只归属确认为零的来源
+                for pid in (unknown, positive):
+                    page = call(pid, offset=2, limit=1)  # 本项目自订：超过末页或来源未知
+                    self.assertNotIn('无人引用', page)
+                    self.assertNotIn('下一页 offset=', page)
+                    if pid == positive and not options:
+                        self.assertIn('分页前有 2 个目标；本页未展示编号（offset=2, limit=1），不是零关联', page)  # 本项目自订：页空、总数非零
+                first = call(positive, limit=1)  # 本项目自订：首页
+                if options:
+                    data = json.loads(first)
+                    self.assertEqual(data.get('pagination', data)['next_offset'], 1)  # 本项目自订：后续页偏移
+                else:
+                    self.assertIn('下一页 offset=1, limit=1', first)  # 本项目自订：每源翻页
+                self.assertIn('无人引用', notices(call(empty)))
+                self.assertNotIn('无人引用', notices(call(positive)))
+
     def test_zero_citation_text_kept(self):
         with patch.object(m, "_pmids_exist", AsyncMock(return_value={"1": "present"})), \
                 patch.object(m, "_get_async", static_elink({"linksets": [{"ids": ["1"]}]})):
             text = run(m.links, "1", to="refs")
+            cited = run(m.links, '1', to='citedin')  # 本项目自订：同一无关联响应
         self.assertIn("不等于原文无引文", text)
+        self.assertEqual(cited.count('无人引用'), 1)  # 本项目自订：单来源警示就地保留一次
+        self.assertNotIn('方括号', cited)
+        self.assertNotIn('放宽式', cited)
 
 
 class JsonModel(unittest.TestCase):
@@ -112,7 +181,8 @@ class JsonModel(unittest.TestCase):
         self.assertEqual(data["schema"], "pubmed.links.v1")
         self.assertEqual(data["candidate_pmids"], [])
         self.assertEqual(set(data["sources"][0]),
-                         {"source", "source_status", "relation", "relation_status", "target_ids", "page_positions", "error", "fetched_at"})
+                         {'source', 'source_status', 'relation', 'relation_status', 'target_ids', 'page_positions',
+                          'error', 'fetched_at', 'linknames', 'other_relations'})
         self.assertEqual(data["sources"][0]["source"], "1")
         self.assertEqual(data["sources"][0]["relation"], "pmc")
         self.assertEqual(data["sources"][0]["target_ids"], ["123", "124"])

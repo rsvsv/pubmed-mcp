@@ -237,7 +237,9 @@ class Neighbors(unittest.TestCase):
                 self.assertTrue(full['outside_term_pmids'])
                 self.assertEqual(reply['provenance'], full['provenance'])
                 self.assertEqual(reply['provenance']['comparison'], 'not_compared')
-            self.assertIn('未比对改式前后', run(m.links, '1', to='pubmed'))  # 本项目自订：测试种子
+            text = run(m.links, '1', to='pubmed')  # 本项目自订：测试种子
+            self.assertIn('近邻候选', text)
+            self.assertNotIn('未比对改式前后', text)
             self.assertNotIn('provenance', json.loads(run(m.links, '1', to='pmc', compact=True)))  # 本项目自订：非文献目标
 
     def test_scope_missing_from_intersection_is_unknown(self):
@@ -446,7 +448,8 @@ class Neighbors(unittest.TestCase):
         self.assertIn('未命中当前式', text)
         self.assertIn('Title 3', text)  # 本项目自订：候选标题
         self.assertIn('种子自身', text)
-        self.assertIn('相似或被引用不等于符合研究问题', text)
+        self.assertNotIn('不能自动判定研究空白', text)
+        self.assertIn('追引未比对改式新增', next(t.description for t in run(m.mcp.list_tools) if t.name == 'links'))
 
 
 class LowHitScope(unittest.TestCase):

@@ -67,7 +67,9 @@ class SearchSnapshots(unittest.TestCase):
         self.assertEqual(saved['provenance'], full['provenance'])
         self.assertEqual(saved['provenance']['comparison'], 'not_compared')
         for mode in ('ids', 'brief', 'full'):
-            self.assertIn('未核对是否为改式新增', run(m.search, 'fixture', detail=mode))
+            text = run(m.search, 'fixture', detail=mode)
+            self.assertIn('本次检索命中', text)
+            self.assertNotIn('未核对是否为改式新增', text)
         self.assertEqual(full['search_pmids'], ['22', '11', '33'])
         self.assertEqual([r['pmid'] for r in full['records']], full['search_pmids'])
         self.assertEqual(full['records'], [m._record_parts(*pair) for pair in self.records])
