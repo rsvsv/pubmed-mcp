@@ -35,7 +35,7 @@ class UnknownArguments(unittest.TestCase):
     def test_every_tool_schema_forbids_extra(self):
         self.assertEqual(m._EXTRA_FORBID, "")
         tools = run(m.mcp.list_tools)
-        self.assertEqual(len(tools), 8)
+        self.assertEqual(len(tools), 9)  # 本项目自订：公开工具注册契约，含 read_pmc
         for t in tools:
             with self.subTest(tool=t.name):
                 self.assertIs(schema_of(t).get("additionalProperties"), False)

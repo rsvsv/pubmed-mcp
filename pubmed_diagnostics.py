@@ -9,7 +9,7 @@ import re
 import time
 import anyio
 
-DEPENDENCIES = ('EMAIL', 'FastMCP', 'GOLD_MAX', 'NO_BEGIN', 'NO_END', 'NcbiError', 'PAGE_TERM', 'SORT_REAL', '_EXTRA_FORBID', '_KEY', '_KEY_SOURCE', '_NREQ', '_all_dropped', '_as_bool', '_check_date', '_check_db', '_check_field', '_decode_key_bytes', '_esearch', '_get_async', '_key_shape', '_ln', '_mask', '_note', '_num_of', '_parse_pmids', '_pmids_exist', '_raises_enc', '_row', '_safe_json', '_warn_bits', '_windows', '_zero_explanation', 'api_key', 'check_recall', 'count', 'diff', 'export', 'fetch_abstracts', 'links', 'main', 'mcp', 'mesh', 'search')
+DEPENDENCIES = ('EMAIL', 'FastMCP', 'GOLD_MAX', 'NO_BEGIN', 'NO_END', 'NcbiError', 'PAGE_TERM', 'SORT_REAL', '_EXTRA_FORBID', '_KEY', '_KEY_SOURCE', '_NREQ', '_all_dropped', '_as_bool', '_check_date', '_check_db', '_check_field', '_decode_key_bytes', '_esearch', '_get_async', '_key_shape', '_ln', '_mask', '_note', '_num_of', '_parse_pmids', '_pmids_exist', '_raises_enc', '_row', '_safe_json', '_warn_bits', '_windows', '_zero_explanation', 'api_key', 'check_recall', 'count', 'diff', 'export', 'fetch_abstracts', 'read_pmc', 'links', 'main', 'mcp', 'mesh', 'search')
 
 
 class Implementation:
@@ -146,7 +146,7 @@ class Implementation:
         except self.dependencies.NcbiError as e:
             check("sort 白名单", "静默接受" in str(e), str(e)[:120])
         s_ok = await attempt("s_ok", self.dependencies.search, "temporary anchorage device", retmax=1, sort="pub_date", default="")
-        check("合法 sort 仍能走", "查询：" in s_ok, s_ok[:80])
+        check("合法 sort 仍能走", "排序：pub_date" in s_ok and bool(re.search(r'^PMID [0-9]+', s_ok, re.M)), s_ok[:160])  # 本项目自订：核请求的排序及实返题录
 
         print("3) field=MeSH Terms 拿不到 count 时必须抛错，不许印 '?'")
         try:
@@ -171,7 +171,7 @@ class Implementation:
 
         print("6) 大批量 esummary 不再撞 414（旧版 ~350 个 id 拼一个 GET 必挂）")
         t0 = time.time()
-        s = await attempt("s", self.dependencies.search, "miniscrew*", retmax=400, default="")
+        s = await attempt("s", self.dependencies.search, "miniscrew*", retmax=400, detail='full', default="")  # 本项目自订：卷页与 PMC 需完整题录档
         n_rec = len(re.findall(r"^PMID ", s, re.M))
         check("retmax=400 出得来", n_rec >= 350, f"只有 {n_rec} 条 / {time.time() - t0:.1f}s：{s[:120]}")
 
@@ -254,7 +254,7 @@ class Implementation:
         check("retmax 超上限要说出是【本工具】夹的，不许看着像 NCBI 只给了这么多",
               "本工具上限" in s_big and "retmax=5000" in s_big, s_big[-320:])
         check("夹完确实只给了 1000 条以内（反向：说明不是空话）",
-              "本次给 1000 条" in s_big, s_big.splitlines()[1][:60] if s_big else "")
+              len(re.findall(r'^PMID [0-9]+', s_big, re.M)) == 1000, s_big[:200])  # 本项目自订：逐条数实际输出，不匹配旧页脚
         try:
             await self.dependencies.search("miniscrew", retmax=-3)
             check("retmax 负数必须报错，不许静默变成 1 条", False, "没抛异常")
@@ -262,7 +262,8 @@ class Implementation:
             check("retmax 负数必须报错，不许静默变成 1 条", "负数" in str(e), str(e)[:120])
         s_zero = await attempt("s_zero", self.dependencies.search, "miniscrew", retmax=0, default="")
         check("retmax=0 是「只要计数」，不该被静默改成 1 条",
-              "本次给 0 条" in s_zero and "命中" in s_zero, s_zero[:160])
+              num(s_zero) > 0 and not re.search(r'^PMID [0-9]+', s_zero, re.M) and 'retmax=0' in s_zero,
+              s_zero[:160])  # 本项目自订：正命中、只计数、未输出题录
         check("retmax=0 的 0 条不许说成「确实没有匹配这篇」",
               "retmax=0" in s_zero and "确实没有匹配这篇" not in s_zero, s_zero[-260:])
         j_zero = await attempt_json("s_zero_json", self.dependencies.search, "miniscrew", retmax=0, as_json=True)
@@ -282,14 +283,17 @@ class Implementation:
         check("文档里的字段标签示例 resorption[Title] 真能查到东西", self.dependencies._num_of(c_tag) > 0, c_tag[:160])
         _sd0 = getattr(self.dependencies.search, "__doc__", "") or ""
         check("工具说明里的字段标签示例仍是【不带引号】的正确形状",
-              "resorption[Title]" in _sd0 and '"resorption[Title]"' not in _sd0, _sd0[:120])
+              '[tiab]' in _sd0 and not re.search(r'"[^"\n]*\[(?:tiab|title|MeSH Terms)\]"', _sd0, re.I), _sd0[:120])  # 本项目自订：标签示例不得包在引号内
         # 〔实测 2026-11-11，本会话〕09b1ecf 一度把 MeSH 那段写成「写错一个词的引号短语会静默变成 0 条」。
         # 三种写法各跑一次 count 把它推翻了：加引号那种 0 条【有】warninglist.quotedphrasesnotfound 点名
         # （不算静默，本工具会转述），真正没人提醒的是不加引号那次（回显被换成别的条件、照样给数）。
         # 这条离线断言钉住纠正后的形状，防止「静默 0 条」被重新翻出来写进说明。
-        check("MeSH 说明不再把「加引号写错」说成静默，并保留「不加引号会被改写」这一支",
-              "静默变成 0 条" not in _sd0 and "quotedphrasesnotfound" in _sd0
-              and "不带引号可能改写" in _sd0, _sd0[:200])
+        phrase = 'not a descriptor'
+        warning_notes = self.dependencies._note({'_term': f'"{phrase}"[MeSH Terms]', 'count': '0',
+            'warninglist': {'quotedphrasesnotfound': [phrase]}})  # 本项目自订：模拟 NCBI 引号短语未找到
+        check("上游 MeSH 短语未找到时点名警告，未将替代式当原式",
+              any('quotedphrasesnotfound' in note and phrase in note for note in warning_notes)
+              and '静默变成 0 条' not in _sd0, str(warning_notes)[:200])
         check("as_json 的字符串形状仍由 _as_bool 处理（签名是 bool|str，pydantic 那关不拦）",
               self.dependencies._as_bool("True", "as_json") is True and self.dependencies._as_bool("off", "as_json") is False, "")
         l_up = await attempt("l_up", self.dependencies.links, "37427694", to="PMC", default="")
@@ -394,8 +398,9 @@ class Implementation:
         # 〔实测 2026-11-09〕反向案例：term 里只有 [dp] 这种日期标签时 field 照样生效，
         # 旧写法却因为「term 里有方括号」宣布 field 被丢，还给出一条会把查询改坏的建议。
         c_dptag = await attempt("c_dptag", self.dependencies.count, "tooth resorption AND 2020:2026[dp]", field="Title", default="")
-        check("term 里只有日期标签时不能说 field 被丢", "这个限定生效了" in c_dptag
-              and "term 内的标签赢" not in c_dptag, c_dptag[:320])
+        exec_line = next((line for line in c_dptag.splitlines() if line.startswith('NCBI 实际执行：')), '')
+        check("term 里只有日期标签时不能说 field 被丢", '[Title]' in exec_line and '[Date - Publication]' in exec_line
+              and 'term 内的标签赢' not in c_dptag, c_dptag[:320])  # 本项目自订：核回显，不要求肯定所有词均受限
         # 〔实测 2026-11-10〕NCBI 的 warninglist 这一支以前全文没读过：这两条 0 查询
         #   的 _note 是空的，结尾却印「PubMed 里确实没有匹配这篇」——那是把 NCBI 明说的
         #   「短语不存在 / 词全被当停用词」写成「主题没文献」。
@@ -725,7 +730,7 @@ class Implementation:
         # （1.x 是裸调用＝本文件占住事件循环；2.x 自己 to_thread 卸载）。装饰器返回值随 SDK 版本变，
         # 所以要问的是【装饰之后】那个名字，不是源码里的 def。
         # 〔实测 2026-11-11：mcp 1.30.0 与 2.3.0 两代下，四个名字装饰后都仍是协程函数〕
-        _tools = (self.dependencies.search, self.dependencies.count, self.dependencies.fetch_abstracts, self.dependencies.links, self.dependencies.check_recall, self.dependencies.mesh, self.dependencies.diff, self.dependencies.export)
+        _tools = (self.dependencies.search, self.dependencies.count, self.dependencies.fetch_abstracts, self.dependencies.read_pmc, self.dependencies.links, self.dependencies.check_recall, self.dependencies.mesh, self.dependencies.diff, self.dependencies.export)
         _coro = [f for f in _tools if inspect.iscoroutinefunction(f)]
         check("全部工具装饰后仍是协程函数（离线）",
               len(_coro) == len(_tools), f"{len(_coro)}/{len(_tools)} 是协程函数")

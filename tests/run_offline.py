@@ -1,7 +1,6 @@
-"""Run regressions with outbound socket connections blocked in this process."""
+"""Run both pytest and unittest regressions with outbound sockets blocked here."""
 from pathlib import Path
 import socket
-import unittest
 from unittest.mock import patch
 
 
@@ -19,7 +18,11 @@ def local_only(original):
 
 
 if __name__ == "__main__":
+    try:
+        import pytest
+    except ModuleNotFoundError as exc:
+        if exc.name != 'pytest':
+            raise
+        raise SystemExit('缺少测试依赖：在仓库目录用当前解释器运行 python -m pip install ".[test]"。') from exc
     with patch.object(socket, "create_connection", blocked), patch.object(socket.socket, "connect", local_only(socket.socket.connect)), patch.object(socket.socket, "connect_ex", local_only(socket.socket.connect_ex)):
-        suite = unittest.defaultTestLoader.discover(str(Path(__file__).resolve().parent))
-        result = unittest.TextTestRunner(verbosity=2).run(suite)  # 本项目自订：详细测试输出
-    raise SystemExit(0 if result.wasSuccessful() else 1)  # 本项目自订：CI 退出状态
+        raise SystemExit(pytest.main(['-q', '-rs', '-p', 'no:cacheprovider', str(Path(__file__).resolve().parent)]))

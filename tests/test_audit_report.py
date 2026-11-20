@@ -180,6 +180,31 @@ class AuditReport(unittest.TestCase):
                 self.assertEqual((result['records'], result['skipped']), (1, 1))  # 本项目自订：各一行
                 self.assertIn('INVALID_INPUT', out.read_text(encoding='utf-8-sig'))
 
+    def test_invalid_logical_requests_rejected_per_row(self):
+        valid = {'event': 'read_pmc', 'logical_requests': [{'endpoint': 'efetch.fcgi'}]}  # 本项目自订：合法请求记录
+        cases = (None, True, [{}], {'endpoint': 'efetch.fcgi'}, [{'endpoint': 'efetch.fcgi'}, 7],  # 本项目自订：离线坏字段夹具
+                 [{'endpoint': ['efetch.fcgi']}])
+        for index, invalid in enumerate(cases):
+            with self.subTest(invalid=invalid):
+                source = self.fixture(f'requests-{index}.jsonl', [valid, dict(valid, logical_requests=invalid)])
+                with self.assertRaisesRegex(m.NcbiError, 'logical_requests'):
+                    m._audit_report([source], str(self.dir / f'strict-{index}.md'))
+                out = self.dir / f'partial-{index}.csv'
+                result = m._audit_report([source], str(out), skip_invalid=True)
+                self.assertEqual((result['records'], result['skipped']), (1, 1))  # 本项目自订：各一行
+                self.assertIn('INVALID_INPUT', out.read_text(encoding='utf-8-sig'))
+
+    def test_snapshot_reused_pmc_is_labelled_local(self):
+        local = {'event': 'read_pmc', 'snapshot_reused': True, 'logical_requests': []}  # 本项目自订：快照命中事件
+        online = {'event': 'read_pmc', 'logical_requests': [{'endpoint': 'elink.fcgi'}, {'endpoint': 'efetch.fcgi'}]}
+        source = self.fixture('snapshot.jsonl', [local, online])
+        out = self.dir / 'snapshot.md'
+        m._audit_report([source], str(out))
+        text = out.read_text(encoding='utf-8')
+        self.assertIn('PMC（本地快照）', text)  # 本项目自订：本地读取标签
+        self.assertIn('本地快照读取（未联网）', text)
+        self.assertIn('PubMed → PMC', text)  # 本项目自订：正常旧记录仍按联网请求归类
+
     def test_invalid_lines_require_explicit_partial_report(self):
         path = self.dir / "bad.jsonl"
         path.write_bytes(b'{"event":"count"}\n{bad}\n\xff\n{"event":"count","count":NaN}\n')

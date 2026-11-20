@@ -68,6 +68,20 @@ class LowHit(unittest.TestCase):
             return response(term, '0' if term == self.query else '12')  # 本项目自订：原式/放宽计数
         self.fake = fake
 
+    def test_unreliable_zero_does_not_offer_a_blocked_diagnosis(self):
+        with patch.object(m, '_esearch', AsyncMock(return_value=response(''))):
+            text = run(m.count, '膝骨关节炎')
+        self.assertIn('先按解析警告修正检索式', text)
+        self.assertNotIn('下一步：diagnose="auto"', text)
+
+    def test_unverified_scope_does_not_offer_a_blocked_diagnosis(self):
+        mock = AsyncMock(return_value=response(self.query))  # 本项目自订：执行式未按 Title 过滤
+        with patch.object(m, '_esearch', mock):
+            text = run(m.search, self.query, field='Title', diagnose='off')
+        self.assertIn('下一步：', text)
+        self.assertIn('范围', text)  # 本项目自订：范围无法核实也暂缓
+        self.assertNotIn('diagnose="auto"', text)
+
     def test_auto_preserves_scope_order_and_original_result(self):
         scope = dict(field='Title', mindate='2020', maxdate='2024', reldate=30, datetype='edat')  # 本项目自订：检索限制夹具
         relative = '2026/10/21:2026/11/19[Date - Entry]'  # 本项目自订：服务器相对窗口夹具
@@ -413,7 +427,7 @@ class Neighbors(unittest.TestCase):
         with patch.object(m, '_get_async', AsyncMock(return_value=json.dumps(payload))):
             page = json.loads(run(m.links, '1', compact=True))  # 本项目自订：默认 PMC
             empty = json.loads(run(m.links, '1', compact=True, limit=0))  # 本项目自订：空窗口
-        self.assertEqual(page['targets'], [{'id': '42', 'sources': ['1']}])  # 本项目自订：其他库的号不标成 PMID
+        self.assertEqual(page['targets'], [{'id': '42', 'pmcid': 'PMC42', 'sources': ['1']}])  # 本项目自订：保留裸号，并明确它是 PMC 号而非 PMID
         self.assertFalse(empty['targets'])
         self.assertEqual(empty['sources'][0]['total'], 1)  # 本项目自订：空窗口保留源计数
         self.summary.assert_not_awaited()

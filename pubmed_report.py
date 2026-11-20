@@ -48,6 +48,36 @@ def validate_audit_record(rec, audit_schema):
             raise ValueError("结束时间早于开始时间")
     if "event_id" in rec and (not isinstance(rec["event_id"], str) or not rec["event_id"].strip()):
         raise ValueError("event_id 必须为非空字符串")
+    if rec['event'].lstrip('_') == 'read_pmc' and 'logical_requests' in rec:
+        requests = rec['logical_requests']
+        if not isinstance(requests, list) or not all(isinstance(req, dict) for req in requests):
+            raise ValueError("logical_requests 必须为对象数组")
+        if any(not isinstance(req.get("endpoint"), str) for req in requests):
+            raise ValueError("logical_requests 的 endpoint 必须为字符串")
+
+
+def _event_source(rec):
+    event = rec['event'].lstrip('_')
+    if event == 'diff_files':
+        return '不适用（本地文件）', '本地文件处理'
+    if event in ('export_pmids', 'resume_export'):
+        params = rec.get('input_params')
+        if rec.get('format', params.get('format') if isinstance(params, dict) else None) == 'pmids':
+            return '不适用（本地文件）', '本地文件处理'
+    requests = rec.get('logical_requests')
+    if not requests:
+        if event == 'read_pmc' and rec.get('snapshot_reused') is True:
+            return 'PMC（本地快照）', '本地快照读取（未联网）'
+        return _AUDIT_UNKNOWN, _AUDIT_UNKNOWN
+    database = 'MeSH' if event == 'mesh' else 'PubMed'
+    if event == 'read_pmc':
+        endpoints = {req['endpoint'] for req in requests}
+        database = 'PMC'
+        if 'elink.fcgi' in endpoints:
+            database = 'PubMed → PMC' if 'efetch.fcgi' in endpoints else 'PubMed（仅查 PMC 关联）'
+    elif event == 'links':
+        database += ' → ' + str(rec.get('to', _AUDIT_UNKNOWN))
+    return database, 'NCBI E-utilities'
 
 
 def audit_report(inputs, out, *, skip_invalid=False, verify_files=False,
@@ -136,22 +166,7 @@ def audit_report(inputs, out, *, skip_invalid=False, verify_files=False,
         if translation is None and ("querytranslation_a" in rec or "querytranslation_b" in rec):
             translation = {k: rec[k] for k in ("querytranslation_a", "querytranslation_b") if k in rec}
         key = ("event", rec["event_id"]) if rec.get("event_id") else ("legacy", path, line)
-        event = rec["event"].lstrip("_")
-        params = rec.get("input_params")
-        if not isinstance(params, dict):
-            params = {}
-        requests = rec.get("logical_requests")
-        local = event == "diff_files" or (
-            event in ("export_pmids", "resume_export") and rec.get("format", params.get("format")) == "pmids")
-        if local:
-            database, platform = "不适用（本地文件）", "本地文件处理"
-        elif requests:
-            database = "MeSH" if event == "mesh" else "PubMed"
-            platform = "NCBI E-utilities"
-        else:
-            database, platform = _AUDIT_UNKNOWN, _AUDIT_UNKNOWN
-        if event == "links" and requests:
-            database += " → " + str(rec.get("to", _AUDIT_UNKNOWN))
+        database, platform = _event_source(rec)
         row = {"source": path, "source_sha256": digest, "source_line": line,
                "source_locations": locations[key], "database": database,
                "platform": platform, "legacy_ts": rec.get("ts"),

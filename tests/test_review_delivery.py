@@ -342,7 +342,7 @@ class Delivery(unittest.TestCase):
         with patch.object(m, '_esearch', REAL_ESEARCH), patch.object(m, '_get', retry):
             with patch.object(r, 'verify', wraps=r.verify) as verify:
                 pending = anyio.run(r.run, None, None, str(self.out))
-            self.assertEqual([call.args for call in verify.call_args_list].count((self.out,)), 1)  # 本项目自订：原路径仅作一次持锁核验
+            self.assertEqual([call.args for call in verify.call_args_list].count((self.out,)), 2)  # 本项目自订：拿锁前只读核验一次，锁内重验一次
             self.assertEqual(pending['handoff_status'], 'needs_execution_repair')
             online = True
             repaired = anyio.run(r.run, None, None, pending['directory'])
@@ -670,6 +670,73 @@ class Delivery(unittest.TestCase):
                     r.verify(self.out)
                 for name, payload in originals.items():
                     (self.out / name).write_bytes(payload)
+
+    def test_first_recall_receipt_verdict_must_match_audit_event(self):
+        self.execute()
+        def mutate(result):
+            changed = 'changed fixture translation'
+            result['checks'][0]['querytranslation'] = changed
+            result['querytranslations'] = [changed]
+            result['querytranslation'] = changed
+        self.rewrite_recall(mutate)  # 本项目自订：回执与状态一致改写，独立审计仍保留原判定
+        with self.assertRaisesRegex(ValueError, '审计事件'):
+            r.verify(self.out)
+
+    def test_recall_receipt_must_bind_its_own_check_event(self):
+        self.execute()
+        state = r.read_json(self.out / 'state.json')
+        foreign = state['stages']['search']  # 本项目自订：复用检索阶段的独立事件
+        self.rewrite_recall(lambda result: result.update(audit_event_id=foreign['result']['audit_event_id']))
+        self.rewrite_json('state.json', lambda value: value['stages']['recall-00000'].update(
+            audit_event_sha256=foreign['audit_event_sha256']))
+        self.rebind([], 'recall-00000')
+        with self.assertRaisesRegex(ValueError, '非首次核对事件'):
+            r.verify(self.out)
+
+    def test_resume_reads_state_only_after_acquiring_lock(self):
+        self.execute()
+        (self.out / 'delivery.json').unlink()  # 本项目自订：模拟另一进程尚未写出交付
+        real_read, real_lock = r.read_json, r.acquire_lock
+        events = []
+        def read(path):
+            if Path(path).name == 'state.json':
+                events.append('read')
+            return real_read(path)
+        def lock(root):
+            events.append('lock')
+            return real_lock(root)
+        self.calls.clear()
+        with patch.object(r, 'read_json', read), patch.object(r, 'acquire_lock', lock):
+            result = anyio.run(r.run, None, None, str(self.out))
+        self.assertEqual(result['handoff_status'], 'ready_for_screening')
+        self.assertEqual(events[0], 'lock')  # 本项目自订：不沿用拿锁前的旧状态快照
+        self.assertEqual(self.calls, [])  # 本项目自订：已完成批次不重取
+
+    def test_delivery_completed_while_waiting_for_lock_is_verified_not_rerun(self):
+        self.execute()
+        delivery = (self.out / 'delivery.json').read_bytes()
+        (self.out / 'delivery.json').unlink()
+        real = r.acquire_lock
+        def lock_after_completion(root):
+            (root / 'delivery.json').write_bytes(delivery)  # 本项目自订：另一进程在等待锁期间完成交付
+            return real(root)
+        self.calls.clear()
+        with patch.object(r, 'acquire_lock', lock_after_completion):
+            result = anyio.run(r.run, None, None, str(self.out))
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(self.calls, [])
+        self.assertEqual((self.out / 'delivery.json').read_bytes(), delivery)  # 未被重写
+
+    def test_completed_resume_does_not_acquire_write_lock(self):
+        first = self.execute()
+        self.calls.clear()
+        def no_lock(root):
+            raise AssertionError('completed delivery must not be locked')
+        with patch.object(r, 'acquire_lock', no_lock):
+            result = anyio.run(r.run, None, None, str(self.out))
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(result['handoff_status'], first['handoff_status'])
+        self.assertEqual(self.calls, [])
 
     def test_prior_effective_query_receipt_is_preserved(self):
         self.plan.update(mindate='2020', maxdate='2020')

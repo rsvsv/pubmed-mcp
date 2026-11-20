@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install package and selected SDK
-        run: python -m pip install . "$MCP_SPEC"
+        run: python -m pip install '.[test]' "$MCP_SPEC"
       - name: Check dependency consistency
         run: python -m pip check
       - name: Offline regressions

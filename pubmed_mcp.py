@@ -304,6 +304,7 @@ _diagnostics_impl = _diagnostics_module.Implementation(_runtime.Dependencies(
         'diff': lambda: diff,
         'export': lambda: export,
         'fetch_abstracts': lambda: fetch_abstracts,
+        'read_pmc': lambda: read_pmc,
         'links': lambda: links,
         'main': lambda: main,
         'mcp': lambda: mcp,
@@ -510,6 +511,10 @@ class NcbiError(_SdkToolError, RuntimeError):
     实测出处全在异常文本里，不继承它等于把「失败绝不静默」这条承诺在新用户默认的 2.x 通路
     上关掉。mcp 1.x 两分支都带原文，所以这是单向受益、不改变 1.x 的行为。
     RuntimeError 仍留在基类里，是为了保住外面 `except RuntimeError` 一类的旧写法。"""
+
+    rejected_page: dict | None = None
+    link_sources: list | None = None
+    audit_failure: dict | None = None
 
 
 _KEY = None
@@ -822,6 +827,13 @@ count = mcp.tool()(_audited(_tools_impl.count))
 
 
 fetch_abstracts = mcp.tool()(_audited(_tools_impl.fetch_abstracts))
+
+_pmc_module = _runtime.load_sibling('pubmed_pmc')
+_pmc_impl = _pmc_module.Implementation(_runtime.Dependencies(_pmc_module.DEPENDENCIES, {
+    '_get_async': lambda: _get_async, '_safe_json': lambda: _safe_json,
+    '_int': lambda: _int, '_audit': lambda: _audit, 'NcbiError': lambda: NcbiError,
+}))
+read_pmc = mcp.tool()(_audited(_pmc_impl.read_pmc))
 
 
 DB_WHITELIST = {"pmc", "nucleotide", "gene", "pubmed", "citedin", "refs"}
@@ -1160,9 +1172,11 @@ def review_services():
         'export': lambda: export,
         'check_recall': lambda: check_recall,
         'retry_recall': lambda: _audited(_tools_impl.retry_recall),
+        'uid_intersection': lambda: _tools_module._uid_intersection,
         'mask': lambda: _mask,
     }, {
         'recall_limit': lambda: GOLD_MAX,
+        'recall_unknown_prefix': lambda: _tools_module._RECALL_UNKNOWN_PREFIX,
         'unknown': lambda: _AUDIT_UNKNOWN,
         'report_columns': lambda: _REPORT_COLUMNS,
         'source_path': lambda: __file__,

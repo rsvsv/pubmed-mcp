@@ -129,6 +129,112 @@ class Structure(unittest.TestCase):
                 self.assertNotIn("group_tag", lint(term))
         self.assertIn("term_tag_unknown", lint("(a OR b)[tiabb]"))   # 只报未知标签，不重复报组
 
+    def test_uid_group_warning_follows_server_translation(self):
+        term = '(11 OR 22)[uid]'  # 本项目自订：模拟 PMID 及其回显，不当文献记录
+        def warnings(translation):
+            return m._query_warnings({'_term': term, 'querytranslation': translation})
+        self.assertEqual(warnings('11[UID] OR 22[UID]'), [])  # 本项目自订：正确回显
+        for qt in ('', '11[UID] OR 22[All Fields]', '11[UID] AND 22[UID]', '11[UID] OR 33[UID]'):  # 本项目自订：缺回显、错字段、错布尔、错号
+            with self.subTest(qt=qt):
+                self.assertTrue(any('未能' in text for text in warnings(qt)))
+                self.assertFalse(any('按无标签执行' in text for text in warnings(qt)))
+
+    def test_grouped_uids_preserve_required_publication_year(self):
+        ids = '39873067 39759610 39611074 39344450'.split()  # 本项目测试输入：本轮匿名 stdio 原例；不用于推断论文内容
+        term = '(' + ' OR '.join(ids) + ')[uid] AND 2024[dp]'  # 实测/已核对：本轮匿名 search 请求
+        members = ' OR '.join(pid + '[UID]' for pid in ids)
+        date = '2024/01/01:2024/12/31[Date - Publication]'  # 实测/已核对：同请求 querytranslation 的日期因子
+        good = f'({members}) AND {date}'
+        self.assertEqual(m._term_lint(term, good), [])
+        self.assertEqual(m._term_lint(term, f'{date} AND ({members})'), [])
+        bad = ('', members, date, good.replace('[UID]', '[All Fields]', 1),  # 本项目自订：缺回显、缺因子、错字段
+               good.replace(ids[-1], ids[0]), good.replace(' AND ', ' OR '),  # 本项目自订：重复号替掉一个号、错连接词
+               good.replace('Publication', 'Entry'), good.replace('12/31', '12/30'),  # 本项目自订：错日期轴、差一天
+               f'{ids[0]}[UID] OR (({members}) AND {date})',  # 本项目自订：该年只是一个 OR 分支的限制
+               f'({members}) AND {date} AND ({members})')
+        for qt in bad:
+            with self.subTest(translation=qt):
+                self.assertIn('uid_group_unverified', {code for code, breaking, _ in m._term_lint(term, qt) if breaking})
+
+    def test_topic_group_loses_title_abstract_in_live_echo(self):
+        term = '(miniscrew OR "mini-implant")[tiab]'
+        qt = '"miniscrew"[All Fields] OR "miniscrews"[All Fields] OR "mini-implant"[All Fields]'  # 实测/已核对：本轮匿名 search.querytranslation
+        self.assertIn('group_tag', {code for code, breaking, _ in m._term_lint(term, qt) if breaking})
+
+    def test_intersection_cannot_certify_group_from_batch_alone(self):
+        batch = ['11', '22']  # 本项目自订：已知集与原式完全重叠
+        term = '(11 OR 22)[uid] AND 2024[dp]'  # 本项目自订：组末加标签和发表年份
+        page = {'_term': f'({term}) AND (11[uid] OR 22[uid])',  # 本项目自订：独立追加的已知集编号
+                'querytranslation': '(11[UID] OR 22[UID]) AND 2024[Date - Publication]'}  # 本项目自订：只回显一组，不能归给原式
+        with patch.object(m, '_esearch', AsyncMock(return_value=dict(page, count=str(len(batch)), idlist=batch))):
+            result = json.loads(run(m.check_recall, term, ' '.join(batch), as_json=True))
+        self.assertEqual(result['retrieved'], batch)
+        self.assertEqual(result['unknown'], batch)
+        self.assertEqual(result['found'], [])
+        self.assertTrue(any('未能' in message and 'PMID' in message for message in result['warnings']))
+
+    def test_explicit_conditions_and_all_uid_groups_are_checked_together(self):
+        term = '(11 OR 22)[uid] AND review[pt]'  # 本项目自订：组末 UID 组加独立显式条件
+        echo = '(11[UID] OR 22[UID]) AND "review"[Publication Type]'  # 本项目自订：回显字段别名
+        self.assertEqual(m._term_lint(term, echo), [])
+        for qt in (echo.replace('Publication Type', 'All Fields'),):  # 本项目自订：字段未保留
+            self.assertIn('uid_group_unverified', {c for c, b, _ in m._term_lint(term, qt) if b})
+        two = '(11 OR 22)[uid] AND (33 OR 44)[uid]'  # 本项目自订：原式含两个组末 UID 组
+        both = '(11[UID] OR 22[UID]) AND (33[UID] OR 44[UID])'  # 本项目自订：两组逐项保留
+        self.assertEqual(m._term_lint(two, both), [])
+        for qt in (both.replace('33[UID]', '55[UID]'), both.replace(' AND ', ' OR ', 1)):  # 本项目自订：错号、错连接词
+            self.assertIn('uid_group_unverified', {c for c, b, _ in m._term_lint(two, qt) if b})
+
+    def test_intersection_with_partially_overlapping_groups_is_verified(self):
+        term = '(11 OR 22 OR 33)[uid] AND 2024[dp]'  # 本项目自订：用户组含 11/22/33，并限 2024 年
+        batch = ['33', '44']  # 本项目自订：已知集与用户组仅 33 重叠
+        echo = ('(11[UID] OR 22[UID] OR 33[UID]) AND 2024/01/01:2024/12/31[Date - Publication] '
+                'AND (33[UID] OR 44[UID])')  # 本项目自订：回显含原式组、日期与已知集组三个 AND 因子
+        page = {'_term': f'({term}) AND (33[uid] OR 44[uid])', 'querytranslation': echo}  # 本项目自订：实际请求式
+        with patch.object(m, '_esearch', AsyncMock(return_value=dict(page, count='1', idlist=['33']))):
+            result = json.loads(run(m.check_recall, term, ' '.join(batch), as_json=True))
+        self.assertEqual(result['retrieved'], ['33'])  # 本项目自订：实取只有交集 33
+        self.assertEqual(result['found'], ['33'])
+        self.assertEqual(result['unknown'], [])
+
+    def test_identical_user_and_batch_groups_are_not_deduplicated(self):
+        term = '(11 OR 22)[uid]'  # 本项目自订：用户组与已知集数值完全相同
+        batch = ['11', '22']  # 本项目自订：同上的已知集
+        echo = '(11[UID] OR 22[UID]) AND (11[UID] OR 22[UID])'  # 本项目自订：两组分别出现在回显里
+        page = {'_term': f'({term}) AND (11[uid] OR 22[uid])', 'querytranslation': echo}  # 本项目自订
+        with patch.object(m, '_esearch', AsyncMock(return_value=dict(page, count='2', idlist=batch))):
+            result = json.loads(run(m.check_recall, term, ' '.join(batch), as_json=True))
+        self.assertEqual(result['found'], batch)  # 本项目自订：两组分别出现才算两个因子
+        self.assertEqual(result['unknown'], [])
+
+    def test_duplicate_extra_date_exceeds_the_window_budget(self):
+        term = '(11 OR 22)[uid]'  # 本项目自订：原式不含日期
+        batch = ['33', '44']  # 本项目自订：独立已知集
+        date = '2024/01/01:2024/12/31[Date - Publication]'  # 本项目自订：一个外加日期窗口
+        echo = f'(11[UID] OR 22[UID]) AND {date} AND (33[UID] OR 44[UID])'  # 本项目自订：一组外加窗口
+        self.assertEqual(m._term_lint(term, echo, uid_batch=batch, uid_dates=1), [])
+        duplicate = echo + ' AND ' + date  # 本项目自订：同一窗口在回显里出现两次
+        self.assertIn('uid_group_unverified',
+                      {c for c, b, _ in m._term_lint(term, duplicate, uid_batch=batch, uid_dates=1) if b})
+
+    def test_links_membership_with_grouped_uid_term_is_checked(self):
+        source, candidates = '1', ['11', '22', '33']  # 本项目自订：来源种子与候选 PMID
+        term = '(11 OR 22)[uid]'  # 本项目自订：原式为组末 UID
+        echo = '(11[UID] OR 22[UID]) AND (11[UID] OR 22[UID] OR 33[UID])'  # 本项目自订：原式组与候选组
+        async def elink(path, params, timeout):
+            return json.dumps({'linksets': [{'ids': [params['id']], 'linksetdbs': [
+                {'linkname': 'pubmed_pubmed', 'links': candidates}]}]})  # 本项目自订：候选夹具
+        async def search(q, **kwargs):
+            return {'count': '2', 'idlist': ['11', '22'], 'querytranslation': echo, '_term': q,
+                    'retstart': '0', '_request_params': {'term': q}}  # 本项目自订：交集回包
+        with patch.object(m, '_get_async', elink), patch.object(m, '_esearch', search), \
+                patch.object(m, '_pmids_exist', AsyncMock(return_value={source: 'present'})), \
+                patch.object(m, '_esummary_dicts', AsyncMock(return_value=[])):
+            data = json.loads(run(m.links, source, to='pubmed', term=term, as_json=True))
+        rows = {r['pmid']: r for r in data['candidate_details']}
+        self.assertTrue(rows['11']['in_term'] and rows['22']['in_term'])  # 本项目自订：原式组命中
+        self.assertFalse(rows['33']['in_term'])  # 本项目自订：仅候选组不命中
+
     def test_unbalanced_parens_skip_structure_checks(self):
         f = codes("(a OR b AND c")
         self.assertIn("paren", f)

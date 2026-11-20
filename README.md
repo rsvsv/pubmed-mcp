@@ -14,7 +14,7 @@ PubMed MCP 服务（stdio），直接调用 NCBI E-utilities，不经过 `pubmed
 | 1.4.1 | 检索式本地语法检查（拼错的字段标签、`AND NOT`、前导截词等）；count 0 条解释 |
 | 1.4.0 | 系统综述检索助手 `check_recall` / `mesh` / `diff` / `export`；可选检索留痕 |
 
-本分支提供 [便携安装包（PubMed MCP 和两套检索技能）](downloads/pubmed-mcp-portable.zip)、[SHA-256 校验文件](downloads/SHA256.txt) 和 [安装说明](docs/portable-install.md)。包与本分支源码一同更新，不替换既有 GitHub Release 附件。已知论文核对、引用追踪、分页导出与综述交付的用法和限制见 [新功能使用说明](docs/retrieval-files.md)。
+本分支提供 [便携安装包（PubMed MCP 和两套检索技能）](downloads/pubmed-mcp-portable.zip)、[SHA-256 校验文件](downloads/SHA256.txt) 和 [安装说明](docs/portable-install.md)。本次安装包包含 PMC 按需阅读（`read_pmc`）和摘要关键词多句预览（`search` 的 `context_keyword`）。校验文件用于核对下载的 ZIP；后续源码修改不会自动更新安装包，也不会替换已有 GitHub Release 附件。已知论文核对、引用追踪、分页导出与综述交付的用法和限制见 [新功能使用说明](docs/retrieval-files.md)。
 
 综述检索交付入口：`pubmed-review --review-plan <方案.json> --out-dir <新目录>` 将完整 PMID 基线、题录摘要、待筛选表、RIS、留痕和待解决事项放在同一目录；支持续跑与交付核验。实际用法与完成边界见 [综述检索交付](docs/review-delivery.md)。
 
@@ -73,6 +73,7 @@ pubmed-mcp --help
 ```bash
 pip install git+https://github.com/rsvsv/pubmed-mcp.git
 pubmed-mcp --check-key
+pubmed-mcp --selftest "tooth resorption"
 ```
 
 `--check-key` 应返回 rc=0 并打印 key 形状/限速档/依赖版本。mcp 1.x 与 2.x 都支持；要是它报
@@ -237,13 +238,14 @@ python pubmed_mcp.py --check-key
 
 ## 工具
 
-八个 `@mcp.tool()`〔本 README 逐字对照源码装饰的定义数出，2026-11-11〕：
+当前源码注册的 MCP 工具（旧安装包以客户端实际列出的工具为准）：
 
 | 工具 | 作用 | 要点 |
 |---|---|---|
 | `search` | 检索，返回命中数 + 每条的 PMID/日期/期刊卷页/标题/作者/DOI/PMC | `term` 支持 PubMed 语法：字段标签（写法与「引号只包短语、别把 `[Tag]` 包进去」的说明见 `search` 的工具说明）、`A AND B`、截词 `resorption*`、范围 `2024:2026[dp]`；一次一个概念、靠字段标签收窄 |
 | `count` | 只问「这个主题有多少篇」，不取记录 | 最省请求；查询被改写时印出「NCBI 实际执行」 |
 | `fetch_abstracts` | 按 PMID 取摘要原文 | 内部每 50 个一批并发；报「要几条/实取几条/缺哪些」；可选 `fields`/`as_json` 精简、`out_path` 落盘（1.4.2） |
+| `read_pmc` | 按 PMID 或 PMCID 从 PMC 读一篇的指定部分 | 默认列目录；复制 `selector` 返回正文段、图注或结构化表格，长内容按 `next_offset` 续取。不读图像、PDF 或补充文件。 |
 | `links` | 查这些 PMID 在别的数据库里的对应记录（elink） | `to=pmc` 查询 PMC 关联，不保证开放许可或当前可下载；可选 `pmc`/`nucleotide`/`gene`/`pubmed`/`citedin`（施引文献）/`refs`（参考文献） |
 | `check_recall` | 已知文献找回测试：一批已知相关 PMID 哪些被 `term` 检回 | 分批 esearch 交集判定 found/missing（每批 50，避免 URL 超长 414）；缺失项附标题与存在状态（present/unavailable/unknown）；term 被 NCBI 忽略时显著告警；只证明已知集找回，不代表查全率 |
 | `mesh` | 查 MeSH 主题词表 | 描述符、入口词（同义词）、树号、下位词、范围注；无描述符命中不等于主题无文献 |
@@ -260,18 +262,25 @@ python pubmed_mcp.py --check-key
 
 | detail | 返回内容 | 保留的功能与限制 |
 |---|---|---|
-| `full` | 原有完整题录字段 | 显式选择；原 JSON 字段形状保持兼容 |
+| `full` | 完整题录字段与来源作者名单 | 显式选择；旧字段及类型保留，JSON 增补作者字段 |
 | `brief` | PMID、日期、完整标题、全部文献类型 | 仍读取元数据；不删除撤稿、勘误类型；省略的作者、期刊、DOI/PMC 不表示来源缺失 |
 | `ids` | 按 esearch 返回顺序给 PMID | 跳过 esummary；未获取元数据、未检查撤稿等类型；JSON 的 returned 按 PMID 计，esummary_missing 为 null |
 
-各档均保留实际执行式、查询警告、零结果解释与检索窗口上限提示。文本中的执行式沿用原有截断规则，完整执行式始终可从 JSON 的 querytranslation 取得。`ids` 不适合直接据此判断文献质量或引用细节。
+各档均保留实际执行式、查询警告、零结果解释与检索窗口上限提示。文本完整显示实际执行式，JSON 在 `querytranslation` 中返回同一执行式。`ids` 不适合直接据此判断文献质量或引用细节。
 
 调用示例（本项目自订使用示例）：
 
 ```python
 search('"root resorption"[tiab]', detail="brief")
 search('"root resorption"[tiab]', detail="ids", as_json=True)
+search('"curve of Wilson"[tiab] AND extraction[tiab]', context_keyword="extraction")
 ```
+
+想看某个词在摘要里怎么用，给 `context_keyword` 一个词或短语（不是检索式）。仅在开启时额外读取当前页摘要，每篇按段落顺序最多展示 3 条匹配原句〔本项目自订预览预算〕，超出时明确报出省略句数；只有其他摘要时标明来源。文本突出完整的 `non-extraction` 等写法。JSON 的 `keyword_preview.by_pmid` 保留首句 `sentence` 和 `matches`，有后续原句时追加 `additional_sentences`，截到预算时用 `omitted_sentence_count` 报实际省略句数。普通未匹配在文本中按页汇总；无摘要、记录未取回、请求失败仍逐篇标明，JSON 始终按 PMID 保留状态。不把预览当作数据库命中原因或纳入判断，不加 `NOT`、不改变名单或计数。预览用于直接查看 `brief` / `full`，不与仅取编号或保存题录快照混用；用 `retmax` 控制本页大小。
+
+`full` JSON 的 `authors` 保留旧的简短作者预览；`authors_truncated` 表示该预览是否截短，`author_names` 列出来源题录返回的所有作者名称（保留顺序），不是出版商全文署名的独立核验。`links(to="pmc")` 的 JSON 和落盘结果保留旧的裸 `target_ids`，请把 `sources[].pmcids[]`、`edges[].pmcid` 或精简页的 `targets[].pmcid` 直接交给 `read_pmc`。裸数字按 PMID 解释；有直接关联不保证此时可读。
+
+用升级前的 `previous_path` 接续检索时，新版作者字段参与题录指纹比较，原先展示过的题录可能再次展示。这不是新命中文献；请按 PMID 比较名单。新版快照继续按新版指纹比较。
 
 精简不保证每次输出更短：少量短题录可能因必要说明而抵消节省。尚未测量实际模型 token 或费用收益。
 
@@ -318,7 +327,11 @@ XML 解析出的摘要文字与 NCBI 文本档逐字一致（去空白比对，1
 - 完整联网 `--probe` 单独手动运行，不将外部网络故障混入普通提交检查。
 - Actions 红灯不会自动禁止合并；强制通过后才允许合并需要仓库分支保护规则，本配置不会改动该设置。
 
-本地执行同一套离线检查：
+本地执行同一套离线检查（只给开发／测试环境装 `test` extra；普通用户无需 pytest）：
+
+```bash
+python -m pip install ".[test]"
+```
 
 ```bash
 python -I tests/run_offline.py

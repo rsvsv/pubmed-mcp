@@ -12,7 +12,7 @@ RUNTIME_FILES = (
     "pubmed_mcp.py", "pubmed_cli.py", "pubmed_review.py", "pubmed_runtime.py",
     "pubmed_query.py", "pubmed_records.py", "pubmed_report.py", "pubmed_audit.py",
     "pubmed_transport.py", "pubmed_files.py", "pubmed_export.py",
-    "pubmed_diagnostics.py", "pubmed_tools.py", "pubmed_services.py",
+    "pubmed_diagnostics.py", "pubmed_tools.py", "pubmed_services.py", "pubmed_pmc.py",
 )
 
 

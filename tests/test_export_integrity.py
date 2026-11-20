@@ -45,6 +45,25 @@ class ExportIntegrity(unittest.TestCase):
         for key in ("written_records", "missing_pmids", "integrity_status", "integrity_issues"):
             self.assertEqual(audit.call_args.kwargs[key], result[key])
 
+    def test_uid_group_export_reviews_execution_not_returned_ids(self):
+        ids = ['11', '22']  # 本项目自订：两次导出用相同号码和计数
+        term = '(11 OR 22)[uid] AND 2024[dp]'  # 本项目自订：以发表年份限定编号组
+        date = '2024/01/01:2024/12/31[Date - Publication]'  # 本项目自订：整年回显
+        for op, scope, integrity in [('AND', 'not_requested', 'no_discrepancy_detected'),
+                                     ('OR', 'unverified', 'needs_review')]:
+            qt = f'(11[UID] OR 22[UID]) {op} {date}'  # 本项目自订：只改变外层连接词
+            reply = dict(es(ids), _term=term, querytranslation=qt)
+            async def call():
+                return json.loads(await m.export(term, self.path(op + '.txt'), as_json=True))
+            with self.subTest(op=op), patch.object(m, '_esearch', AsyncMock(return_value=reply)):
+                result = anyio.run(call)
+                self.assertEqual(Path(result['path']).read_text().splitlines(), ids)
+                self.assertEqual((result['scope_status'], result['integrity_status']), (scope, integrity))
+                pages = [c for c in result['retrieval_checks'] if 'review_reasons' in c]
+                self.assertTrue(pages)
+                self.assertTrue(all(bool(c['review_reasons']) == (op == 'OR') for c in pages))
+                self.assertEqual('scope_unverified' in result['integrity_issues'], op == 'OR')
+
     def test_empty_csv_has_header_and_accurate_warning(self):
         with patch.object(m, "_esearch", AsyncMock(return_value=es([]))), \
                 patch.object(m, "_esummary_dicts", AsyncMock(return_value=[])):

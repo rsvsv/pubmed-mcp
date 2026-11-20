@@ -17,7 +17,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="pubmed-mcp",
         description="PubMed 检索服务与文件工作流；不带参数启动 MCP stdio 服务。",
-        epilog=("MCP 直接提供 search/count/fetch_abstracts/links/check_recall/mesh/diff/export。\n"
+        epilog=("MCP 直接提供 search/count/fetch_abstracts/read_pmc/links/check_recall/mesh/diff/export。\n"
                 "综述交付、离线审计报告、名单差集和完整单轮追引用流程通过命令行执行。\n"
                 "links 支持 refs/citedin；设置 PUBMED_AUDIT_DIR 后 MCP 调用也会留痕。\n"
                 "帮助不会联网或创建任务。命令及文件边界见 docs/review-delivery.md、docs/retrieval-files.md。"),

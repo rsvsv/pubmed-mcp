@@ -35,6 +35,9 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=9,<10"]  # 本项目自订测试依赖：含 unittest subTest 支持；普通运行安装无需 pytest。
+
 [project.urls]
 Homepage = "https://github.com/rsvsv/pubmed-mcp"
 Repository = "https://github.com/rsvsv/pubmed-mcp"
@@ -46,4 +49,4 @@ pubmed-review = "pubmed_review:main"
 
 [tool.setuptools]
 # 服务与独立进程的综述交付入口；不使用包目录结构。
-py-modules = ["pubmed_mcp", "pubmed_cli", "pubmed_review", "pubmed_runtime", "pubmed_query", "pubmed_records", "pubmed_report", "pubmed_audit", "pubmed_transport", "pubmed_files", "pubmed_export", "pubmed_diagnostics", "pubmed_tools", "pubmed_services"]
+py-modules = ["pubmed_mcp", "pubmed_cli", "pubmed_review", "pubmed_runtime", "pubmed_query", "pubmed_records", "pubmed_report", "pubmed_audit", "pubmed_transport", "pubmed_files", "pubmed_export", "pubmed_diagnostics", "pubmed_tools", "pubmed_services", "pubmed_pmc"]

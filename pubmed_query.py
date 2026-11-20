@@ -287,7 +287,7 @@ _FW_TAG_RE = re.compile(
 )
 
 
-def _syntax_findings(term):
+def _syntax_findings(term, querytranslation='', uid_batch=(), uid_dates=0):
     """独立于 esearch 响应的原始检索式语法检查。返回 [(code, breaking, warning_text), ...]。
     breaking=True 表示极可能导致概念丢失、粘连或分组错乱（供 check_recall 判失真）。
     本项目自订检查口径：不以弯撇号判断引号配对；不单凭 /de、/ad、/su、/ab 判外库语法。
@@ -371,7 +371,7 @@ def _syntax_findings(term):
                         f'⚠️ 未加引号的多词片段「{pair}」末尾带截词符 *：* 只作用于最后一个词且会关闭整段短语的 '
                         f'MeSH 自动映射；若需短语截词请加半角双引号（如 "{pair}"）。'))
             break
-    out.extend(_term_lint(term))
+    out.extend(_term_lint(term, querytranslation, uid_batch=uid_batch, uid_dates=uid_dates))
     return out
 
 
@@ -443,6 +443,48 @@ def _tag_shape(norm):
     return not norm[0].isdigit() or norm.startswith("1au")
 
 
+def _expand_uid_groups(term):
+    """把组末 [uid]/[pmid] 的纯数字 OR 组展开成逐号原子，只供本地比对，不改请求。
+    返回 (展开后的式子, 展开的组数)；括号或引号不配对、没有合法组时原样返回、组数为 0。"""
+    text = str(term or "")
+    pairs, stack = {}, []
+    quoted = bracket = False
+    for i, ch in enumerate(text):
+        if quoted:
+            quoted = ch != '"'
+        elif bracket:
+            if ch == ']':
+                bracket = False
+            elif ch == '[':
+                return text, 0
+        elif ch == '"':
+            quoted = True
+        elif ch == '[':
+            bracket = True
+        elif ch == '(':
+            stack.append(i)
+        elif ch == ')':
+            if not stack:
+                return text, 0
+            pairs[i] = stack.pop()
+    if stack or quoted or bracket:
+        return text, 0
+    spans = []
+    for match in re.finditer(r"\)\s*\[([^\[\]\n]{1,40})\]", text):
+        open_at = pairs.get(match.start())
+        if open_at is None or _tag_norm(match[1]) not in ('uid', 'pmid'):
+            continue
+        inner = text[open_at + 1:match.start()]
+        if not re.fullmatch(r"\s*[0-9]+(?:\s+OR\s+[0-9]+)+\s*", inner):
+            continue
+        spans.append((open_at, match.end(), inner))
+    out = text
+    for open_at, end, inner in reversed(spans):
+        typed = '(' + ' OR '.join(pid + '[uid]' for pid in inner.split() if pid != 'OR') + ')'
+        out = out[:open_at] + typed + out[end:]
+    return out, len(spans)
+
+
 def _date_tuple(y, rest, end):
     parts = [int(x) for x in rest.split("/") if x]
     m_ = parts[0] if parts else (12 if end else 1)
@@ -450,7 +492,7 @@ def _date_tuple(y, rest, end):
     return int(y), m_, d_
 
 
-def _term_lint(term):
+def _term_lint(term, querytranslation='', uid_batch=(), uid_dates=0):
     """半角 [Tag]、子字段、前导截词、AND NOT、组标签、日期写法、同层 AND/OR 混用。纯本地，零请求。
     返回同 _syntax_findings 的 (code, breaking, text)。"""
     import difflib
@@ -554,6 +596,11 @@ def _term_lint(term):
         else:
             level_ops[-1].add(t[0])
     if not bad and not stack:
+        # 一次展开原式里的全部组末 UID 组；独立显式条件按字段别名核对，不靠子串搜索放行。
+        expanded, uid_groups = _expand_uid_groups(term)
+        if uid_groups and not _explicit_tree_matches(expanded, querytranslation, uid_batch=uid_batch, extra_dates=uid_dates):
+            out.append(('uid_group_unverified', True,
+                        '⚠️ 未能从实际执行式逐项核实这组 PMID；请分别给编号加 [uid] 后对照。'))
         grp = []
         for m in re.finditer(r"\)\s*\[([^\[\]\n]{1,40})\]", qmask):
             norm = _tag_norm(m[1])
@@ -561,6 +608,8 @@ def _term_lint(term):
             if o is None or norm in ("all fields", "all") or norm.partition(":")[0] not in _TAG_OK:
                 continue
             inner = term[o + 1:m.start()]
+            if norm in ('uid', 'pmid') and re.fullmatch(r'\s*[0-9]+(?:\s+OR\s+[0-9]+)+\s*', inner):
+                continue  # 已在上面按整条式子一次核对
             units = re.findall(r'"[^"\n]*"|[^\s()"]+', inner)
             units = [u for u in units if u not in ("AND", "OR", "NOT")]
             if len(units) > 1:
@@ -584,11 +633,13 @@ def _lowercase_and_changed(term, qt):
     return bool(re.search(r'\band\b', outside) and re.search(r'"and\s', qt, re.I))
 
 
-def _query_warnings(d):
+def _query_warnings(d, *, findings=None):
     """只提示，不偷偷修写检索式；原始响应样例见审计回归测试。"""
     term = str(d.get("_term") or "")
     qt = str(d.get("querytranslation") or "")
-    warnings = [text for _, _, text in _syntax_findings(term)]
+    if findings is None:
+        findings = _syntax_findings(term, qt)
+    warnings = [text for _, _, text in findings]
     if _lowercase_and_changed(term, qt):
         warnings.append("⚠️ 小写 and 被实际执行式当作词的一部分；请改为大写 AND 后重查。")
     missing_cjk = sorted(set(re.findall(r"[㐀-鿿぀-ヿ]+", term)) -
@@ -789,6 +840,68 @@ def _member_atom(text, default_field='', ignored=()):
     return ('leaf', tag, value)
 
 
+def _uid_value(text, bare=False):
+    text = text.strip()
+    match = _UID_ATOM.fullmatch(text)
+    if match:
+        return match[1] or match[2]  # 本项目口径：引号不改变显式 UID 的编号
+    if bare and re.fullmatch(r'[0-9]+', text):
+        return text
+
+
+def _explicit_tree_matches(explicit_term, translation, uid_batch=(), extra_dates=0):
+    """Compare the explicit Boolean structure with its actual echo. Only UID, date and
+    explicitly tagged operands are comparable; anything else makes the check inconclusive.
+    The tool's own UID batch appears as one additional AND factor, never in place of a
+    user factor. Numbers, fields, date bounds, connectives, grouping and occurrence
+    counts all have to match; a duplicate factor is not deduplicated."""
+    def leaf(text):
+        uid = _uid_value(text)
+        if uid is not None:
+            return 'uid', uid
+        atom = _member_atom(text)
+        if atom[0] == 'date':  # 本项目口径：日期轴、下界、上界必须全部一致
+            return atom
+        if _member_span(text) is not None and atom[0] == 'leaf' and atom[1]:
+            return atom  # 独立显式条件；[pt]/[Publication Type] 等字段别名按 _MEMBER_TAG 归一
+        raise ValueError('not an explicit UID, date or tagged field')
+
+    def signature(node):
+        kind, text, children = node
+        if kind == 'leaf':
+            return leaf(text)
+        parts = tuple(signature(child) for child in children)
+        if kind == 'NOT':
+            return kind, parts  # 有方向，不换序。
+        flat = []
+        for part in parts:
+            if part[0] == kind:
+                flat.extend(part[1])
+            else:
+                flat.append(part)
+        return flat[0] if len(flat) == 1 else (kind, tuple(sorted(flat, key=repr)))
+
+    def factors(sig):
+        return list(sig[1]) if sig[0] == 'AND' else [sig]
+
+    try:
+        remaining = Counter(factors(signature(_diagnostic_tree(translation or ''))))
+        for factor in factors(signature(_diagnostic_tree(explicit_term))):
+            remaining[factor] -= 1
+            if remaining[factor] < 0:
+                return False
+        if uid_batch:
+            factor = _member_group('OR', (('uid', str(pid)) for pid in uid_batch))
+            remaining[factor] -= 1
+            if remaining[factor] < 0:
+                return False
+        unexplained = [f for f, count in remaining.items() if count > 0]
+        extra = sum(remaining[f] for f in unexplained)  # 同一因子出现两次要占两份窗口预算
+        return extra <= extra_dates and all(f[0] == 'date' for f in unexplained)
+    except (ValueError, RecursionError):
+        return False
+
+
 def _member_group(kind, children):
     if kind == 'NOT':
         return kind, tuple(children)  # 有方向，不换序。
@@ -877,18 +990,11 @@ def _tagged_subject_membership(term, translation, field, uid_batch, limits, date
 
 def _batch_uid_clause_verified(term, translation, field, batch):
     """Require a whole UID disjunction as an AND factor, independent of user UID operands."""
-    def uid(text, bare=False):
-        match = _UID_ATOM.fullmatch(text.strip())
-        if match:
-            return match[1] or match[2]  # 本项目口径：带引号与裸数字的 UID 回显
-        if bare and re.fullmatch(r'[0-9]+', text.strip()):
-            return text.strip()
-
     def members(node, bare=False):
         kind, text, children = node
         if kind == 'OR':
             return set().union(*(members(child, bare) for child in children))
-        return {uid(text, bare) if kind == 'leaf' else None}
+        return {_uid_value(text, bare) if kind == 'leaf' else None}
 
     def factors(node):
         if node[0] == 'AND':  # 本项目口径：只穿过必需合取，不穿过 OR/NOT 来认工具编号条件
@@ -919,7 +1025,9 @@ def _batch_uid_clause_verified(term, translation, field, batch):
 def _scope_evidence(term, translation, field, bounds, relative, datetype, uid_batch=(), *, check_subject=False, ignored=(), mappings=()):
     """Validate observable scope, not just wire parameters. Return reasons and server-relative bounds."""
     reasons = []
-    if uid_batch and not _batch_uid_clause_verified(term, translation, field, uid_batch):
+    # 组末 UID 标签按逐号原子参与比对；只改本地核对用的式子，不改实际请求。
+    explicit, _ = _expand_uid_groups(term)
+    if uid_batch and not _batch_uid_clause_verified(explicit, translation, field, uid_batch):
         reasons.append('不能核实执行式按完整的本批 PMID 与原式取交集')
     # A field-looking date inside a quoted literal is not a date restriction.
     structural = re.sub(r'"[^"\n]*"', '"term"', translation)
@@ -940,7 +1048,7 @@ def _scope_evidence(term, translation, field, bounds, relative, datetype, uid_ba
         else:
             reasons.append('无法唯一核实外加相对日期窗口')
     if uid_batch or check_subject:
-        reasons.extend(_tagged_subject_membership(term, translation, field, uid_batch, (bounds, rel_window), datetype, ignored, mappings))
+        reasons.extend(_tagged_subject_membership(explicit, translation, field, uid_batch, (bounds, rel_window), datetype, ignored, mappings))
     if field:
         accepted = _FIELD_ALIASES.get(field.casefold(), set()) | {field.casefold()}
         # 本批 UID 是本工具外加的，不算主题词；原式自带的 UID/日期才是用户条件。
@@ -975,7 +1083,7 @@ def _quoted_zero_warning(phrases):
             + '，'.join(phrases) + '。零命中不能说明主题没有文献。可去掉引号按词查，或换用经核实的 MeSH 词。')
 
 
-def _note(d, *, include_translation=True):
+def _note(d, *, include_translation=True, findings=None):
     """生成解析提示；JSON 已含完整执行式时可省去其文本行，警告仍保留。"""
     lines = []
     term = str(d.get("_term") or "")
@@ -997,7 +1105,7 @@ def _note(d, *, include_translation=True):
             lines.append(f"NCBI 实际执行：{qt[:600]}…（截断；完整解析用 as_json=True 取）")
         else:
             lines.append(f"NCBI 实际执行：{qt}")
-    lines.extend(_query_warnings(d))
+    lines.extend(_query_warnings(d, findings=findings))
     e = d.get("errorlist") or {}
     nf = []
     if isinstance(e, dict):
@@ -1227,6 +1335,7 @@ def _term_vanished(qt, term=None, field=''):
     if not qt or not qt.strip():
         return False  # 缺少执行式不能证明条件被清空。
     if term is not None:
+        term, _ = _expand_uid_groups(term)  # 组末 UID 标签是用户自己的 UID 条件，不是主题词
         term_atoms = list(_query_atoms(term, field))
         subjects = [atom for atom in term_atoms if _atom_role(atom, field) == 'subject']
         user_uid = _uid_atoms(term, field)
@@ -1253,7 +1362,7 @@ _DEGRADING_OUTMSG_RE = re.compile(
 )
 
 
-def _recall_warnings_and_degraded(raw_term, batch_ds, *, include_translation=True):
+def _recall_warnings_and_degraded(raw_term, batch_ds, *, include_translation=True, uid_batch=(), uid_dates=0):
     """汇总 check_recall 对原始 term 的语法警告与各批 esearch 响应警告，并判定是否存在部分词失效/失真。
     用原始 raw_term 做语法/中文/短语缺口检查，防止外层 `({term}) AND (uids)` 吞掉括号失衡告警〔实测 2026-11-12〕。"""
     first_d = batch_ds[0]
@@ -1276,9 +1385,11 @@ def _recall_warnings_and_degraded(raw_term, batch_ds, *, include_translation=Tru
             seen.add(msg)
             lines.append(msg)
 
-    raw_findings = _syntax_findings(raw_term)
-    for m in _query_warnings({"_term": raw_term, "querytranslation": qt0}):
-        add(m)
+    # 交集回显应含「用户原式」与「工具本批 UID」两个独立因子；按该预期结构逐项核对，
+    # 不拿空回显代替核验。uid_dates 是本工具外加、由 _scope_evidence 另行核实的日期窗口数。
+    raw_findings = _syntax_findings(raw_term, qt0, uid_batch=uid_batch, uid_dates=uid_dates)
+    for _, _, message in raw_findings:
+        add(message)  # _note below also collects response-specific warnings for each batch.
 
     # term_tag_ignored 在 lint 里仍是软标记（breaking=False，不拦、只在 _query_warnings 提示）。
     # 但 check_recall 里「外加字段被明确忽略却仍找回金标准」是可靠性降级：命中可能靠自动映射/裸词，
@@ -1293,7 +1404,8 @@ def _recall_warnings_and_degraded(raw_term, batch_ds, *, include_translation=Tru
     for d_b in batch_ds:
         batch_qt = str(d_b.get("querytranslation") or "")
         original = {**d_b, "_term": raw_term}
-        for note in _note(original, include_translation=False):
+        findings = raw_findings if batch_qt == qt0 else _syntax_findings(raw_term, batch_qt, uid_batch=uid_batch, uid_dates=uid_dates)
+        for note in _note(original, include_translation=False, findings=findings):
             add(note)
         if not batch_qt or _lowercase_and_changed(raw_term, batch_qt) or (_CJK.search(raw_term) and
                 set(re.findall(r"[㐀-鿿぀-ヿ]+", raw_term)) - set(re.findall(r"[㐀-鿿぀-ヿ]+", batch_qt))):

@@ -60,6 +60,19 @@ class TextCompatibility(unittest.TestCase):
         self.assertIn("PMID 1  pubmed_pmc=PMC123,PMC124", text)
         self.assertNotIn("说明：", text)
 
+    def test_structured_pmc_links_pass_prefixed_ids_only_for_direct_targets(self):
+        body = {'linksets': [{'ids': ['1'], 'linksetdbs': [  # 本项目自订：合成来源及直接和非直接关联
+            {'linkname': 'pubmed_pmc', 'links': ['123', '124']},
+            {'linkname': 'pubmed_pmc_embargo', 'links': ['125']}]}]}
+        with patch.object(m, '_pmids_exist', AsyncMock(return_value={'1': 'present'})), patch.object(m, '_get_async', static_elink(body)):
+            args = dict(to='pmc', limit=1, offset=1)  # 本项目自订：取同一来源的下一项
+            full = json.loads(run(m.links, '1', as_json=True, **args))
+            compact = json.loads(run(m.links, '1', compact=True, **args))
+        self.assertEqual(full['sources'][0]['target_ids'], ['124'])  # 本项目自订：旧 ID 契约不变
+        self.assertEqual(full['sources'][0]['pmcids'], ['PMC124'])  # 本项目自订：可传给 read_pmc
+        self.assertEqual(full['edges'][0]['pmcid'], compact['targets'][0]['pmcid'])
+        self.assertEqual(compact['targets'][0]['pmcid'], 'PMC124')  # 本项目自订：不冒充 embargo 全文可读
+
     def test_citation_cap_and_gloss_unchanged(self):
         async def fake(path, params, timeout):
             return elink_body(params["id"], [
@@ -181,15 +194,15 @@ class JsonModel(unittest.TestCase):
         self.assertEqual(data["schema"], "pubmed.links.v1")
         self.assertEqual(data["candidate_pmids"], [])
         self.assertEqual(set(data["sources"][0]),
-                         {'source', 'source_status', 'relation', 'relation_status', 'target_ids', 'page_positions',
+                         {'source', 'source_status', 'relation', 'relation_status', 'target_ids', 'pmcids', 'page_positions',
                           'error', 'fetched_at', 'linknames', 'other_relations'})
         self.assertEqual(data["sources"][0]["source"], "1")
         self.assertEqual(data["sources"][0]["relation"], "pmc")
         self.assertEqual(data["sources"][0]["target_ids"], ["123", "124"])
         self.assertTrue(data["sources"][0]["fetched_at"])
         self.assertEqual(data["edges"], [
-            {"source": "1", "relation": "pmc", "target": "123"},
-            {"source": "1", "relation": "pmc", "target": "124"}])
+            {"source": "1", "relation": "pmc", "target": "123", "pmcid": "PMC123"},  # 本项目自订：同一直接关联
+            {"source": "1", "relation": "pmc", "target": "124", "pmcid": "PMC124"}])  # 本项目自订：同一直接关联
 
     def test_pubmed_candidates_dedupe_across_sources(self):
         async def fake(path, params, timeout):

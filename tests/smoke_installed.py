@@ -23,7 +23,7 @@ async def smoke(cli, workdir):
                 await session.initialize()
                 tools = (await session.list_tools()).tools
                 names = [t.name for t in tools]
-                assert set(names) == {"search", "count", "fetch_abstracts", "links",
+                assert set(names) == {"search", "count", "fetch_abstracts", "read_pmc", "links",
                                       "check_recall", "mesh", "diff", "export"}, names
                 assert len(names) == len(set(names)), names
                 assert all(t.description for t in tools)

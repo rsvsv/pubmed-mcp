@@ -55,7 +55,7 @@ CLI、检索诊断、题录格式化、报告、运行时审计、网络传输�
 
 ## 安装与部署
 
-pip 安装的 console-script 仍指向 `pubmed_mcp:main`，`pubmed-review` 入口不变。wheel 与源码发行包须包含 `pubmed_mcp.py`、`pubmed_cli.py`、`pubmed_review.py`、`pubmed_runtime.py`、`pubmed_query.py`、`pubmed_records.py`、`pubmed_report.py`、`pubmed_audit.py`、`pubmed_transport.py`、`pubmed_files.py`、`pubmed_export.py`、`pubmed_diagnostics.py`、`pubmed_tools.py`、`pubmed_services.py`；构建配置已将它们列入运行模块，运行期清单位于 `pubmed_runtime.RUNTIME_FILES`。
+pip 安装的 console-script 仍指向 `pubmed_mcp:main`，`pubmed-review` 入口不变。wheel、源码发行包和手工部署均以 [`pubmed_runtime.py` 的 `RUNTIME_FILES`](../pubmed_runtime.py) 为唯一完整清单，包含阅读 PMC 所需的 `pubmed_pmc.py`。不要照旧版文件清单复制。
 
 按文件部署必须将上述模块放在同一目录。仅复制核心文件后运行带参数命令，会明确提示缺少相邻模块。当前便携发布包和本机已有安装不会随仓库编辑更新；重新打包或同步时须包含全部运行模块，不能复用仅复制旧文件集合的历史脚本。
 

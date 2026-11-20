@@ -370,7 +370,11 @@ def legacy_ris_block(rec):
 
 
 def screening_materials(root, ids, legacy=False):
-    for name, data in record_batches(root, ids):
+    yield from _screening_materials(record_batches(root, ids), legacy)
+
+
+def _screening_materials(batches, legacy):
+    for name, data in batches:
         by_id = {r["pmid"]: r for r in data["records"]}
         for pid in data["requested_pmids"]:
             rec = by_id.get(pid)
@@ -444,7 +448,7 @@ def assess(plan, export, recalls, batch_results, screening, *, warning_contract=
             execution_notes = {w for c in failed for w in c['warnings']}
             warnings = [w for w in warnings if w not in execution_notes]
             if not uncertain:
-                warnings = [w for w in warnings if not w.startswith('⚠️ 范围或执行式无法核实的批次列为 unknown')]
+                warnings = [w for w in warnings if not w.startswith(services.recall_unknown_prefix)]
         if actionable_warnings(warnings, legacy=legacy):
             issue("recall_warnings", "methodology", "已知集检验包含警告，见 recall 目录")
     for key in ("other_databases", "citation_tracking"):
@@ -525,16 +529,21 @@ def verify_report_rows(root, report, rows):
         raise ValueError("审计报告展示列与原始日志不一致")
 
 
+def recall_event_fields(result):
+    return {'term': result['term'], 'scope': result['scope'],
+            'pmids': [p for c in result['checks'] for p in c['pmids']],
+            'found': len(result['found']), 'missing': len(result['missing']),
+            'unknown': result['unknown'], 'retrieved': result['retrieved']}
+
+
 def verify_retry_event(index, original_receipt, old, new, retried):
     if new.get('audit_status') != 'written':
         return  # assess keeps an unwritten event as an execution gap.
     event = json.loads(index.report_records['event', new['audit_event_id']])
     reused = [c['pmids'] for c in old['checks'] if 'error' not in c]
-    expected = {'event': 'retry_recall', 'outcome': 'success', 'checks': new['checks'],
-                'term': new['term'], 'scope': new['scope'], 'reused_batches': reused,
-                'pmids': [p for c in old['checks'] for p in c['pmids']],
-                'found': len(new['found']), 'missing': len(new['missing']),
-                'unknown': new['unknown'], 'retrieved': new['retrieved']}
+    # Caller has compared old and new batch membership before checking this event.
+    expected = {**recall_event_fields(new), 'event': 'retry_recall', 'outcome': 'success',
+                'checks': new['checks'], 'reused_batches': reused}
     if 'previous_sha256' in event or 'retried_batches' in event:
         expected.update(previous_sha256=digest(original_receipt), retried_batches=retried)
     elif event.get('input_params', {}).get('previous') != {**old, 'evidence': EVIDENCE}:
@@ -543,7 +552,7 @@ def verify_retry_event(index, original_receipt, old, new, retried):
         raise ValueError('重试审计事件与已知集回执不一致')
     requests = [req['params'] for req in event['logical_requests'] if req['endpoint'] == 'esearch.fcgi']
     for batch, params in zip(retried, requests):
-        term = '(' + new['term'] + ') AND (' + ' OR '.join(p + '[uid]' for p in batch) + ')'
+        term = services.uid_intersection(new['term'], batch)
         if params.get('db') != 'pubmed' or params.get('term') != term or params.get('retmax') != len(batch):
             raise ValueError('重试审计中的实际请求与失败批次不一致')
         scope = new['scope']
@@ -551,6 +560,32 @@ def verify_retry_event(index, original_receipt, old, new, retried):
             raise ValueError('重试审计中的实际请求日期与原范围不一致')
     if len(requests) != len(retried):
         raise ValueError('重试审计中的实际请求数量与失败批次不一致')
+
+
+def verify_recall_event(index, result):
+    """首次 check_recall 回执须与独立审计事件的原式、批次和判定一致。
+
+    旧版回执没有 receipt_binding；未成功留痕的步骤由 assess 记为执行缺口，不在此处臆断。
+    修复目录中的重试回执由 verify_retry_event 对照原回执，不走本函数。
+    """
+    if result.get('audit_status') != 'written' or result.get('receipt_binding') != RECALL_BINDING:
+        return
+    event = json.loads(index.report_records.get(('event', result['audit_event_id']), 'null'))
+    if event is None:
+        raise ValueError('已知集审计事件缺失：' + str(result.get('audit_event_id')))
+    if event.get('event') != 'check_recall':
+        raise ValueError('已知集回执绑定了非首次核对事件：' + str(event.get('event')))
+    expected = {**recall_event_fields(result), 'gold': result['gold_count'],
+                'querytranslations': result['querytranslations'],
+                'term_ignored': result['term_ignored'], 'term_degraded': result['term_degraded']}
+    if any(event.get(key) != value for key, value in expected.items()):
+        raise ValueError('已知集审计事件与原式、批次或判定不一致')
+    keys = ('pmids', 'returned', 'status', 'querytranslation', 'term_ignored',
+            'term_degraded', 'error_kind', 'observed_pmids', 'observed_count')
+    judgments = [{key: c.get(key) for key in keys} for c in result['checks']]
+    audited = [{key: c.get(key) for key in keys} for c in event.get('checks') or []]
+    if audited != judgments:
+        raise ValueError('已知集审计事件的逐批判定与回执不一致')
 
 
 def verify(root):
@@ -719,9 +754,12 @@ def verify(root):
                 or found != [p for p in expected_ids if p in found_ids]
                 or absent != [p for p in expected_ids if p not in not_missing]):
             raise ValueError("已知集回执与方案批次不一致：" + name)
+        if not state.get("repair_source"):
+            verify_recall_event(index, result)
         recalls.append(result)
     records, batches = {}, []
-    for name, data in record_batches(root, ids):
+    verified_batches = list(record_batches(root, ids))
+    for name, data in verified_batches:
         stage_name = "records-" + Path(name).stem.removeprefix("batch-")
         result = stages[stage_name]["result"]
         if result.get("sha256") != digest(root / name) or result.get("missing_pmids") != data["missing_pmids"]:
@@ -758,23 +796,20 @@ def verify(root):
         if reader.fieldnames != list(COLUMNS):
             raise ValueError("筛选表列不完整")
     ris_text = (root / "references.ris").read_text(encoding="utf-8")
-    materials = None
     for legacy in (False, True):
-        candidate = list(screening_materials(root, ids, legacy=legacy))
+        candidate = list(_screening_materials(verified_batches, legacy))
         if (rows == [row for row, _ in candidate]
                 and ris_text == "".join(block for _, block in candidate)):
-            materials = candidate
             break
-    if materials is None:
+    else:
         # 文件字节已与交付清单一致（check_files 通过），差异不是「人工修改」的可靠推断；
         # 旧版本生成格式（如只读 OtherAbstract 之前的摘要规则）也可能走到这里。
         raise ValueError(
             "筛选表与题录派生产物不一致，且不符合上一版本格式；文件字节与交付清单一致，"
             "未检测到交付后改动。若此目录由旧版本生成，请用生成它的原版本核验；"
             "或用当前版本新建任务并保留原目录，程序不会改写这些原始文件")
-    expected_rows = [row for row, _ in materials]
-    missing = [row["pmid"] for row in expected_rows if row["record_status"] == "missing"]
-    no_ab = [row["pmid"] for row in expected_rows if row["abstract_status"] == "not_provided"]
+    missing = [row["pmid"] for row in rows if row["record_status"] == "missing"]
+    no_ab = [row["pmid"] for row in rows if row["abstract_status"] == "not_provided"]
     metrics = {"candidate_pmids": len(ids), "retrieved_records": len(records),
                "missing_pmids": missing, "no_abstract_pmids": no_ab}
     if metrics != delivery["metrics"]:
@@ -833,18 +868,31 @@ def copy_verified(source, target, expected_sha):
             pass
 
 
+def repair_needed(source, *, allow_complete):
+    """只读核对原交付并给出仍需补取/重试的判据。"""
+    checked = verify(source)
+    old_state = read_json(source / 'state.json')
+    retry_stages = {name for name, entry in old_state['stages'].items()
+                    if name.startswith('recall-') and failed_recall_checks(entry['result'])}
+    if not checked['metrics']['missing_pmids'] and not retry_stages:
+        if not allow_complete:
+            raise ValueError('原交付没有可自动重试的题录或已知集批次')
+        return checked, None, retry_stages
+    return checked, old_state, retry_stages
+
+
 def prepare_repair(source, *, allow_complete=False):
     source = Path(source).resolve()
+    # 只读核验先于任何写锁：完成且无可重试项的只读归档不应因无法创建锁文件而失败。
+    checked, old_state, _ = repair_needed(source, allow_complete=allow_complete)
+    if old_state is None:
+        return None, checked
     source_lock = acquire_lock(source)
     try:
-        checked = verify(source)
-        old_state = read_json(source / 'state.json')
-        retry_stages = {name for name, entry in old_state['stages'].items()
-                        if name.startswith('recall-') and failed_recall_checks(entry['result'])}
-        if not checked['metrics']['missing_pmids'] and not retry_stages:
-            if allow_complete:
-                return None, checked
-            raise ValueError('原交付没有可自动重试的题录或已知集批次')
+        # 锁内重验：只读核验与拿锁之间另一进程可能已改动原目录。
+        checked, old_state, retry_stages = repair_needed(source, allow_complete=allow_complete)
+        if old_state is None:
+            return None, checked
         target = source.with_name(source.name + ".repair")
         if target.resolve() != target:
             raise ValueError("修复目录不能通过链接指向其它目录")
@@ -914,6 +962,13 @@ def preserve_uncommitted(root, name, paths):
     print("保留未提交阶段产物：" + archive + "；将重新执行 " + name, file=sys.stderr, flush=True)
 
 
+def _check_implementation(state):
+    if (state['source_sha256'] != digest(Path(services.source_path))
+            or state['runner_sha256'] != digest(Path(__file__))
+            or state.get('implementation_sha256') != services.implementation_fingerprint()):
+        raise ValueError('实现已变化，请用原安装包恢复，或新建任务；不能混用格式化规则')
+
+
 async def run(plan_path=None, out_dir=None, resume=None):
     if resume:
         root = Path(resume).resolve()
@@ -928,12 +983,6 @@ async def run(plan_path=None, out_dir=None, resume=None):
             if source.with_name(source.name + ".repair") != root:
                 raise ValueError("修复初始化标识与目录位置不一致")
             prepare_repair(source)
-        state = read_json(root / "state.json")
-        if state.get("schema") != SCHEMA:
-            raise ValueError("恢复状态协议不支持")
-        if digest(root / "plan.json") != state["plan_sha256"]:
-            raise ValueError("方案已修改，不能混用旧检索结果；请新建交付目录")
-        plan = validate_plan(read_json(root / "plan.json"))
     else:
         plan = validate_plan(read_json(plan_path))
         root = Path(out_dir).resolve()
@@ -944,14 +993,22 @@ async def run(plan_path=None, out_dir=None, resume=None):
                  "runner_sha256": digest(Path(__file__)), "implementation_sha256": services.implementation_fingerprint(),
                  "evidence": EVIDENCE}
         services.write_json_atomic(str(root / "state.json"), state)
-    if (state["source_sha256"] != digest(Path(services.source_path))
-            or state["runner_sha256"] != digest(Path(__file__))
-            or state.get("implementation_sha256") != services.implementation_fingerprint()):
-        raise ValueError("实现已变化，请用原安装包恢复，或新建任务；不能混用格式化规则")
+        _check_implementation(state)
     lock = root / ".review.lock"
     lock_stream = acquire_lock(root)
     # A dedicated process owns this directory; restore configuration on every exit.
     with lock_stream, services.audit_session(root / "audit"):
+        if resume:
+            if (root / "delivery.json").exists():
+                # 等待锁期间另一进程已完成交付；只读核验，不重跑或归档。
+                return verify(root)
+            state = read_json(root / "state.json")
+            if state.get("schema") != SCHEMA:
+                raise ValueError("恢复状态协议不支持")
+            if digest(root / "plan.json") != state["plan_sha256"]:
+                raise ValueError("方案已修改，不能混用旧检索结果；请新建交付目录")
+            _check_implementation(state)
+            plan = validate_plan(read_json(root / "plan.json"))
         for part in ("audit", "records", "recall"):
             (root / part).mkdir(exist_ok=True)
         repair_origin(root, state)
